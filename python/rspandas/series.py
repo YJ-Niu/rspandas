@@ -192,10 +192,20 @@ class Series:
             return self.values[key]
         if isinstance(key, slice):
             values = self.values[key]
-            return Series(values, name=self.name)
+            new_index = self._index[key] if self._index is not None else None
+            return Series(values, name=self.name, index=new_index)
         if isinstance(key, (list, tuple)) and all(isinstance(x, bool) for x in key):
             # bool mask
             return self._filter_mask(key)
+        # 字符串 key -> 按 label 索引 (如果 _index 是字符串列表)
+        if isinstance(key, str) and self._index is not None:
+            if not self._index or not isinstance(self._index[0], (str, type(None))):
+                raise KeyError(key)
+            try:
+                pos = self._index.index(key)
+                return self.values[pos]
+            except ValueError:
+                raise KeyError(key)
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
 
     def _filter_mask(self, mask: list) -> "Series":
@@ -358,26 +368,35 @@ class Series:
             for v in self.values
         ]
 
-        # 截断：> 60 行
         n = len(strs)
-        show_truncated = n > 60
-        if show_truncated:
-            head = strs[:30]
-            tail = strs[-30:]
-            strs = head + ["..."] + tail
 
-        # 计算索引宽度
-        max_idx = max(n - 1, 0)
-        idx_width = max(len(str(max_idx)), 1)
+        # 准备索引字符串
+        idx_strs = (
+            [str(i) for i in self._index] if self._index is not None
+            else [str(i) for i in range(n)]
+        )
+        # 截断：> 60 行
+        if n > 60:
+            head_strs = strs[:30]
+            tail_strs = strs[-30:]
+            head_idx = idx_strs[:30]
+            tail_idx = idx_strs[-30:]
+            strs = head_strs + ["..."] + tail_strs
+            idx_strs = head_idx + ["..."] + tail_idx
+
+        # 索引列宽度
+        idx_width = max(
+            (len(s) for s in idx_strs), default=1
+        )
 
         lines = []
-        idx = 0
-        for s in strs:
+        pos = 0
+        for s, idx_s in zip(strs, idx_strs):
             if s == "...":
                 lines.append("..")
             else:
-                lines.append(f"{idx:>{idx_width}}    {s}")
-                idx += 1
+                lines.append(f"{idx_s:>{idx_width}}    {s}")
+                pos += 1
 
         col_name = self.name if self.name is not None else ""
         body = "\n".join(lines)
