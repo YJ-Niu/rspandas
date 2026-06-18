@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Iterator, Optional, Tuple
-
-from rspandas.rspandas import _Series as _PySeries  # type: ignore
+from .rspandas import _Series as _PySeries, _DataFrame as _PyDataFrame  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -217,40 +216,40 @@ class Series:
             return self._filter_mask(key)
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
 
-    def _filter_mask(self, mask: list) -> "Series":
+    def _filter_mask(self, mask: list) -> _PySeries:
         if len(mask) != len(self):
             raise ValueError(f"mask length {len(mask)} != series length {len(self)}")
         rust_mask = [bool(x) for x in mask]
         return Series(_PySeries_filter(self._inner, rust_mask), name=self.name)
 
-    def __eq__(self, other) -> "Series":
+    def __eq__(self, other) -> _PySeries:
         mask = self._inner.eq_scalar(other)
         return Series(mask, name=self.name, dtype="bool")
 
-    def __ne__(self, other) -> "Series":
+    def __ne__(self, other) -> _PySeries:
         # ne = not eq
         eq_mask = self._inner.eq_scalar(other)
         return Series([not x for x in eq_mask], name=self.name, dtype="bool")
 
-    def __lt__(self, other) -> "Series":
+    def __lt__(self, other) -> _PySeries:
         mask = self._inner.lt_scalar(other)
         return Series(mask, name=self.name, dtype="bool")
 
-    def __gt__(self, other) -> "Series":
+    def __gt__(self, other) -> _PySeries:
         mask = self._inner.gt_scalar(other)
         return Series(mask, name=self.name, dtype="bool")
 
-    def __le__(self, other) -> "Series":
+    def __le__(self, other) -> _PySeries:
         mask = self._inner.le_scalar(other)
         return Series(mask, name=self.name, dtype="bool")
 
-    def __ge__(self, other) -> "Series":
+    def __ge__(self, other) -> _PySeries:
         mask = self._inner.ge_scalar(other)
         return Series(mask, name=self.name, dtype="bool")
 
     # ---------- 算术运算符 (v0.3.0) ----------
 
-    def _arith(self, other, op: str) -> "Series":
+    def _arith(self, other, op: str) -> _PySeries:
         """逐元素算术运算，缺失值用 None。"""
         if isinstance(other, Series):
             if len(other) != len(self):
@@ -299,52 +298,52 @@ class Series:
             return Series(result, name=self.name, dtype="float64")
         return Series(result, name=self.name, dtype="int64")
 
-    def __add__(self, other) -> "Series":
+    def __add__(self, other) -> _PySeries:
         return self._arith(other, "add")
 
-    def __radd__(self, other) -> "Series":
+    def __radd__(self, other) -> _PySeries:
         return self._arith(other, "add")
 
-    def __sub__(self, other) -> "Series":
+    def __sub__(self, other) -> _PySeries:
         return self._arith(other, "sub")
 
-    def __rsub__(self, other) -> "Series":
+    def __rsub__(self, other) -> _PySeries:
         return self._arith(other, "sub")
 
-    def __mul__(self, other) -> "Series":
+    def __mul__(self, other) -> _PySeries:
         return self._arith(other, "mul")
 
-    def __rmul__(self, other) -> "Series":
+    def __rmul__(self, other) -> _PySeries:
         return self._arith(other, "mul")
 
-    def __truediv__(self, other) -> "Series":
+    def __truediv__(self, other) -> _PySeries:
         return self._arith(other, "truediv")
 
-    def __rtruediv__(self, other) -> "Series":
+    def __rtruediv__(self, other) -> _PySeries:
         return self._arith(other, "truediv")
 
-    def __floordiv__(self, other) -> "Series":
+    def __floordiv__(self, other) -> _PySeries:
         return self._arith(other, "floordiv")
 
-    def __rfloordiv__(self, other) -> "Series":
+    def __rfloordiv__(self, other) -> _PySeries:
         return self._arith(other, "floordiv")
 
-    def __mod__(self, other) -> "Series":
+    def __mod__(self, other) -> _PySeries:
         return self._arith(other, "mod")
 
-    def __rmod__(self, other) -> "Series":
+    def __rmod__(self, other) -> _PySeries:
         return self._arith(other, "mod")
 
-    def __pow__(self, other) -> "Series":
+    def __pow__(self, other) -> _PySeries:
         return self._arith(other, "pow")
 
-    def __neg__(self) -> "Series":
+    def __neg__(self) -> _PySeries:
         return self._arith(-1, "mul")
 
-    def __pos__(self) -> "Series":
+    def __pos__(self) -> _PySeries:
         return self
 
-    def __abs__(self) -> "Series":
+    def __abs__(self) -> _PySeries:
         result = [None if v is None else abs(v) for v in self.values]
         return Series(result, name=self.name, dtype=self._dtype_str)
 
@@ -353,13 +352,13 @@ class Series:
         """字符串访问器。"""
         return StringAccessor(self)
 
-    def isin(self, other) -> "Series":
+    def isin(self, other) -> _PySeries:
         """判断每个元素是否在 other 中。"""
         s = set(other)
         out = [v in s for v in self.values]
         return Series(out, name=self.name, index=self._index, dtype="bool")
 
-    def between(self, left, right, inclusive: str = "both") -> "Series":
+    def between(self, left, right, inclusive: str = "both") -> _PySeries:
         """判断每个元素是否在 [left, right] 范围内。"""
         if inclusive == "both":
             out = [v is not None and left <= v <= right for v in self.values]
@@ -383,7 +382,7 @@ class Series:
         return pd.Series(list(self.values), name=self.name, index=index)
 
     @classmethod
-    def from_pandas(cls, ps) -> "Series":
+    def from_pandas(cls, ps) -> _PySeries:
         """从 pandas Series 构造。"""
         try:
             import pandas as pd  # type: ignore
@@ -415,14 +414,12 @@ class Series:
         return {self._index[i] if self._index else i: v
                 for i, v in enumerate(self.values)}
 
-    def to_frame(self, name=None) -> "DataFrame":
+    def to_frame(self, name=None) -> _PyDataFrame:
         """转换为 DataFrame。"""
-        from .dataframe import DataFrame
-        return DataFrame({name or self.name: self.values})
+        return _PyDataFrame({name or self.name: self.values})
 
     # ---------- 展开方法 (v1.0.0) ----------
-
-    def explode(self) -> "Series":
+    def explode(self) -> _PySeries:
         """展开列表元素为单独行。"""
         values = self.values
         out = []
@@ -435,7 +432,7 @@ class Series:
                 out.append(v)
         return Series(out, name=self.name)
 
-    def repeat(self, repeats) -> "Series":
+    def repeat(self, repeats) -> _PySeries:
         """重复元素。
         :param repeats: 重复次数 (int 或 list[int])
         """
@@ -461,13 +458,13 @@ class Series:
 
     # ---------- 子集 ----------
 
-    def head(self, n: int = 5) -> "Series":
+    def head(self, n: int = 5) -> _PySeries:
         return Series(self._inner.head(n), name=self.name)
 
-    def tail(self, n: int = 5) -> "Series":
+    def tail(self, n: int = 5) -> _PySeries:
         return Series(self._inner.tail(n), name=self.name)
 
-    def iloc(self, key) -> "Series":
+    def iloc(self, key) -> _PySeries:
         """按位置索引。key: int / list[int] / slice / bool mask。"""
         n = len(self)
         if isinstance(key, int):
@@ -496,7 +493,7 @@ class Series:
             return Series(values, name=self.name, index=new_index, dtype=self._dtype_str)
         raise TypeError(f"iloc: unsupported key {type(key).__name__}")
 
-    def sort_values(self, ascending: bool = True, inplace: bool = False) -> "Series":
+    def sort_values(self, ascending: bool = True, inplace: bool = False) -> _PySeries:
         """按值排序。None 始终在末尾。"""
         pairs = [(i, v) for i, v in enumerate(self.values)]
         # stable sort: None 在末尾
@@ -518,7 +515,7 @@ class Series:
             return self
         return Series(new_values, name=self.name, index=new_index)
 
-    def apply(self, func) -> "Series":
+    def apply(self, func) -> _PySeries:
         """对每个非 None 元素应用 func。
 
         :param func: callable (scalar) -> scalar
@@ -526,7 +523,7 @@ class Series:
         out = [None if v is None else func(v) for v in self.values]
         return Series(out, name=self.name, index=self._index)
 
-    def map(self, arg) -> "Series":
+    def map(self, arg) -> _PySeries:
         """映射: 可以传 dict 或 callable。
 
         - dict: 用值匹配, 缺失 -> None
@@ -538,7 +535,7 @@ class Series:
             out = [None if v is None else arg(v) for v in self.values]
         return Series(out, name=self.name, index=self._index)
 
-    def replace(self, to_replace, value=None) -> "Series":
+    def replace(self, to_replace, value=None) -> _PySeries:
         """替换值。
 
         三种用法:
@@ -562,7 +559,7 @@ class Series:
         out = [mapping.get(v, v) if v is not None else None for v in self.values]
         return Series(out, name=self.name, index=self._index)
 
-    def duplicated(self, keep: str = "first") -> "Series":
+    def duplicated(self, keep: str = "first") -> _PySeries:
         """返回 bool Series 标记重复行。
 
         :param keep: 'first' / 'last' / False
@@ -595,7 +592,7 @@ class Series:
             raise ValueError("keep must be 'first', 'last', or False")
         return Series(out, name=self.name, index=self._index, dtype="bool")
 
-    def drop_duplicates(self, keep: str = "first", inplace: bool = False) -> "Series":
+    def drop_duplicates(self, keep: str = "first", inplace: bool = False) -> _PySeries:
         """删除重复值。"""
         seen = set()
         out = []
@@ -627,7 +624,7 @@ class Series:
             return self
         return Series(out, name=self.name, index=new_index)
 
-    def where(self, cond, other=None) -> "Series":
+    def where(self, cond, other=None) -> _PySeries:
         """三元: cond 为 True 保留 self, 否则取 other。"""
         if isinstance(cond, Series):
             cond = cond.values
@@ -637,7 +634,7 @@ class Series:
         ]
         return Series(out, name=self.name, index=self._index)
 
-    def mask(self, cond, other=None) -> "Series":
+    def mask(self, cond, other=None) -> _PySeries:
         """where 的反义: cond 为 True 替换为 other, 否则保留 self。"""
         if isinstance(cond, Series):
             cond = cond.values
@@ -647,7 +644,7 @@ class Series:
         ]
         return Series(out, name=self.name, index=self._index)
 
-    def astype(self, dtype: str) -> "Series":
+    def astype(self, dtype: str) -> _PySeries:
         """类型转换（简化版）。"""
         target = dtype.lower()
         if target == self._dtype_str:
@@ -696,7 +693,7 @@ class Series:
     def all(self) -> Any:
         return self._inner.all()
 
-    def describe(self) -> "Series":
+    def describe(self) -> _PySeries:
         """返回统计摘要 Series。"""
         stats = {
             "count": self.count(),
@@ -754,27 +751,27 @@ class Series:
 
     # ---------- 缺失值 ----------
 
-    def isnull(self) -> "Series":
+    def isnull(self) -> _PySeries:
         """返回 bool Series，True 表示该位置是 None。"""
         mask = self._inner.isnull()
         return Series(mask, name=self.name, dtype="bool")
 
-    def notnull(self) -> "Series":
+    def notnull(self) -> _PySeries:
         """返回 bool Series，True 表示该位置不是 None。"""
         mask = self._inner.notnull()
         return Series(mask, name=self.name, dtype="bool")
 
-    def dropna(self) -> "Series":
+    def dropna(self) -> _PySeries:
         """删除缺失值所在行。"""
         return Series(self._inner.dropna(), name=self.name)
 
-    def fillna(self, value) -> "Series":
+    def fillna(self, value) -> _PySeries:
         """用 value 填充缺失值。"""
         return Series(self._inner.fillna(value), name=self.name)
 
     # ---------- 唯一值 ----------
 
-    def unique(self) -> "Series":
+    def unique(self) -> _PySeries:
         """返回去重后的 Series (保持首次出现顺序)。"""
         return Series(self._inner.unique(), name=self.name)
 
@@ -782,7 +779,7 @@ class Series:
         """返回不同值的数量 (None 不计入)。"""
         return self._inner.nunique()
 
-    def value_counts(self) -> "Series":
+    def value_counts(self) -> _PySeries:
         """统计每个值出现的次数，返回按出现顺序排序的 Series，索引为值。"""
         values, counts = self._inner.value_counts()
         s = Series(counts, index=values, name=self.name)
@@ -790,7 +787,7 @@ class Series:
 
     # ---------- 统计方法 (v1.0.0) ----------
 
-    def rank(self, method: str = "average") -> "Series":
+    def rank(self, method: str = "average") -> _PySeries:
         """计算排名。
         :param method: 'average' / 'min' / 'max' / 'first' / 'dense'
         """
@@ -865,7 +862,7 @@ class Series:
         frac = pos - lower
         return values[lower] * (1 - frac) + values[upper] * frac
 
-    def mode(self, dropna: bool = True) -> "Series":
+    def mode(self, dropna: bool = True) -> _PySeries:
         """返回众数。"""
         from collections import Counter
         values = self.values
@@ -908,12 +905,12 @@ class Series:
 
     # ---------- 过滤 ----------
 
-    def filter(self, mask: list) -> "Series":
+    def filter(self, mask: list) -> _PySeries:
         return self._filter_mask(mask)
 
     # ---------- 时序操作 (v1.0.0) ----------
 
-    def shift(self, periods: int = 1) -> "Series":
+    def shift(self, periods: int = 1) -> _PySeries:
         """将数据移动 periods 位。
         :param periods: 移动位数 (正数向后, 负数向前)
         """
@@ -928,7 +925,7 @@ class Series:
                 out[i] = values[i - periods]
         return Series(out, name=self.name, index=self._index)
 
-    def diff(self, periods: int = 1) -> "Series":
+    def diff(self, periods: int = 1) -> _PySeries:
         """计算相邻元素的差。
         :param periods: 间隔位数
         """
@@ -947,7 +944,7 @@ class Series:
                     out.append(a - b)
         return Series(out, name=self.name, index=self._index)
 
-    def pct_change(self, periods: int = 1, fill_method: str = "pad") -> "Series":
+    def pct_change(self, periods: int = 1, fill_method: str = "pad") -> _PySeries:
         """计算百分比变化。
         :param periods: 间隔位数
         :param fill_method: 'pad' (填充前值) / 'backfill' / None
@@ -976,7 +973,7 @@ class Series:
                     out.append((a - b) / b)
         return Series(out, name=self.name, index=self._index)
 
-    def cumsum(self, skipna: bool = True) -> "Series":
+    def cumsum(self, skipna: bool = True) -> _PySeries:
         """累加和。"""
         values = self.values
         out = []
@@ -996,7 +993,7 @@ class Series:
                 out.append(acc)
         return Series(out, name=self.name, index=self._index)
 
-    def cumprod(self, skipna: bool = True) -> "Series":
+    def cumprod(self, skipna: bool = True) -> _PySeries:
         """累乘积。"""
         values = self.values
         out = []
@@ -1016,7 +1013,7 @@ class Series:
                 out.append(acc)
         return Series(out, name=self.name, index=self._index)
 
-    def cummax(self, skipna: bool = True) -> "Series":
+    def cummax(self, skipna: bool = True) -> _PySeries:
         """累计最大值。"""
         values = self.values
         out = []
@@ -1036,7 +1033,7 @@ class Series:
                 out.append(acc)
         return Series(out, name=self.name, index=self._index)
 
-    def cummin(self, skipna: bool = True) -> "Series":
+    def cummin(self, skipna: bool = True) -> _PySeries:
         """累计最小值。"""
         values = self.values
         out = []
@@ -1154,12 +1151,12 @@ class Rolling:
         [None, None, 2.0, 3.0, 4.0]
     """
 
-    def __init__(self, series: "Series", window: int, min_periods: int):
+    def __init__(self, series: _PySeries, window: int, min_periods: int):
         self._s = series
         self._window = window
         self._min_periods = min_periods
 
-    def _apply(self, func) -> "Series":
+    def _apply(self, func) -> _PySeries:
         """应用窗口函数 func(window_values) -> scalar。"""
         values = self._s.values
         n = len(values)
@@ -1177,30 +1174,30 @@ class Rolling:
                     out.append(None)
         return Series(out, name=self._s.name, index=self._s._index)
 
-    def sum(self) -> "Series":
+    def sum(self) -> _PySeries:
         def f(win):
             return sum(v for v in win if v is not None)
         return self._apply(f)
 
-    def mean(self) -> "Series":
+    def mean(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return sum(nums) / len(nums) if nums else None
         return self._apply(f)
 
-    def min(self) -> "Series":
+    def min(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return min(nums) if nums else None
         return self._apply(f)
 
-    def max(self) -> "Series":
+    def max(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return max(nums) if nums else None
         return self._apply(f)
 
-    def std(self) -> "Series":
+    def std(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
@@ -1210,7 +1207,7 @@ class Rolling:
             return var ** 0.5
         return self._apply(f)
 
-    def var(self) -> "Series":
+    def var(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
@@ -1219,7 +1216,7 @@ class Rolling:
             return sum((x - m) ** 2 for x in nums) / len(nums)
         return self._apply(f)
 
-    def median(self) -> "Series":
+    def median(self) -> _PySeries:
         def f(win):
             nums = sorted([v for v in win if v is not None])
             if not nums:
@@ -1229,7 +1226,7 @@ class Rolling:
             return (nums[len(nums) // 2 - 1] + nums[len(nums) // 2]) / 2
         return self._apply(f)
 
-    def count(self) -> "Series":
+    def count(self) -> _PySeries:
         values = self._s.values
         n = len(values)
         out = []
@@ -1243,7 +1240,7 @@ class Rolling:
                 out.append(cnt)
         return Series(out, name=self._s.name, index=self._s._index)
 
-    def corr(self, other: "Series") -> "Series":
+    def corr(self, other: _PySeries) -> _PySeries:
         """滚动相关系数。"""
         if len(other) != len(self._s):
             raise ValueError("lengths must match")
@@ -1270,7 +1267,7 @@ class Rolling:
                 out.append(num / (da * db))
         return Series(out, name=self._s.name, index=self._s._index)
 
-    def cov(self, other: "Series") -> "Series":
+    def cov(self, other: _PySeries) -> _PySeries:
         """滚动协方差。"""
         if len(other) != len(self._s):
             raise ValueError("lengths must match")
@@ -1292,7 +1289,7 @@ class Rolling:
             out.append(cov)
         return Series(out, name=self._s.name, index=self._s._index)
 
-    def apply(self, func) -> "Series":
+    def apply(self, func) -> _PySeries:
         """应用自定义窗口函数。"""
         return self._apply(func)
 
@@ -1300,11 +1297,11 @@ class Rolling:
 class Expanding:
     """Expanding 扩展窗口 (从开始到当前位置)。"""
 
-    def __init__(self, series: "Series", min_periods: int):
+    def __init__(self, series: _PySeries, min_periods: int):
         self._s = series
         self._min_periods = min_periods
 
-    def _apply(self, func) -> "Series":
+    def _apply(self, func) -> _PySeries:
         values = self._s.values
         n = len(values)
         out = []
@@ -1320,28 +1317,28 @@ class Expanding:
                     out.append(None)
         return Series(out, name=self._s.name, index=self._s._index)
 
-    def sum(self) -> "Series":
+    def sum(self) -> _PySeries:
         return self._apply(lambda win: sum(v for v in win if v is not None))
 
-    def mean(self) -> "Series":
+    def mean(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return sum(nums) / len(nums) if nums else None
         return self._apply(f)
 
-    def min(self) -> "Series":
+    def min(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return min(nums) if nums else None
         return self._apply(f)
 
-    def max(self) -> "Series":
+    def max(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return max(nums) if nums else None
         return self._apply(f)
 
-    def std(self) -> "Series":
+    def std(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
@@ -1350,7 +1347,7 @@ class Expanding:
             return (sum((x - m) ** 2 for x in nums) / len(nums)) ** 0.5
         return self._apply(f)
 
-    def var(self) -> "Series":
+    def var(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
@@ -1359,7 +1356,7 @@ class Expanding:
             return sum((x - m) ** 2 for x in nums) / len(nums)
         return self._apply(f)
 
-    def count(self) -> "Series":
+    def count(self) -> _PySeries:
         values = self._s.values
         out = []
         for i in range(len(values)):
@@ -1394,7 +1391,7 @@ class Resampler:
         "S": "second",
     }
 
-    def __init__(self, series: "Series", freq: str, index: list):
+    def __init__(self, series: _PySeries, freq: str, index: list):
         if freq not in self._FREQ_MAP:
             raise ValueError(f"unsupported freq: {freq!r}")
         self._s = series
@@ -1420,7 +1417,7 @@ class Resampler:
             return dt.replace(microsecond=0)
         return dt
 
-    def _aggregate(self, aggfunc: str) -> "Series":
+    def _aggregate(self, aggfunc: str) -> _PySeries:
         # 按桶分组
         buckets: dict = {}
         bucket_order: list = []
@@ -1469,74 +1466,74 @@ class Resampler:
             out_index.append(k)
         return Series(out_values, name=self._s.name, index=out_index)
 
-    def sum(self) -> "Series":
+    def sum(self) -> _PySeries:
         return self._aggregate("sum")
 
-    def mean(self) -> "Series":
+    def mean(self) -> _PySeries:
         return self._aggregate("mean")
 
-    def count(self) -> "Series":
+    def count(self) -> _PySeries:
         return self._aggregate("count")
 
-    def min(self) -> "Series":
+    def min(self) -> _PySeries:
         return self._aggregate("min")
 
-    def max(self) -> "Series":
+    def max(self) -> _PySeries:
         return self._aggregate("max")
 
-    def median(self) -> "Series":
+    def median(self) -> _PySeries:
         return self._aggregate("median")
 
-    def std(self) -> "Series":
+    def std(self) -> _PySeries:
         return self._aggregate("std")
 
-    def first(self) -> "Series":
+    def first(self) -> _PySeries:
         return self._aggregate("first")
 
-    def last(self) -> "Series":
+    def last(self) -> _PySeries:
         return self._aggregate("last")
 
-    def agg(self, func: str) -> "Series":
+    def agg(self, func: str) -> _PySeries:
         return self._aggregate(func)
 
 
 class StringAccessor:
     """Series.str 字符串访问器。"""
 
-    def __init__(self, series: "Series"):
+    def __init__(self, series: _PySeries):
         self._s = series
 
-    def _wrap(self, values: list, name: str = None) -> "Series":
+    def _wrap(self, values: list, name: str = None) -> _PySeries:
         return Series(values, name=name or self._s.name, index=self._s._index)
 
     def _ensure_str(self, v):
         return None if v is None else str(v)
 
-    def upper(self) -> "Series":
+    def upper(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).upper() if v is not None else None for v in self._s.values])
 
-    def lower(self) -> "Series":
+    def lower(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).lower() if v is not None else None for v in self._s.values])
 
-    def title(self) -> "Series":
+    def title(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).title() if v is not None else None for v in self._s.values])
 
-    def capitalize(self) -> "Series":
+    def capitalize(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).capitalize() if v is not None else None for v in self._s.values])
 
-    def strip(self) -> "Series":
+    def strip(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).strip() if v is not None else None for v in self._s.values])
 
-    def lstrip(self) -> "Series":
+    def lstrip(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).lstrip() if v is not None else None for v in self._s.values])
 
-    def rstrip(self) -> "Series":
+    def rstrip(self) -> _PySeries:
         return self._wrap([self._ensure_str(v).rstrip() if v is not None else None for v in self._s.values])
 
-    def len(self) -> "Series":
+    def len(self) -> _PySeries:
         return self._wrap([len(v) if v is not None else None for v in self._s.values])
 
-    def contains(self, pat, case: bool = True, na=None) -> "Series":
+    def contains(self, pat, case: bool = True, na=None) -> _PySeries:
         out = []
         for v in self._s.values:
             if v is None:
@@ -1547,13 +1544,13 @@ class StringAccessor:
                 out.append(needle in target)
         return self._wrap(out)
 
-    def startswith(self, pat) -> "Series":
+    def startswith(self, pat) -> _PySeries:
         return self._wrap([str(v).startswith(pat) if v is not None else None for v in self._s.values])
 
-    def endswith(self, pat) -> "Series":
+    def endswith(self, pat) -> _PySeries:
         return self._wrap([str(v).endswith(pat) if v is not None else None for v in self._s.values])
 
-    def replace(self, pat, repl) -> "Series":
+    def replace(self, pat, repl) -> _PySeries:
         return self._wrap([str(v).replace(pat, repl) if v is not None else None for v in self._s.values])
 
     def split(self, pat: str = None, n: int = -1) -> list:
@@ -1563,7 +1560,7 @@ class StringAccessor:
             for v in self._s.values
         ]
 
-    def slice(self, start=None, stop=None, step=None) -> "Series":
+    def slice(self, start=None, stop=None, step=None) -> _PySeries:
         s = slice(start, stop, step)
         return self._wrap([
             str(v)[s] if v is not None else None

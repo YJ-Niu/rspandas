@@ -505,6 +505,51 @@ class DataFrame:
             new_data[c] = [None if v is None else func(v) for v in ser.values]
         return DataFrame(new_data)
 
+    # ---------- 高级操作 (v1.0.0) ----------
+
+    def assign(self, **kwargs) -> "DataFrame":
+        """添加新列 (链式调用友好)。"""
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        for name, value in kwargs.items():
+            if isinstance(value, Series):
+                new_data[name] = list(value.values)
+            else:
+                try:
+                    iter(value)
+                    new_data[name] = list(value)
+                except TypeError:
+                    new_data[name] = [value] * self._nrows
+        return DataFrame(new_data)
+
+    def eval(self, expr: str):
+        """用字符串表达式计算。"""
+        local_vars = {c: self._inner.get_column(c).values for c in self._columns}
+        return eval(expr, {}, local_vars)
+
+    def query(self, expr: str) -> "DataFrame":
+        """用字符串表达式过滤行。"""
+        mask = []
+        for i in range(self._nrows):
+            local_vars = {c: self._inner.get_column(c).values[i] for c in self._columns}
+            mask.append(bool(eval(expr, {}, local_vars)))
+        return self._filter_with_mask(mask)
+
+    def pipe(self, func, *args, **kwargs):
+        """管道方法: df.pipe(func, ...) == func(df, ...)。"""
+        return func(self, *args, **kwargs)
+
+    def transform(self, func) -> "DataFrame":
+        """对每列应用 func 并返回相同形状的 DataFrame。"""
+        new_data: Dict[str, list] = {}
+        for c in self._columns:
+            ser = self[c]
+            result = func(ser)
+            if isinstance(result, Series):
+                new_data[c] = list(result.values)
+            else:
+                new_data[c] = [result] * self._nrows
+        return DataFrame(new_data)
+
     def replace(self, to_replace, value=None) -> "DataFrame":
         """替换 DataFrame 中的值。"""
         new_data: Dict[str, list] = {}
@@ -610,6 +655,115 @@ class DataFrame:
         df._columns = cols
         df._nrows = inner.nrows
         df._index = list(range(df._nrows))
+        return df
+
+    # ---------- 索引操作 (v1.0.0) ----------
+
+    def drop(self, labels, axis: int = 0) -> "DataFrame":
+        """删除行或列。
+        :param labels: 要删除的标签 (str/int 或 list)
+        :param axis: 0=行, 1=列
+        """
+        if axis == 0:
+            if not isinstance(labels, (list, tuple)):
+                labels = [labels]
+            keep_idx = []
+            for i in range(self._nrows):
+                label = self._index[i] if self._index else i
+                if label not in labels:
+                    keep_idx.append(i)
+            new_data = {c: [self._inner.get_column(c).values[i] for i in keep_idx]
+                        for c in self._columns}
+            return DataFrame(new_data)
+        else:
+            if not isinstance(labels, (list, tuple)):
+                labels = [labels]
+            new_cols = [c for c in self._columns if c not in labels]
+            new_data = {c: list(self._inner.get_column(c).values) for c in new_cols}
+            return DataFrame(new_data)
+
+    def rename(self, mapper, axis: int = 0) -> "DataFrame":
+        """重命名行或列。
+        :param mapper: dict {old_name: new_name} 或 callable
+        :param axis: 0=行索引, 1=列
+        """
+        if axis == 1:
+            if isinstance(mapper, dict):
+                new_cols = [mapper.get(c, c) for c in self._columns]
+            else:
+                new_cols = [mapper(c) for c in self._columns]
+            new_data = {new_cols[i]: list(self._inner.get_column(c).values)
+                        for i, c in enumerate(self._columns)}
+            return DataFrame(new_data)
+        else:
+            new_index = []
+            for i in range(self._nrows):
+                label = self._index[i] if self._index else i
+                if isinstance(mapper, dict):
+                    new_index.append(mapper.get(label, label))
+                else:
+                    new_index.append(mapper(label))
+            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            df = DataFrame(new_data)
+            df._index = new_index
+            return df
+
+    def reindex(self, index=None, columns=None) -> "DataFrame":
+        """重新索引。"""
+        if index is None:
+            index = self._index
+        if columns is None:
+            columns = self._columns
+        if not isinstance(index, list):
+            index = list(index)
+        if not isinstance(columns, list):
+            columns = list(columns)
+        old_index_map = {self._index[i] if self._index else i: i
+                         for i in range(self._nrows)}
+        new_data = {c: [] for c in columns}
+        for new_idx_label in index:
+            old_pos = old_index_map.get(new_idx_label)
+            for c in columns:
+                if c in self._columns and old_pos is not None:
+                    new_data[c].append(self._inner.get_column(c).values[old_pos])
+                else:
+                    new_data[c].append(None)
+        df = DataFrame(new_data)
+        df._index = index
+        return df
+
+    def set_index(self, keys) -> "DataFrame":
+        """设置索引列。"""
+        if isinstance(keys, str):
+            keys = [keys]
+        else:
+            keys = list(keys)
+        for k in keys:
+            if k not in self._columns:
+                raise KeyError(f"column not found: {k}")
+        new_index = []
+        for i in range(self._nrows):
+            if len(keys) == 1:
+                new_index.append(self._inner.get_column(keys[0]).values[i])
+            else:
+                new_index.append(tuple(self._inner.get_column(k).values[i] for k in keys))
+        new_data = {c: list(self._inner.get_column(c).values)
+                    for c in self._columns if c not in keys}
+        df = DataFrame(new_data)
+        df._index = new_index
+        return df
+
+    def reset_index(self, drop: bool = False) -> "DataFrame":
+        """重置索引为默认 RangeIndex。"""
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        if not drop and self._index is not None:
+            new_data["index"] = list(self._index)
+            cols = ["index"] + [c for c in self._columns]
+            df = DataFrame(new_data)
+            df._columns = cols
+        else:
+            df = DataFrame(new_data)
+        df._index = list(range(self._nrows))
         return df
 
     # ---------- CSV I/O ----------
@@ -1219,8 +1373,7 @@ class DataFrameGroupBy:
     def mean(self) -> "DataFrame":
         numeric_cols = [
             c for c in self._df._columns
-            if c not in self._by
-            and self._df._inner.get_column(c).dtype in ("int64", "float64")
+            if c not in self._by and self._df._inner.get_column(c).dtype in ("int64", "float64")
         ]
         return self._agg({c: "mean" for c in numeric_cols})
 

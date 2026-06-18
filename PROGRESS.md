@@ -11,7 +11,7 @@
 | v0.3.0 | 算术运算符、astype、缺失值填充、唯一值                                 | ✅ 完成   | 100%   |
 | v0.4.0 | sort_values、merge、concat、groupby                                    | ✅ 完成   | 100%   |
 | v0.5.0 | apply、字符串访问器、replace、pandas 互转                              | ✅ 完成   | 100%   |
-| v1.0.0 | 时间序列、重塑、窗口函数、性能优化、API 稳定                           | 🚧 进行中 | 70%    |
+| v1.0.0 | 时间序列、重塑、窗口函数、性能优化、API 稳定                           | ✅ 完成   | 100%   |
 | v1.1.0 | 类型系统扩展（Categorical、Datetime、Timedelta、Period）               | 📋 规划中 | 0%     |
 | v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）                           | 📋 规划中 | 0%     |
 | v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）                      | 📋 规划中 | 0%     |

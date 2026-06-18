@@ -352,3 +352,145 @@ def date_range(
 
     out = [start_dt + step * i for i in range(n)]
     return DatetimeSeries(out, name=None)
+
+
+def to_timedelta(arg, unit=None):
+    """将输入转换为 timedelta。"""
+    from datetime import timedelta as td
+    if isinstance(arg, td):
+        return arg
+    if isinstance(arg, (int, float)):
+        if unit is None:
+            return td(seconds=float(arg))
+        unit = unit.lower()
+        if unit in ("s", "sec", "seconds"):
+            return td(seconds=float(arg))
+        elif unit in ("ms", "milli", "milliseconds"):
+            return td(milliseconds=float(arg))
+        elif unit in ("us", "micro", "microseconds"):
+            return td(microseconds=float(arg))
+        elif unit in ("ns", "nano", "nanoseconds"):
+            return td(microseconds=float(arg) / 1000)
+        elif unit in ("m", "min", "minutes"):
+            return td(minutes=float(arg))
+        elif unit in ("h", "hour", "hours"):
+            return td(hours=float(arg))
+        elif unit in ("d", "day", "days"):
+            return td(days=float(arg))
+        else:
+            raise ValueError(f"unsupported unit: {unit}")
+    if isinstance(arg, str):
+        return td(seconds=float(arg))
+    if isinstance(arg, (list, tuple)):
+        return [to_timedelta(x, unit) for x in arg]
+    raise TypeError(f"cannot convert {type(arg).__name__} to timedelta")
+
+
+def timedelta_range(start=None, end=None, periods=None, freq="D"):
+    """生成 timedelta 范围。"""
+    from datetime import timedelta as td
+    if start is None:
+        start = td(0)
+    elif isinstance(start, (int, float)):
+        start = to_timedelta(start)
+    elif isinstance(start, str):
+        start = to_timedelta(start)
+    step = _freq_to_timedelta(freq)
+    if periods is not None:
+        n = periods
+    else:
+        if end is None:
+            raise ValueError("end or periods must be specified")
+        if isinstance(end, (int, float)):
+            end = to_timedelta(end)
+        elif isinstance(end, str):
+            end = to_timedelta(end)
+        n = int((end - start) / step) + 1
+    out = [start + step * i for i in range(n)]
+    return Series(out, name=None)
+
+
+def period_range(start=None, periods=None, freq="M"):
+    """生成周期范围。"""
+    if start is None:
+        start = datetime.now()
+    elif isinstance(start, str):
+        start = _parse_iso(start)
+    elif isinstance(start, date):
+        start = datetime(start.year, start.month, start.day)
+    if periods is None:
+        periods = 12
+    out = []
+    for i in range(periods):
+        if freq == "M":
+            year, month = start.year, start.month + i
+            while month > 12:
+                year += 1
+                month -= 12
+            out.append(datetime(year, month, 1))
+        elif freq == "Y":
+            out.append(datetime(start.year + i, start.month, start.day))
+        elif freq == "Q":
+            year, month = start.year, start.month + i * 3
+            while month > 12:
+                year += 1
+                month -= 12
+            out.append(datetime(year, month, 1))
+        else:
+            step = _freq_to_timedelta(freq)
+            out.append(start + step * i)
+    return DatetimeSeries(out, name=None)
+
+
+def bdate_range(start=None, end=None, periods=None):
+    """生成工作日日期范围。"""
+    if start is None:
+        start = datetime.now()
+    elif isinstance(start, str):
+        start = _parse_iso(start)
+    elif isinstance(start, date):
+        start = datetime(start.year, start.month, start.day)
+    end_dt = None
+    if end is not None:
+        if isinstance(end, str):
+            end_dt = _parse_iso(end)
+        elif isinstance(end, datetime):
+            end_dt = end
+        elif isinstance(end, date):
+            end_dt = datetime(end.year, end.month, end.day)
+    if periods is None:
+        if end_dt is None:
+            raise ValueError("end or periods must be specified")
+        periods = ((end_dt - start).days // 7) * 5 + 3
+    out = []
+    current = start
+    while len(out) < periods:
+        if current.weekday() < 5:
+            out.append(current)
+        current += timedelta(days=1)
+        if end_dt is not None and current > end_dt:
+            break
+    return DatetimeSeries(out, name=None)
+
+
+def infer_freq(index):
+    """推断频率 (简化版)。"""
+    if not index:
+        return None
+    if isinstance(index[0], datetime):
+        deltas = []
+        for i in range(1, len(index)):
+            delta = (index[i] - index[i-1]).days
+            if delta > 0:
+                deltas.append(delta)
+        if not deltas:
+            return None
+        if all(d == 1 for d in deltas):
+            return "D"
+        if all(d == 7 for d in deltas):
+            return "W"
+        if all(d in (28, 29, 30, 31) for d in deltas):
+            return "M"
+        if all(d in (365, 366) for d in deltas):
+            return "Y"
+    return None

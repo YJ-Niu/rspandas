@@ -4,6 +4,7 @@
 """
 
 from typing import Any, Dict, List, Optional, Tuple
+from .rspandas import _Series as rspandas_Series, _DataFrame as rspandas_DataFrame  # type: ignore
 
 class _Series:
     name: Optional[str]
@@ -16,13 +17,13 @@ class _Series:
     def __init__(self, data: list, name: Optional[str] = ...) -> None:
         ...
     
-    def head(self, n: int = ...) -> _Series:
+    def head(self, n: int = ...) -> rspandas_Series:
         ...
 
-    def tail(self, n: int = ...) -> _Series:
+    def tail(self, n: int = ...) -> rspandas_Series:
         ...
 
-    def filter(self, mask: list) -> _Series:
+    def filter(self, mask: list) -> rspandas_Series:
         ...
 
     def eq_scalar(self, value: Any) -> list:
@@ -76,13 +77,13 @@ class _Series:
     def notnull(self) -> list:
         ...
     
-    def dropna(self) -> _Series:
+    def dropna(self) -> rspandas_Series:
         ...
     
-    def fillna(self, value: Any) -> _Series:
+    def fillna(self, value: Any) -> rspandas_Series:
         ...
     
-    def unique(self) -> _Series:
+    def unique(self) -> rspandas_Series:
         ...
     
     def nunique(self) -> int:
@@ -114,19 +115,19 @@ class _DataFrame:
     def column_index(self, name: str) -> Optional[int]:
         ...
         
-    def head(self, n: int = ...) -> _DataFrame:
+    def head(self, n: int = ...) -> rspandas_DataFrame:
         ...
 
-    def tail(self, n: int = ...) -> _DataFrame:
+    def tail(self, n: int = ...) -> rspandas_DataFrame:
         ...
         
-    def filter_rows(self, mask: list) -> _DataFrame:
+    def filter_rows(self, mask: list) -> rspandas_DataFrame:
         ...
 
-    def dropna(self) -> _DataFrame:
+    def dropna(self) -> rspandas_DataFrame:
         ...
 
-    def fillna(self, fill_dict: dict) -> _DataFrame:
+    def fillna(self, fill_dict: dict) -> rspandas_DataFrame:
         ...
 
     def to_rows(self) -> list:

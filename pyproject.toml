@@ -7,7 +7,7 @@ name = "rspandas"
 version = "0.1.0"
 description = "A pandas-like library built on Rust"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = []
 
 [project.optional-dependencies]
