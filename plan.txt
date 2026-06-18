@@ -1,0 +1,637 @@
+================================================================================
+                        rspandas 开发计划 (v2.0 - 完善版)
+================================================================================
+项目目标
+    用 Rust 实现一个与 pandas API 高度兼容的 Python 数据分析库。
+    - Python 层方法签名、行为与 pandas 一致，零学习成本
+    - 底层由 Rust 实现，提供接近 native 的性能
+    - 缺失值、类型系统等关键细节遵循 pandas 语义
+
+关键词：Rust + PyO3 + maturin + 列存储 + 缺失值 + 零成本互操作
+
+================================================================================
+零、版本与里程碑
+================================================================================
+v0.1.0 (MVP)        - Series / DataFrame 基础构造、属性、head/tail、聚合
+v0.2.0              - CSV IO、loc/iloc 索引、过滤、缺失值处理
+v0.3.0              - 算术运算符重载、缺失值填充、astype、唯一值
+v0.4.0              - sort_values、merge、concat、groupby (极简版)
+v1.0.0              - 性能优化、API 稳定、与 pandas 95% 行为兼容
+
+当前迭代目标：v0.1.0 MVP
+
+================================================================================
+一、技术栈
+================================================================================
+  组件                 版本/选型              说明
+  ----------------------------------------------------------------------------
+  Python 解释器        >= 3.10                (maturin 最低支持)
+  Rust 工具链          stable                 (edition 2021)
+  Python<->Rust 桥     PyO3 0.22              (稳定 API，生态成熟)
+  构建/打包工具        maturin 1.7+           (PEP 517 标准 build backend)
+  Rust crate 类型      cdylib + rlib          (cdylib 给 Python，rlib 给单元测试)
+  类型存储             自定义 ColumnData      (避免引入 ndarray 依赖，保持简洁)
+  Python 端组织        python/rspandas/       (maturin python-source)
+  Rust 端组织          src/                   (Cargo 标准)
+  编译优化             opt-level=3, lto=true  (Release 模式)
+  开发模式构建         pip install -e .       (maturin develop)
+  测试框架             pytest                 (Python 端集成测试)
+                      cargo test             (Rust 端单元测试)
+  Lint                 cargo clippy           (Rust)
+                      ruff                   (Python，可选)
+
+================================================================================
+二、整体架构
+================================================================================
+
+  用户代码 (Python)
+       |
+       |   import rspandas as rpd
+       |   df = rpd.DataFrame({"a": [1,2,3]})
+       v
+  +-----------------------------------------------+
+  |   python/rspandas/                           |   <-- Python API 层
+  |   +-------------------+   +----------------+ |       (对齐 pandas 签名)
+  |   | series.py         |   | dataframe.py   | |
+  |   | class Series:     |   | class          | |
+  |   |   _inner: _Series |   |   DataFrame:   | |
+  |   +-------------------+   +----------------+ |
+  +----------------|-----------------|-----------+
+                   | PyO3 FFI       |
+                   v                v
+  +-----------------------------------------------+
+  |   rspandas._rust  (编译后的 .so/.pyd)        |   <-- 原生模块
+  +-----------------------------------------------+
+  |   PySeries / PyDataFrame (#[pyclass])        |
+  +-----------------------------------------------+
+  |   Series / DataFrame (Rust 原生结构体)       |   <-- Rust 核心
+  +-----------------------------------------------+
+  |   ColumnData (enum: Int/Float/Bool/String)   |
+  +-----------------------------------------------+
+
+分层职责：
+  - Python API 层：参数检查、类型推断、格式化打印 (__repr__)、默认值
+  - PyO3 边界：负责 Python 对象 <-> Rust 类型的转换
+  - Rust 核心：存储、计算、过滤、聚合的实际执行
+
+================================================================================
+三、目录结构
+================================================================================
+rspandas/
+├── pyproject.toml                    # maturin + Python 项目配置
+├── Cargo.toml                        # Rust crate 配置 (cdylib)
+├── plan.txt                          # 本文件
+├── README.md                         # 用户文档 (使用示例)
+├── .gitignore
+├── .python-version                   # 3.13
+├── src/                              # Rust 源码
+│   ├── lib.rs                        # PyO3 模块入口
+│   ├── error.rs                      # 统一错误类型 PyO3 转换
+│   └── core/
+│       ├── mod.rs                    # 模块声明
+│       ├── dtype.rs                  # ColumnData enum + 通用方法
+│       ├── series.rs                 # Series + PySeries 绑定
+│       └── dataframe.rs              # DataFrame + PyDataFrame 绑定
+├── python/
+│   └── rspandas/                     # Python 包
+│       ├── __init__.py               # 公开 API (Series, DataFrame)
+│       ├── series.py                 # Series 包装类
+│       ├── dataframe.py              # DataFrame 包装类
+│       ├── display.py                # 对齐 pandas 风格的 __repr__ 打印
+│       ├── dtypes.py                 # Python 端类型常量
+│       ├── errors.py                 # Python 端异常类型 (子类化)
+│       └── _rust.pyi                 # Rust 模块的类型提示桩文件
+├── main.py                           # 入口脚本 (保留)
+└── tests/
+    ├── __init__.py
+    ├── test_series.py                # Series 集成测试
+    ├── test_dataframe.py             # DataFrame 集成测试
+    └── test_aggregation.py           # 聚合/运算测试
+
+================================================================================
+四、Rust 核心数据结构
+================================================================================
+
+[src/core/dtype.rs] 类型系统
+--------------------------------------------------------------------------------
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum DType {
+        Int64,        // 对应 pandas "int64"
+        Float64,      // 对应 pandas "float64"
+        Bool,         // 对应 pandas "bool"
+        Object,       // 对应 pandas "object" (字符串)
+    }
+
+    impl DType {
+        pub fn as_str(&self) -> &'static str { ... }
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum ColumnData {
+        Int(Vec<Option<i64>>),       // 可空整数列
+        Float(Vec<Option<f64>>),     // 可空浮点列
+        Bool(Vec<Option<bool>>),     // 可空布尔列
+        String(Vec<Option<String>>), // 可空字符串列
+    }
+
+    impl ColumnData {
+        pub fn len(&self) -> usize
+        pub fn is_empty(&self) -> bool
+        pub fn dtype(&self) -> DType
+        pub fn dtype_name(&self) -> &'static str
+        pub fn slice(&self, start: usize, end: usize) -> ColumnData
+        pub fn head(&self, n: usize) -> ColumnData
+        pub fn tail(&self, n: usize) -> ColumnData
+        pub fn to_py_list<'py>(&self, py: Python<'py>) -> Bound<'py, PyList>
+        pub fn count_non_null(&self) -> usize
+        pub fn filter(&self, mask: &[bool]) -> ColumnData
+    }
+
+类型推断策略 (Python 端执行)：
+    1. 全是 bool         -> Bool
+    2. 全是 int          -> Int64
+    3. 含 float / 全 float -> Float64
+    4. 其它 (str/mixed)  -> Object (String)
+    5. 包含 None 时：None 不影响类型推导，按非 None 值推断
+    6. 用户显式传入 dtype 参数时跳过推断
+
+[src/core/series.rs] Series
+--------------------------------------------------------------------------------
+    pub struct Series {
+        pub name: Option<String>,
+        pub data: ColumnData,
+    }
+
+    impl Series {
+        // 构造
+        pub fn new_int(name: Option<String>, v: Vec<i64>) -> Self
+        pub fn new_float(name: Option<String>, v: Vec<f64>) -> Self
+        pub fn new_bool(name: Option<String>, v: Vec<bool>) -> Self
+        pub fn new_string(name: Option<String>, v: Vec<String>) -> Self
+        pub fn new_null(name: Option<String>, dtype: DType, len: usize) -> Self
+
+        // 属性
+        pub fn len(&self) -> usize
+        pub fn shape(&self) -> (usize,)
+        pub fn dtype(&self) -> DType
+        pub fn dtype_name(&self) -> &'static str
+        pub fn name(&self) -> Option<&str>
+        pub fn is_empty(&self) -> bool
+        pub fn nbytes(&self) -> usize   (可选, 估算内存占用)
+
+        // 元素访问
+        pub fn get(&self, i: usize) -> Option<...>  (返回 PyObject 或枚举值)
+        pub fn slice(&self, start: usize, end: usize) -> Series
+        pub fn head(&self, n: usize) -> Series
+        pub fn tail(&self, n: usize) -> Series
+
+        // 过滤 (返回 mask 对应的行)
+        pub fn filter(&self, mask: &[bool]) -> Series
+
+        // 比较 -> mask (为后续过滤准备)
+        pub fn eq_scalar<T: PartialEq>(&self, v: T) -> Vec<bool>
+        pub fn gt_scalar<T: PartialOrd>(&self, v: T) -> Vec<bool>
+        pub fn lt_scalar<T: PartialOrd>(&self, v: T) -> Vec<bool>
+        pub fn ge_scalar<T: PartialOrd>(&self, v: T) -> Vec<bool>
+        pub fn le_scalar<T: PartialOrd>(&self, v: T) -> Vec<bool>
+        pub fn ne_scalar<T: PartialEq>(&self, v: T) -> Vec<bool>
+
+        // 聚合 (返回 PyObject，None 表示不支持)
+        pub fn sum(&self)   -> Option<...>
+        pub fn mean(&self)  -> Option<f64>
+        pub fn min(&self)   -> Option<...>
+        pub fn max(&self)   -> Option<...>
+        pub fn count(&self) -> usize
+        pub fn std(&self)   -> Option<f64>      (数值列, 总体标准差)
+        pub fn var(&self)   -> Option<f64>      (数值列, 总体方差)
+        pub fn median(&self) -> Option<f64>    (数值列)
+        pub fn sum_bool(&self) -> usize         (Bool 列: True 数量)
+        pub fn any(&self) -> Option<bool>       (Bool 列)
+        pub fn all(&self) -> Option<bool>       (Bool 列)
+
+        // 转换
+        pub fn to_vec<'py>(&self, py: Python<'py>) -> Vec<PyObject>
+        pub fn to_string_vec(&self) -> Vec<String>  (用于显示, None -> "NaN")
+        pub fn cast(&self, target: DType) -> Option<Series>  (类型转换)
+    }
+
+    // PyO3 绑定
+    #[pyclass(name = "_Series", module = "rspandas._rust")]
+    pub struct PySeries { inner: Series }
+
+    #[pymethods]
+    impl PySeries {
+        #[new]
+        fn new(data: &Bound<'_, PyAny>, name: Option<String>) -> PyResult<Self>
+        // 所有内部方法暴露为 #[pyo3(name = "...")]
+    }
+
+[src/core/dataframe.rs] DataFrame（列存储）
+--------------------------------------------------------------------------------
+    pub struct DataFrame {
+        pub columns: Vec<String>,         // 列名（与 data 索引一一对应）
+        pub data: Vec<Series>,            // 每列一个 Series
+    }
+
+    impl DataFrame {
+        // 构造
+        pub fn new_empty() -> Self
+        pub fn from_series(columns: Vec<String>, data: Vec<Series>) -> PyResult<Self>
+        //   - 校验: 列名去重、列数 == data 长度、每列长度一致
+        pub fn from_dict(d: HashMap<String, Series>) -> Self
+
+        // 属性
+        pub fn nrows(&self) -> usize
+        pub fn ncols(&self) -> usize
+        pub fn shape(&self) -> (usize, usize)
+        pub fn column_names(&self) -> &[String]
+        pub fn dtypes(&self) -> Vec<(&str, &str)>   // [(列名, dtype名), ...]
+        pub fn get_column(&self, name: &str) -> Option<&Series>
+        pub fn get_column_mut(&mut self, name: &str) -> Option<&mut Series>
+
+        // 切片
+        pub fn head(&self, n: usize) -> DataFrame
+        pub fn tail(&self, n: usize) -> DataFrame
+        pub fn filter_rows(&self, mask: &[bool]) -> DataFrame
+
+        // 行访问 (返回 dict 风格)
+        pub fn get_row(&self, i: usize) -> Option<Vec<(String, PyObject)>>
+    }
+
+    #[pyclass(name = "_DataFrame", module = "rspandas._rust")]
+    pub struct PyDataFrame { inner: DataFrame }
+
+================================================================================
+五、Python 层 API 设计（对齐 pandas）
+================================================================================
+
+[python/rspandas/series.py]
+--------------------------------------------------------------------------------
+    class Series:
+        def __init__(self, data=None, name=None, dtype=None):
+            """
+            构造 Series
+            :param data: list / tuple / scalar / dict
+            :param name: str | None
+            :param dtype: 'int64' / 'float64' / 'bool' / 'object' | None
+            """
+            # 1. 类型推断 (或使用用户传入的 dtype)
+            # 2. 标准化数据为 list
+            # 3. 构造 self._inner = _rust._Series(data, name)
+
+        # --- 属性 ---
+        @property
+        def shape(self) -> Tuple[int]: ...
+        @property
+        def dtype(self) -> str: ...
+        @property
+        def name(self) -> Optional[str]: ...
+        @name.setter
+        def name(self, value): ...
+        @property
+        def values(self) -> list: ...
+        @property
+        def nbytes(self) -> int: ...
+        @property
+        def empty(self) -> bool: ...
+        @property
+        def size(self) -> int: ...
+
+        # --- dunder ---
+        def __len__(self) -> int: ...
+        def __repr__(self) -> str: ...           # 对齐 pandas 风格
+        def __str__(self) -> str: ...
+        def __getitem__(self, key): ...          # 支持 int / slice
+        def __eq__(self, other) -> "Series": ... # -> bool Series
+        def __ne__(self, other) -> "Series": ...
+        def __lt__(self, other) -> "Series": ...
+        def __gt__(self, other) -> "Series": ...
+        def __le__(self, other) -> "Series": ...
+        def __ge__(self, other) -> "Series": ...
+        def __bool__(self) -> bool: ...          # 单元素 Series 转 bool
+
+        # --- 子集 ---
+        def head(self, n: int = 5) -> "Series": ...
+        def tail(self, n: int = 5) -> "Series": ...
+        def astype(self, dtype: str) -> "Series": ...
+
+        # --- 聚合 ---
+        def sum(self) -> Any: ...
+        def mean(self) -> float: ...
+        def min(self) -> Any: ...
+        def max(self) -> Any: ...
+        def count(self) -> int: ...
+        def std(self) -> float: ...
+        def var(self) -> float: ...
+        def median(self) -> float: ...
+        def describe(self) -> "Series": ...       # 返回统计摘要 Series
+
+        # --- 缺失值 (v0.2) ---
+        def isnull(self) -> "Series": ...
+        def notnull(self) -> "Series": ...
+        def fillna(self, value) -> "Series": ...
+        def dropna(self) -> "Series": ...
+
+        # --- 唯一值 (v0.2) ---
+        def unique(self) -> "Series": ...
+        def nunique(self) -> int: ...
+        def value_counts(self) -> "Series": ...
+
+[python/rspandas/dataframe.py]
+--------------------------------------------------------------------------------
+    class DataFrame:
+        def __init__(self, data=None, columns=None, index=None, dtype=None):
+            """
+            :param data: dict[str, list] | list[dict] | list[list] | None
+            :param columns: list[str] | None   (用于 list 输入时指定列名)
+            :param index:   list | None        (MVP: 忽略，使用 RangeIndex)
+            :param dtype:   str | None         (整体类型提示，MVP: 忽略)
+            """
+            # 1. 解析输入
+            # 2. 按列构建 _rust._Series
+            # 3. 构造 self._inner = _rust._DataFrame(columns, series_list)
+
+        # --- 属性 ---
+        @property
+        def shape(self) -> Tuple[int, int]: ...
+        @property
+        def columns(self) -> pd.Index-like: ...  # 实际返回 list[str]，提供类似 API
+        @columns.setter
+        def columns(self, value): ...
+        @property
+        def dtypes(self) -> Dict[str, str]: ...
+        @property
+        def index(self) -> range: ...
+        @property
+        def values(self) -> list: ...            # 返回 list[dict]
+        @property
+        def empty(self) -> bool: ...
+        @property
+        def size(self) -> int: ...
+        @property
+        def T(self) -> "DataFrame": ...          # 转置 (v0.2)
+
+        # --- dunder ---
+        def __len__(self) -> int: ...            # 行数
+        def __repr__(self) -> str: ...           # 表格化打印
+        def __str__(self) -> str: ...
+        def __getitem__(self, key): ...          # df['col'] -> Series
+        def __setitem__(self, key, value): ...   # df['new_col'] = ...
+        def __contains__(self, col) -> bool: ... # 'col' in df
+
+        # --- 子集 ---
+        def head(self, n: int = 5) -> "DataFrame": ...
+        def tail(self, n: int = 5) -> "DataFrame": ...
+        def loc(self, ...): ...                  # v0.2
+        def iloc(self, ...): ...                 # v0.2
+
+        # --- 概览 ---
+        def info(self) -> None: ...              # 打印到 stdout
+        def describe(self) -> "DataFrame": ...    # 数值列统计
+
+        # --- 缺失值 (v0.2) ---
+        def dropna(self, axis=0) -> "DataFrame": ...
+        def fillna(self, value) -> "DataFrame": ...
+
+        # --- 合并 (v0.3) ---
+        def merge(self, other, on=None, how="inner") -> "DataFrame": ...
+        @staticmethod
+        def concat(frames: List["DataFrame"], axis=0) -> "DataFrame": ...
+
+[python/rspandas/__init__.py] 公开 API
+--------------------------------------------------------------------------------
+    from .series import Series
+    from .dataframe import DataFrame
+
+    __version__ = "0.1.0"
+    __all__ = ["Series", "DataFrame", "__version__"]
+
+[python/rspandas/errors.py] 异常层次
+--------------------------------------------------------------------------------
+    class RSPandasError(Exception): ...
+    class EmptyDataError(RSPandasError): ...
+    class TypeInferenceError(RSPandasError): ...
+    class ColumnNotFoundError(KeyError, RSPandasError): ...
+    class ShapeMismatchError(ValueError, RSPandasError): ...
+    class AxisError(ValueError, RSPandasError): ...
+
+================================================================================
+六、显示格式（对齐 pandas 风格）
+================================================================================
+
+Series 打印样例:
+    >>> Series([1, 2, 3], name='a')
+    0    1
+    1    2
+    2    3
+    Name: a, dtype: int64
+
+DataFrame 打印样例:
+    >>> DataFrame({'a': [1,2,3], 'b': ['x','y','z']})
+       a  b
+    0  1  x
+    1  2  y
+    2  3  z
+
+实现位置: python/rspandas/display.py
+- 截断：> 60 行时显示前 30 + ... + 后 30 (中间省略号)
+- 列截断：> 20 列时显示前 10 + ... + 后 10
+- 字符串截断：长字符串用 ... 截断
+- 缺失值：显示 NaN
+
+================================================================================
+七、开发步骤（按顺序执行）
+================================================================================
+Step 1: 搭建项目骨架
+        - pyproject.toml / Cargo.toml / 目录结构
+        - 输出: 可执行 cargo build
+
+Step 2: 实现 Rust 类型系统 ColumnData + DType
+        - src/core/dtype.rs
+        - 包含单元测试: cargo test
+        - 输出: 完整覆盖的 ColumnData 方法
+
+Step 3: 实现 Rust Series + PyO3 绑定
+        - src/core/series.rs
+        - 实现构造/属性/切片/聚合/比较
+        - 输出: 编译通过，Python 端可 import _Series
+
+Step 4: 实现 Rust DataFrame + PyO3 绑定
+        - src/core/dataframe.rs
+        - 校验列名/长度一致性
+        - 输出: 编译通过，Python 端可 import _DataFrame
+
+Step 5: 实现 Python 层包装类
+        - series.py / dataframe.py / display.py
+        - 类型推断、__repr__、基础属性
+        - 输出: rspandas.Series / DataFrame 可用
+
+Step 6: 实现核心方法
+        - head / tail / shape / info / describe / 索引 / 过滤
+        - 输出: 与 pandas 行为一致
+
+Step 7: 实现运算/聚合
+        - 算术运算符重载 (v0.3) / sum/mean/min/max/count
+        - 输出: Series.sum() 等返回正确值
+
+Step 8: 构建 + 端到端冒烟测试
+        - pip install -e .
+        - 手动验证 8 个验证用例
+
+Step 9: 编写 pytest 测试
+        - tests/test_series.py / tests/test_dataframe.py
+        - 测试覆盖率目标 > 80%
+        - 输出: pytest 全绿
+
+================================================================================
+八、Python API 与 pandas 对照表（MVP）
+================================================================================
+  API                         说明                             阶段        优先级
+  ------------------------------------------------------------------------------
+  Series(data, name)          构造单列                         Step 5      P0
+  DataFrame(data, columns)    从 dict/list 构造                Step 5      P0
+  Series.shape                (n,)                             Step 5      P0
+  Series.dtype                列类型名                         Step 5      P0
+  Series.values               原始列表                         Step 5      P0
+  Series.name (get/set)       列名                             Step 5      P0
+  Series.head(n)              前 n 行                          Step 6      P0
+  Series.tail(n)              后 n 行                          Step 6      P0
+  Series.sum/mean/...         聚合                             Step 7      P0
+  Series.__getitem__          int / slice                      Step 6      P0
+  Series.describe()           统计摘要                         Step 6      P1
+  DataFrame.shape             (rows, cols)                     Step 5      P0
+  DataFrame.columns           列名列表                         Step 5      P0
+  DataFrame.dtypes            列类型字典                       Step 5      P0
+  DataFrame['col']            取列 -> Series                   Step 6      P0
+  DataFrame.head(n)           前 n 行                          Step 6      P0
+  DataFrame.tail(n)           后 n 行                          Step 6      P0
+  DataFrame.info()            打印元信息                       Step 6      P1
+  DataFrame.describe()        数值列统计                       Step 6      P1
+  len(Series/DataFrame)       行数                             Step 5      P0
+
+================================================================================
+九、关键设计决策
+================================================================================
+1. 存储布局：列存储（DataFrame 持有 Vec<Series>，Series 持有 Vec<Option<T>>）
+   - 优点: 聚合/向量化运算/内存局部性均更优
+   - 代价: 行访问需要拼接，MVP 阶段非热路径
+
+2. 类型系统：仅支持 Int64 / Float64 / bool / object(string) 四种基础类型
+   - 简化实现，避免引入泛型复杂度和第三方库
+   - 未来扩展: datetime64 / category / 等
+
+3. 缺失值表达：Rust 端用 Vec<Option<T>> 统一表达，Python 端映射为 None
+   - 聚合时自动跳过 None (语义对齐 pandas)
+
+4. PyO3 边界策略：
+   - Python -> Rust: 尽量在 Python 端做类型标准化（统一为 list），降低 Rust 端处理 PyAny 的复杂度
+   - Rust -> Python: 简单值用 IntoPy/ToPyObject，复杂值用 PyDict/PyList
+
+5. 错误处理：
+   - Rust 端定义 RSPandasError enum，实现 From<...> for PyErr
+   - Python 端定义异常类层次 (errors.py)
+   - 关键路径都返回 Result，错误信息清晰 (包含列名、索引、类型)
+
+6. Python/Rust 职责划分：
+   - Rust: 存储、计算、过滤、聚合、比较 mask
+   - Python: 参数校验、类型推断、格式化打印、API 适配
+
+7. 性能策略：
+   - 构建: opt-level=3, lto=true, codegen-units=1
+   - Release 模式编译: maturin build --release
+   - 避免在热路径上反复跨 FFI 边界
+
+8. 测试策略：
+   - Rust 单元测试: cargo test (覆盖 core 模块)
+   - Python 集成测试: pytest (覆盖 API 行为)
+   - 端到端冒烟: main.py / examples/
+
+================================================================================
+十、异常处理约定
+================================================================================
+  错误场景                  Python 异常                Rust 错误类型
+  ------------------------------------------------------------------------------
+  空数据构造                 EmptyDataError             EmptyData
+  类型推断失败               TypeInferenceError         TypeInference
+  未知列名                   ColumnNotFoundError        ColumnNotFound
+  列长度不一致               ShapeMismatchError         ShapeMismatch
+  索引越界                   IndexError                 OutOfBounds
+  类型不匹配                 TypeError                  TypeMismatch
+  不支持的操作               NotImplementedError        NotSupported
+  通用兜底                   RSPandasError              Internal
+
+所有 Python 异常都继承自 RSPandasError，便于用户统一捕获。
+
+================================================================================
+十一、依赖与构建命令
+================================================================================
+依赖 (Cargo.toml):
+    [dependencies]
+    pyo3 = { version = "0.29", features = ["extension-module"] }
+    # MVP 阶段不引入额外 crate，保持依赖最小
+
+依赖 (pyproject.toml):
+    dependencies = []
+    optional-dependencies.dev = ["pytest"]
+
+常用命令:
+    # 开发模式编译并安装
+    pip install -e .
+
+    # 发布构建
+    maturin build --release
+
+    # 跑测试
+    pytest tests/
+    cargo test
+
+    # Lint
+    cargo clippy
+    cargo fmt
+
+================================================================================
+十二、验证用例（开发完成后需通过）
+================================================================================
+1. Series 构造: rspandas.Series([1, 2, 3], name='a') -> shape (3,), dtype int64
+2. Series 聚合: Series([1.0, 2.0, 3.0]).mean() -> 2.0
+3. DataFrame 构造: DataFrame({'a': [1,2,3], 'b': ['x','y','z']}) -> shape (3, 2)
+4. df['a'] -> Series
+5. df.head(2) -> 2 行 DataFrame
+6. df.tail(1) -> 1 行 DataFrame
+7. df.describe() -> 对 'a' 列做统计 ('b' 为字符串跳过)
+8. df.info() -> 打印列信息
+9. Series 缺失值: Series([1, None, 3]).sum() -> 4 (None 自动跳过)
+10. DataFrame 过滤: df[df['a'] > 1] -> 2 行 DataFrame
+
+================================================================================
+十三、风险与未来扩展
+================================================================================
+已知风险:
+  R1. PyO3 + 异步 GIL: MVP 阶段全部为同步操作，避免 GIL 释放复杂度
+  R2. 大量跨 FFI 调用: 在 Python 循环中调用 Series 方法可能比 pandas 慢
+     - 缓解: 鼓励用户使用向量化操作 (这是 rspandas 的优势)
+  R3. 内存占用: 每列独立 Vec<Option<T>> 可能比 Arrow 紧凑
+     - 缓解: 未来评估 Arrow 集成
+
+未来扩展路线图 (v0.2+):
+  - 缺失值处理 (isnull/fillna/dropna)
+  - loc/iloc 索引器
+  - 算术运算符重载
+  - CSV / Parquet IO
+  - 排序 (sort_values)
+  - 合并 (merge/concat)
+  - 分组聚合 (groupby)
+  - 与 Apache Arrow 集成，提升 I/O 性能
+  - 与 NumPy/Pandas 互转 (from_pandas / to_pandas)
+  - 多线程并行聚合 (rayon)
+
+================================================================================
+十四、开发守则
+================================================================================
+1. 每次新增 API 都要有对应测试 (TDD)
+2. Rust 端公开函数必须返回 Result 或 Option
+3. 错误信息要可定位 (包含列名/索引/类型/期望值/实际值)
+4. Python 端不引入额外运行时依赖 (保持轻量)
+5. 任何破坏 API 的改动需要更新本 plan.txt
+6. 提交前跑: cargo test && cargo clippy && pytest
+================================================================================

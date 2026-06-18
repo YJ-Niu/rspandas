@@ -1,0 +1,296 @@
+//! DataFrame: 列存储的多列数据结构 + PyO3 绑定
+
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
+
+use super::series::{PySeries, Series};
+use super::dtype::DType;
+
+#[derive(Debug, Clone)]
+pub struct DataFrame {
+    pub columns: Vec<String>,
+    pub data: Vec<Series>,
+}
+
+impl DataFrame {
+    pub fn new_empty() -> Self {
+        Self { columns: Vec::new(), data: Vec::new() }
+    }
+
+    pub fn from_series(columns: Vec<String>, data: Vec<Series>) -> PyResult<Self> {
+        if columns.len() != data.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "columns len {} != data len {}", columns.len(), data.len()
+            )));
+        }
+        // 校验列名去重
+        let mut seen = std::collections::HashSet::new();
+        for c in &columns {
+            if !seen.insert(c.clone()) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "duplicate column name: {}", c
+                )));
+            }
+        }
+        // 校验每列长度一致
+        if let Some(first) = data.first() {
+            let n = first.len();
+            for (i, s) in data.iter().enumerate() {
+                if s.len() != n {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "column '{}' length {} != row length {}",
+                        columns[i], s.len(), n
+                    )));
+                }
+            }
+        }
+        Ok(Self { columns, data })
+    }
+
+    pub fn nrows(&self) -> usize {
+        self.data.first().map(|s| s.len()).unwrap_or(0)
+    }
+    pub fn ncols(&self) -> usize { self.columns.len() }
+    pub fn shape(&self) -> (usize, usize) { (self.nrows(), self.ncols()) }
+    pub fn column_names(&self) -> &[String] { &self.columns }
+
+    pub fn dtypes(&self) -> Vec<(&str, &'static str)> {
+        self.data.iter().zip(self.columns.iter())
+            .map(|(s, c)| (c.as_str(), s.dtype_name()))
+            .collect()
+    }
+
+    pub fn get_column(&self, name: &str) -> Option<&Series> {
+        self.columns.iter().position(|c| c == name)
+            .and_then(|i| self.data.get(i))
+    }
+
+    pub fn get_column_index(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|c| c == name)
+    }
+
+    pub fn get_column_at(&self, idx: usize) -> Option<&Series> {
+        self.data.get(idx)
+    }
+
+    pub fn head(&self, n: usize) -> DataFrame {
+        let n_data: Vec<Series> = self.data.iter().map(|s| s.head(n)).collect();
+        DataFrame { columns: self.columns.clone(), data: n_data }
+    }
+
+    pub fn tail(&self, n: usize) -> DataFrame {
+        let n_data: Vec<Series> = self.data.iter().map(|s| s.tail(n)).collect();
+        DataFrame { columns: self.columns.clone(), data: n_data }
+    }
+
+    pub fn filter_rows(&self, mask: &[bool]) -> PyResult<DataFrame> {
+        if mask.len() != self.nrows() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "mask length {} != nrows {}", mask.len(), self.nrows()
+            )));
+        }
+        let n_data: Vec<Series> = self.data.iter().map(|s| s.filter(mask)).collect();
+        Ok(DataFrame { columns: self.columns.clone(), data: n_data })
+    }
+}
+
+// =====================================================================
+// PyO3 绑定
+// =====================================================================
+
+#[pyclass(name = "_DataFrame", module = "rspandas._rust")]
+#[derive(Debug, Clone)]
+pub struct PyDataFrame {
+    pub inner: DataFrame,
+}
+
+#[pymethods]
+impl PyDataFrame {
+    /// 构造: 接受 columns (list[str]) 和 series (list[_Series])
+    #[new]
+    fn new(columns: Vec<String>, series: Vec<PySeries>) -> PyResult<Self> {
+        let data: Vec<Series> = series.into_iter().map(|s| s.inner).collect();
+        let inner = DataFrame::from_series(columns, data)?;
+        Ok(PyDataFrame { inner })
+    }
+
+    // ---------- 属性 ----------
+
+    #[getter]
+    fn nrows(&self) -> usize { self.inner.nrows() }
+    #[getter]
+    fn ncols(&self) -> usize { self.inner.ncols() }
+    #[getter]
+    fn shape(&self) -> (usize, usize) { self.inner.shape() }
+    #[getter]
+    fn size(&self) -> usize {
+        self.inner.nrows() * self.inner.ncols()
+    }
+    #[getter]
+    fn empty(&self) -> bool { self.inner.nrows() == 0 }
+
+    #[getter]
+    fn columns<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        PyList::new(py, self.inner.columns.iter())
+    }
+
+    #[getter]
+    fn dtypes<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let d = PyDict::new_bound(py);
+        for (name, dt) in self.inner.dtypes() {
+            d.set_item(name, dt).unwrap();
+        }
+        d
+    }
+
+    // ---------- 子集 ----------
+
+    /// 按列名取列 -> _Series
+    fn get_column(&self, name: &str) -> PyResult<PySeries> {
+        match self.inner.get_column(name) {
+            Some(s) => Ok(PySeries { inner: s.clone() }),
+            None => Err(pyo3::exceptions::PyKeyError::new_err(format!(
+                "column not found: {}", name
+            ))),
+        }
+    }
+
+    /// 按索引取列 -> _Series
+    fn get_column_at(&self, idx: usize) -> PyResult<PySeries> {
+        match self.inner.get_column_at(idx) {
+            Some(s) => Ok(PySeries { inner: s.clone() }),
+            None => Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "column index out of range: {}", idx
+            ))),
+        }
+    }
+
+    /// 列名 -> 索引
+    fn column_index(&self, name: &str) -> Option<usize> {
+        self.inner.get_column_index(name)
+    }
+
+    fn head(&self, n: usize) -> Self {
+        PyDataFrame { inner: self.inner.head(n) }
+    }
+    fn tail(&self, n: usize) -> Self {
+        PyDataFrame { inner: self.inner.tail(n) }
+    }
+    fn filter_rows(&self, mask: Vec<bool>) -> PyResult<Self> {
+        Ok(PyDataFrame { inner: self.inner.filter_rows(&mask)? })
+    }
+
+    // ---------- 显示辅助 ----------
+
+    /// 逐行构造 dict 列表 (用于 Python 端显示)
+    fn to_rows<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        use pyo3::IntoPyObject;
+        use pyo3::types::{PyAnyMethods, PyBoolMethods};
+        let rows = PyList::empty(py);
+        let nrows = self.inner.nrows();
+        for i in 0..nrows {
+            let row = PyDict::new(py);
+            for (col_name, series) in self.inner.columns.iter().zip(self.inner.data.iter()) {
+                let val: PyObject = match &series.data {
+                    super::dtype::ColumnData::Int(v) => match v.get(i) {
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().unbind(),
+                        _ => py.None(),
+                    },
+                    super::dtype::ColumnData::Float(v) => match v.get(i) {
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().unbind(),
+                        _ => py.None(),
+                    },
+                    super::dtype::ColumnData::Bool(v) => match v.get(i) {
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().unbind(),
+                        _ => py.None(),
+                    },
+                    super::dtype::ColumnData::String(v) => match v.get(i) {
+                        Some(Some(s)) => s.clone().into_pyobject(py).unwrap().unbind(),
+                        _ => py.None(),
+                    },
+                };
+                row.set_item(col_name, val).unwrap();
+            }
+            rows.append(row).unwrap();
+        }
+        rows
+    }
+
+    /// 每列的 string 列表 (用于显示)
+    fn columns_to_string<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let d = PyDict::new(py);
+        for (col_name, series) in self.inner.columns.iter().zip(self.inner.data.iter()) {
+            let svec = series.to_string_vec();
+            let pylist = PyList::new(py, svec.iter().map(|s| s.as_str()));
+            d.set_item(col_name, pylist).unwrap();
+        }
+        d
+    }
+
+    /// 各列 dtype 的 dict
+    fn dtypes_dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        self.dtypes(py)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dataframe_basic() {
+        let s1 = Series::new_int(Some("a".to_string()), vec![Some(1), Some(2), Some(3)]);
+        let s2 = Series::new_string(Some("b".to_string()), vec![Some("x".to_string()), Some("y".to_string()), Some("z".to_string())]);
+        let df = DataFrame::from_series(
+            vec!["a".to_string(), "b".to_string()],
+            vec![s1, s2],
+        ).unwrap();
+        assert_eq!(df.shape(), (3, 2));
+        assert_eq!(df.nrows(), 3);
+        assert_eq!(df.ncols(), 2);
+    }
+
+    #[test]
+    fn test_dataframe_head_tail() {
+        let s1 = Series::new_int(None, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
+        let df = DataFrame::from_series(vec!["a".to_string()], vec![s1]).unwrap();
+        assert_eq!(df.head(2).nrows(), 2);
+        assert_eq!(df.tail(2).nrows(), 2);
+    }
+
+    #[test]
+    fn test_dataframe_filter() {
+        let s1 = Series::new_int(None, vec![Some(1), Some(2), Some(3), Some(4)]);
+        let df = DataFrame::from_series(vec!["a".to_string()], vec![s1]).unwrap();
+        let filtered = df.filter_rows(&[true, false, true, false]).unwrap();
+        assert_eq!(filtered.nrows(), 2);
+    }
+
+    #[test]
+    fn test_dataframe_duplicate_col() {
+        let s1 = Series::new_int(None, vec![Some(1)]);
+        let s2 = Series::new_int(None, vec![Some(2)]);
+        let r = DataFrame::from_series(
+            vec!["a".to_string(), "a".to_string()],
+            vec![s1, s2],
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dataframe_shape_mismatch() {
+        let s1 = Series::new_int(None, vec![Some(1), Some(2)]);
+        let s2 = Series::new_int(None, vec![Some(3)]);
+        let r = DataFrame::from_series(
+            vec!["a".to_string(), "b".to_string()],
+            vec![s1, s2],
+        );
+        assert!(r.is_err());
+    }
+
+    // 防止 DType 未使用警告
+    #[test]
+    fn test_dtype_compile() {
+        let _ = DType::Int64;
+    }
+}
