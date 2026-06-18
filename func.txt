@@ -1,0 +1,153 @@
+🐍 一、pd顶层函数
+
+IO（现行）
+
+read_csv/ read_excel/ read_parquet/ read_json/ read_sql/ read_html/ read_clipboard/ read_feather/ read_orc/ read_spss/ read_stata/ read_sas/ read_xml/ read_fwf/ read_pickle
+
+to_pickle/read_iceberg
+
+构造
+
+DataFrame/ Series/ Index/ MultiIndex/ RangeIndex/ Categorical/ CategoricalIndex/ Interval/ IntervalIndex/ Period/ PeriodIndex/ Timedelta/ TimedeltaIndex/ Timestamp/ DatetimeIndex/ TimeDelta/ DateOffset
+
+工具/判断
+
+concat/ merge/ get_dummies/ cut/ qcut/ melt/ pivot/ pivot_table/ crosstab/ wide_to_long/ factorize/ unique/ value_counts
+
+isin/ notna/ isna/ isnull/ notnull
+
+api.types.is_numeric_dtype/ is_string_dtype/ is_categorical_dtype/ is_datetime64_any_dtype/ is_timedelta64_dtype/ is_bool_dtype/ is_integer/ is_float/ is_dict_like/ is_list_like/ pandas.api.extensions.register_extension_dtype
+
+时间
+
+to_datetime/ to_timedelta/ to_numeric/ date_range/ timedelta_range/ period_range/ bdate_range/ infer_freq
+
+offsets.*（Day / BusinessDay / MonthEnd / MonthStart / YearEnd / QuarterEnd / Week / Hour …）
+
+选项
+
+pd.set_option/ pd.get_option/ pd.reset_option/ pd.describe_option
+
+pd.options.mode.copy_on_write（3.0 默认 True，无需再设）
+
+🆕 3.0 新增顶层：pd.col()（延迟列引用，用于 assign/ loc里替代 lambda）
+
+📊 二、DataFrame（现行 public 方法/属性，剔除 removed 后）
+
+构造/查看：__init__/ from_dict/ from_records/ from_spmatrix/ info/ head/ tail/ describe/ memory_usage/ attrs
+
+形状/元数据：shape/ axes/ ndim/ size/ values/ dtypes/ columns/ index/ style/ flags
+
+选择/索引：
+
+__getitem__/ __setitem__/ loc/ iloc/ at/ iat/ get/ lookup
+
+filter/ select_dtypes/ set_index/ reset_index/ reindex/ reindex_like/ rename/ rename_axis/ swaplevel/ set_axis/ take/ xs/ get_indexer/ get_loc
+
+删/改/排：
+
+drop/ drop_duplicates/ dropna/ droplevel
+
+sort_values/ sort_index/ sort_columns
+
+transpose/ T/ swapaxes
+
+astype/ convert_dtypes/ infer_objects（⚠️ copy kwd deprecated）
+
+replace/ fillna/ ffill/ bfill/ interpolate/ where/ mask/ case_when
+
+clip
+
+变形/组合：
+
+melt/ pivot/ pivot_table/ stack/ unstack/ explode/ squeeze/ expand_dims
+
+join/ merge/ append
+
+assign/ eval/ query/ pipe/ transform/ apply/ applymap
+
+分组/窗口：groupby/ rolling/ expanding/ ewm/ resample
+
+统计聚合（每列逐算，也可 axis=0/1 但 axis 在 3.0 很多地方被削）：
+
+sum/ mean/ median/ min/ max/ std/ var/ sem/ prod/ all/ any/ count/ abs/ cumsum/ cumprod/ cummax/ cummin/ cumcount/ diff/ pct_change/ rank/ quantile/ mad/ skew/ kurt/ mode/ nunique/ value_counts/ idxmax/ idxmin/ expanding/ rolling/ ewm
+
+IO 出站：to_csv/ to_excel/ to_parquet/ to_json/ to_sql/ to_html/ to_markdown/ to_clipboard/ to_feather/ to_orc/ to_xml/ to_latex/ to_string/ to_dict/ to_records/ to_numpy/ to_period/ to_timestamp/ to_datetime
+
+🆕 to_iceberg
+
+时序专属：shift/ tshift/ asfreq/ resample/ tz_localize/ tz_convert/ truncate/ first/ last
+
+画图：plot/ hist/ boxplot
+
+其他：compare/ equals/ copy/ between_time/ at_time/ first_valid_index/ last_valid_index/ isna/ notna/ isnull/ notnull/ empty/ pop/ insert/ duplicate→ 应是 duplicated
+
+📈 三、Series（现行）
+
+大部分与 DataFrame 同名方法语义对齐，单列特有：
+
+__init__/ from_array/ info？Series 无 info → 去掉
+
+values/ dtype/ name/ index/ shape/ ndim/ size/ T
+
+iloc/ loc/ at/ iat/ get
+
+cat/ str/ dt/ sparse/ plot/ list→ 无，忽略
+
+append / replace/ fillna/ ffill/ bfill/ interpolate/ where/ mask/ case_when
+
+clip/ astype/ convert_dtypes
+
+map/ apply/ agg/ aggregate/ transform/ pipe
+
+groupby/ rolling/ expanding/ ewm/ resample
+
+value_counts/ unique/ nunique/ factorize/ between/ isin/ isin
+
+duplicated/ drop_duplicates/ dropna/ sort_values/ sort_index
+
+cumsum/ cumprod/ cummax/ cummin/ diff/ pct_change/ shift/ tshift
+
+idxmax/ idxmin/ argmax/ argmin/ argsort/ reorder_levels→ Series 无
+
+explode/ repeat
+
+to_list/ tolist/ to_numpy/ to_dict/ to_frame/ to_xarray/ to_period/ to_timestamp
+
+view/ ravel/ int/ float
+
+🗂️ 四、Index / MultiIndex / RangeIndex
+
+Index现行：astype/ map/ where/ mask/ rename/ set_names/ get_level_values（MI） / swaplevel/ reorder_levels/ droplevel/ append/ difference/ intersection/ union/ symmetric_difference/ is_/ isin/ duplicated/ fillna/ dropna/ sort_values/ sortlevel/ unique/ argmin/ argmax/ min/ max/ any/ all/ to_list/ to_numpy/ to_frame/ to_series
+
+format（→ astype(str)）
+
+MultiIndex加：from_arrays/ from_tuples/ from_product/ get_loc/ get_loc_level/ get_locs/ set_codes/ set_levels
+
+🧮 五、GroupBy 体系（DataFrameGroupBy/ SeriesGroupBy）
+
+agg/ aggregate/ apply/ transform/ pipe
+
+size/ count/ sum/ mean/ median/ std/ var/ sem/ min/ max/ prod/ first/ last/ nth/ n/ ngroup/ cumcount/ rank/ quantile/ pct_change/ resample/ rolling/ expanding/ ewm/ head/ tail/ hist/ boxes→ 无
+
+corr/ cov/ corrwith
+
+groups/ indices/ obj/ grouper
+
+__iter_
+
+🪟 六、Window（rolling/ expanding/ ewm返回对象的方法）
+
+mean/ std/ var/ sum/ min/ max/ count/ median/ quantile/ apply/ agg/ aggregate/ cov/ corr/ skew/ kurt/ sem
+
+rolling特有：center/ win_type/ closed
+
+expanding特有：min_periods
+
+ewm特有：alpha/ span/ halflife/ com/ mean/ std/ var/ corr/ cov
+
+🔤 七、Accessor 三件套（现行）
+
+.str（Series.str 下）:lower/ upper/ title/ capitalize/ swapcase/ casefold/ strip/ lstrip/ rstrip/ pad/ center/ contains/ startswith/ endswith/ find/ rfind/ findall/ match/ fullmatch/ replace/ extract/ extractall/ split/ rsplit/ partition/ rpartition/ cat/ join/ len/ character_count/ unicode_normalize/ normalize/ translate/ wrap/ slice/ slice_replace/ get/ get_dummies/ index/ rindex/ isalnum/ isalpha/ isdigit/ isspace/ islower/ isupper/ istitle/ isnumeric/ isdecimal/ isidentifier/ count/ decode/ encode/ zfill
+
+.dt（Series.dt 下，时间专属）:year/ month/ day/ hour/ minute/ second/ microsecond/ nanosecond/ dayofweek/ day_of_week/ day_of_year/ dayofyear/ quarter/ is_month_start/ is_month_end/ is_year_start/ is_year_end/ is_leap_year/ days_in_month/ date/ time/ tz/ fold/ to_pydatetime/ to_timestamp/ to_period/ strftime/ floor/ ceil/ round/ day_name/ month_name/ total_seconds/ seconds/ microseconds/ na

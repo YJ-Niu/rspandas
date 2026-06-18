@@ -16,9 +16,16 @@ v0.1.0 (MVP)        - Series / DataFrame 基础构造、属性、head/tail、聚
 v0.2.0              - CSV IO、loc/iloc 索引、过滤、缺失值处理
 v0.3.0              - 算术运算符重载、缺失值填充、astype、唯一值
 v0.4.0              - sort_values、merge、concat、groupby (极简版)
-v1.0.0              - 性能优化、API 稳定、与 pandas 95% 行为兼容
+v0.5.0              - apply、字符串访问器、replace、pandas 互转
+v1.0.0              - 时间序列、重塑、窗口函数、性能优化、API 稳定
+v1.1.0              - 类型系统扩展（Categorical、Datetime、Timedelta、Period）
+v1.2.0              - IO 扩展（Excel、Parquet、JSON、SQL、Pickle）
+v1.3.0              - 高级索引（MultiIndex、IntervalIndex）
+v1.4.0              - 统计方法扩展（rolling/expanding/ewm、rank、quantile）
+v1.5.0              - NumPy/Arrow 互操作、性能基准
+v2.0.0              - 完整 pandas 兼容（95%+ API 覆盖）
 
-当前迭代目标：v0.1.0 MVP
+当前迭代目标：v1.0.0
 
 ================================================================================
 一、技术栈
@@ -26,8 +33,8 @@ v1.0.0              - 性能优化、API 稳定、与 pandas 95% 行为兼容
   组件                 版本/选型              说明
   ----------------------------------------------------------------------------
   Python 解释器        >= 3.10                (maturin 最低支持)
-  Rust 工具链          stable                 (edition 2021)
-  Python<->Rust 桥     PyO3 0.22              (稳定 API，生态成熟)
+  Rust 工具链          stable                 (edition 2024)
+  Python<->Rust 桥     PyO3 0.29              (稳定 API，生态成熟)
   构建/打包工具        maturin 1.7+           (PEP 517 标准 build backend)
   Rust crate 类型      cdylib + rlib          (cdylib 给 Python，rlib 给单元测试)
   类型存储             自定义 ColumnData      (避免引入 ndarray 依赖，保持简洁)
@@ -81,6 +88,7 @@ rspandas/
 ├── pyproject.toml                    # maturin + Python 项目配置
 ├── Cargo.toml                        # Rust crate 配置 (cdylib)
 ├── plan.txt                          # 本文件
+├── PROGRESS.md                       # 开发进度报告
 ├── README.md                         # 用户文档 (使用示例)
 ├── .gitignore
 ├── .python-version                   # 3.13
@@ -91,22 +99,33 @@ rspandas/
 │       ├── mod.rs                    # 模块声明
 │       ├── dtype.rs                  # ColumnData enum + 通用方法
 │       ├── series.rs                 # Series + PySeries 绑定
-│       └── dataframe.rs              # DataFrame + PyDataFrame 绑定
+│       ├── dataframe.rs              # DataFrame + PyDataFrame 绑定
+│       └── csv_io.rs                 # CSV 读写
 ├── python/
 │   └── rspandas/                     # Python 包
-│       ├── __init__.py               # 公开 API (Series, DataFrame)
+│       ├── __init__.py               # 公开 API
 │       ├── series.py                 # Series 包装类
 │       ├── dataframe.py              # DataFrame 包装类
+│       ├── datetime.py               # 时间序列处理
 │       ├── display.py                # 对齐 pandas 风格的 __repr__ 打印
 │       ├── dtypes.py                 # Python 端类型常量
-│       ├── errors.py                 # Python 端异常类型 (子类化)
+│       ├── errors.py                 # Python 端异常类型
+│       ├── groupby.py                # GroupBy 实现
+│       ├── window.py                 # 窗口函数实现
+│       ├── reshape.py                # 重塑操作实现
 │       └── _rust.pyi                 # Rust 模块的类型提示桩文件
-├── main.py                           # 入口脚本 (保留)
 └── tests/
     ├── __init__.py
     ├── test_series.py                # Series 集成测试
     ├── test_dataframe.py             # DataFrame 集成测试
-    └── test_aggregation.py           # 聚合/运算测试
+    ├── test_aggregation.py           # 聚合/运算测试
+    ├── test_csv.py                   # CSV IO 测试
+    ├── test_v04.py                   # v0.4.0 测试
+    ├── test_v05.py                   # v0.5.0 测试
+    ├── test_datetime.py              # 时间序列测试
+    ├── test_reshape.py               # 重塑测试
+    ├── test_window.py                # 窗口函数测试
+    └── test_interop.py               # 互操作测试
 
 ================================================================================
 四、Rust 核心数据结构
@@ -265,19 +284,26 @@ rspandas/
 五、Python 层 API 设计（对齐 pandas）
 ================================================================================
 
+[python/rspandas/__init__.py] 公开 API
+--------------------------------------------------------------------------------
+    from .series import Series
+    from .dataframe import DataFrame
+    from .datetime import to_datetime, date_range
+
+    __version__ = "1.0.0"
+    __all__ = ["Series", "DataFrame", "to_datetime", "date_range", "__version__"]
+
 [python/rspandas/series.py]
 --------------------------------------------------------------------------------
     class Series:
-        def __init__(self, data=None, name=None, dtype=None):
+        def __init__(self, data=None, name=None, dtype=None, index=None):
             """
             构造 Series
             :param data: list / tuple / scalar / dict
             :param name: str | None
             :param dtype: 'int64' / 'float64' / 'bool' / 'object' | None
+            :param index: list | None
             """
-            # 1. 类型推断 (或使用用户传入的 dtype)
-            # 2. 标准化数据为 list
-            # 3. 构造 self._inner = _rust._Series(data, name)
 
         # --- 属性 ---
         @property
@@ -296,24 +322,27 @@ rspandas/
         def empty(self) -> bool: ...
         @property
         def size(self) -> int: ...
+        @property
+        def index(self) -> Index: ...
 
         # --- dunder ---
         def __len__(self) -> int: ...
-        def __repr__(self) -> str: ...           # 对齐 pandas 风格
+        def __repr__(self) -> str: ...
         def __str__(self) -> str: ...
-        def __getitem__(self, key): ...          # 支持 int / slice
-        def __eq__(self, other) -> "Series": ... # -> bool Series
+        def __getitem__(self, key): ...
+        def __eq__(self, other) -> "Series": ...
         def __ne__(self, other) -> "Series": ...
         def __lt__(self, other) -> "Series": ...
         def __gt__(self, other) -> "Series": ...
         def __le__(self, other) -> "Series": ...
         def __ge__(self, other) -> "Series": ...
-        def __bool__(self) -> bool: ...          # 单元素 Series 转 bool
+        def __bool__(self) -> bool: ...
 
         # --- 子集 ---
         def head(self, n: int = 5) -> "Series": ...
         def tail(self, n: int = 5) -> "Series": ...
         def astype(self, dtype: str) -> "Series": ...
+        def iloc(self, key) -> "Series": ...
 
         # --- 聚合 ---
         def sum(self) -> Any: ...
@@ -324,18 +353,71 @@ rspandas/
         def std(self) -> float: ...
         def var(self) -> float: ...
         def median(self) -> float: ...
-        def describe(self) -> "Series": ...       # 返回统计摘要 Series
+        def describe(self) -> "Series": ...
 
-        # --- 缺失值 (v0.2) ---
+        # --- 缺失值 ---
         def isnull(self) -> "Series": ...
         def notnull(self) -> "Series": ...
         def fillna(self, value) -> "Series": ...
         def dropna(self) -> "Series": ...
 
-        # --- 唯一值 (v0.2) ---
+        # --- 唯一值 ---
         def unique(self) -> "Series": ...
         def nunique(self) -> int: ...
         def value_counts(self) -> "Series": ...
+
+        # --- 窗口函数 ---
+        def rolling(self, window, min_periods=None) -> Rolling: ...
+        def expanding(self, min_periods=1) -> Expanding: ...
+        def ewm(self, **kwargs) -> EWM: ...
+        def resample(self, freq) -> Resampler: ...
+
+        # --- 字符串访问器 ---
+        @property
+        def str(self) -> StringAccessor: ...
+
+        # --- 日期时间访问器 ---
+        @property
+        def dt(self) -> DatetimeAccessor: ...
+
+        # --- 分类访问器 ---
+        @property
+        def cat(self) -> CategoricalAccessor: ...
+
+        # --- 其他 ---
+        def apply(self, func) -> "Series": ...
+        def map(self, arg) -> "Series": ...
+        def replace(self, to_replace, value) -> "Series": ...
+        def where(self, cond, other) -> "Series": ...
+        def mask(self, cond, other) -> "Series": ...
+        def duplicated(self, keep='first') -> "Series": ...
+        def drop_duplicates(self, keep='first', inplace=False) -> "Series": ...
+        def isin(self, values) -> "Series": ...
+        def between(self, left, right, inclusive=True) -> "Series": ...
+        def sort_values(self, ascending=True, inplace=False) -> "Series": ...
+        def sort_index(self, ascending=True) -> "Series": ...
+        def shift(self, periods=1) -> "Series": ...
+        def diff(self, periods=1) -> "Series": ...
+        def pct_change(self, periods=1) -> "Series": ...
+        def cumsum(self) -> "Series": ...
+        def cumprod(self) -> "Series": ...
+        def cummax(self) -> "Series": ...
+        def cummin(self) -> "Series": ...
+        def rank(self) -> "Series": ...
+        def quantile(self, q=0.5) -> float: ...
+        def argmax(self) -> int: ...
+        def argmin(self) -> int: ...
+        def idxmax(self) -> Any: ...
+        def idxmin(self) -> Any: ...
+        def explode(self) -> "Series": ...
+        def repeat(self, repeats) -> "Series": ...
+        def to_list(self) -> list: ...
+        def to_numpy(self) -> np.ndarray: ...
+        def to_dict(self) -> dict: ...
+        def to_frame(self, name=None) -> "DataFrame": ...
+        def to_pandas(self) -> pd.Series: ...
+        @staticmethod
+        def from_pandas(ps) -> "Series": ...
 
 [python/rspandas/dataframe.py]
 --------------------------------------------------------------------------------
@@ -343,19 +425,16 @@ rspandas/
         def __init__(self, data=None, columns=None, index=None, dtype=None):
             """
             :param data: dict[str, list] | list[dict] | list[list] | None
-            :param columns: list[str] | None   (用于 list 输入时指定列名)
-            :param index:   list | None        (MVP: 忽略，使用 RangeIndex)
-            :param dtype:   str | None         (整体类型提示，MVP: 忽略)
+            :param columns: list[str] | None
+            :param index:   list | None
+            :param dtype:   str | None
             """
-            # 1. 解析输入
-            # 2. 按列构建 _rust._Series
-            # 3. 构造 self._inner = _rust._DataFrame(columns, series_list)
 
         # --- 属性 ---
         @property
         def shape(self) -> Tuple[int, int]: ...
         @property
-        def columns(self) -> pd.Index-like: ...  # 实际返回 list[str]，提供类似 API
+        def columns(self) -> pd.Index-like: ...
         @columns.setter
         def columns(self, value): ...
         @property
@@ -363,48 +442,183 @@ rspandas/
         @property
         def index(self) -> range: ...
         @property
-        def values(self) -> list: ...            # 返回 list[dict]
+        def values(self) -> list: ...
         @property
         def empty(self) -> bool: ...
         @property
         def size(self) -> int: ...
         @property
-        def T(self) -> "DataFrame": ...          # 转置 (v0.2)
+        def T(self) -> "DataFrame": ...
 
         # --- dunder ---
-        def __len__(self) -> int: ...            # 行数
-        def __repr__(self) -> str: ...           # 表格化打印
+        def __len__(self) -> int: ...
+        def __repr__(self) -> str: ...
         def __str__(self) -> str: ...
-        def __getitem__(self, key): ...          # df['col'] -> Series
-        def __setitem__(self, key, value): ...   # df['new_col'] = ...
-        def __contains__(self, col) -> bool: ... # 'col' in df
+        def __getitem__(self, key): ...
+        def __setitem__(self, key, value): ...
+        def __contains__(self, col) -> bool: ...
 
         # --- 子集 ---
         def head(self, n: int = 5) -> "DataFrame": ...
         def tail(self, n: int = 5) -> "DataFrame": ...
-        def loc(self, ...): ...                  # v0.2
-        def iloc(self, ...): ...                 # v0.2
+        def loc(self, ...): ...
+        def iloc(self, ...): ...
 
         # --- 概览 ---
-        def info(self) -> None: ...              # 打印到 stdout
-        def describe(self) -> "DataFrame": ...    # 数值列统计
+        def info(self) -> None: ...
+        def describe(self) -> "DataFrame": ...
+        def memory_usage(self) -> "Series": ...
 
-        # --- 缺失值 (v0.2) ---
+        # --- 缺失值 ---
         def dropna(self, axis=0) -> "DataFrame": ...
         def fillna(self, value) -> "DataFrame": ...
 
-        # --- 合并 (v0.3) ---
+        # --- 合并 ---
         def merge(self, other, on=None, how="inner") -> "DataFrame": ...
         @staticmethod
         def concat(frames: List["DataFrame"], axis=0) -> "DataFrame": ...
 
-[python/rspandas/__init__.py] 公开 API
---------------------------------------------------------------------------------
-    from .series import Series
-    from .dataframe import DataFrame
+        # --- 重塑 ---
+        def melt(self, id_vars=None, value_vars=None, var_name="variable", value_name="value") -> "DataFrame": ...
+        def pivot(self, index=None, columns=None, values=None) -> "DataFrame": ...
+        def pivot_table(self, values=None, index=None, columns=None, aggfunc='mean') -> "DataFrame": ...
+        def stack(self) -> "Series": ...
+        def unstack(self) -> "DataFrame": ...
+        def explode(self, column) -> "DataFrame": ...
 
-    __version__ = "0.1.0"
-    __all__ = ["Series", "DataFrame", "__version__"]
+        # --- 分组 ---
+        def groupby(self, by) -> GroupBy: ...
+
+        # --- 窗口 ---
+        def rolling(self, window, min_periods=None) -> Rolling: ...
+        def expanding(self, min_periods=1) -> Expanding: ...
+        def ewm(self, **kwargs) -> EWM: ...
+        def resample(self, freq) -> Resampler: ...
+
+        # --- 应用 ---
+        def apply(self, func, axis=0) -> "Series": ...
+        def applymap(self, func) -> "DataFrame": ...
+        def transform(self, func) -> "DataFrame": ...
+        def assign(self, **kwargs) -> "DataFrame": ...
+        def eval(self, expr) -> Any: ...
+        def query(self, expr) -> "DataFrame": ...
+        def pipe(self, func, *args, **kwargs) -> Any: ...
+
+        # --- IO ---
+        @staticmethod
+        def read_csv(path) -> "DataFrame": ...
+        def to_csv(self, path=None) -> str: ...
+
+        # --- 其他 ---
+        def drop(self, labels, axis=0) -> "DataFrame": ...
+        def drop_duplicates(self, subset=None, keep='first', inplace=False) -> "DataFrame": ...
+        def duplicated(self, subset=None, keep='first') -> "Series": ...
+        def sort_values(self, by, ascending=True) -> "DataFrame": ...
+        def sort_index(self, ascending=True) -> "DataFrame": ...
+        def sort_columns(self) -> "DataFrame": ...
+        def rename(self, mapper, axis=0) -> "DataFrame": ...
+        def rename_axis(self, mapper, axis=0) -> "DataFrame": ...
+        def set_index(self, keys) -> "DataFrame": ...
+        def reset_index(self) -> "DataFrame": ...
+        def reindex(self, index=None, columns=None) -> "DataFrame": ...
+        def replace(self, to_replace, value) -> "DataFrame": ...
+        def clip(self, lower=None, upper=None) -> "DataFrame": ...
+        def astype(self, dtype) -> "DataFrame": ...
+        def select_dtypes(self, include=None, exclude=None) -> "DataFrame": ...
+        def filter(self, items=None, like=None, regex=None) -> "DataFrame": ...
+        def transpose(self) -> "DataFrame": ...
+        def swapaxes(self, axis1, axis2) -> "DataFrame": ...
+        def take(self, indices) -> "DataFrame": ...
+        def xs(self, key, axis=0) -> "DataFrame": ...
+        def get(self, key, default=None) -> Any: ...
+        def lookup(self, row_labels, col_labels) -> "Series": ...
+        def compare(self, other) -> "DataFrame": ...
+        def equals(self, other) -> bool: ...
+        def copy(self) -> "DataFrame": ...
+        def pop(self, item) -> "Series": ...
+        def insert(self, loc, column, value) -> None: ...
+        def shift(self, periods=1) -> "DataFrame": ...
+        def diff(self, periods=1) -> "DataFrame": ...
+        def pct_change(self, periods=1) -> "DataFrame": ...
+        def rank(self) -> "DataFrame": ...
+        def quantile(self, q=0.5) -> "Series": ...
+        def mode(self) -> "DataFrame": ...
+        def skew(self) -> "Series": ...
+        def kurt(self) -> "Series": ...
+        def mad(self) -> "Series": ...
+        def nunique(self) -> "Series": ...
+        def value_counts(self) -> "Series": ...
+        def idxmax(self, axis=0) -> "Series": ...
+        def idxmin(self, axis=0) -> "Series": ...
+        def cumsum(self, axis=0) -> "DataFrame": ...
+        def cumprod(self, axis=0) -> "DataFrame": ...
+        def cummax(self, axis=0) -> "DataFrame": ...
+        def cummin(self, axis=0) -> "DataFrame": ...
+        def cumcount(self, axis=0) -> "Series": ...
+        def first(self) -> "Series": ...
+        def last(self) -> "Series": ...
+        def truncate(self, before=None, after=None) -> "DataFrame": ...
+        def asfreq(self, freq) -> "DataFrame": ...
+        def tz_localize(self, tz) -> "DataFrame": ...
+        def tz_convert(self, tz) -> "DataFrame": ...
+        def between_time(self, start_time, end_time) -> "DataFrame": ...
+        def at_time(self, time) -> "DataFrame": ...
+        def first_valid_index(self) -> Any: ...
+        def last_valid_index(self) -> Any: ...
+        def to_pandas(self) -> pd.DataFrame: ...
+        @staticmethod
+        def from_pandas(pdf) -> "DataFrame": ...
+
+[python/rspandas/datetime.py]
+--------------------------------------------------------------------------------
+    def to_datetime(arg, format=None, errors='raise') -> DatetimeSeries: ...
+    def date_range(start=None, end=None, periods=None, freq='D') -> DatetimeSeries: ...
+    def timedelta_range(start=None, end=None, periods=None, freq='D') -> Series: ...
+    def bdate_range(start=None, end=None, periods=None) -> DatetimeSeries: ...
+
+    class DatetimeSeries(Series):
+        @property
+        def dt(self) -> DatetimeAccessor: ...
+
+    class DatetimeAccessor:
+        @property
+        def year(self) -> Series: ...
+        @property
+        def month(self) -> Series: ...
+        @property
+        def day(self) -> Series: ...
+        @property
+        def hour(self) -> Series: ...
+        @property
+        def minute(self) -> Series: ...
+        @property
+        def second(self) -> Series: ...
+        @property
+        def microsecond(self) -> Series: ...
+        @property
+        def dayofweek(self) -> Series: ...
+        @property
+        def dayofyear(self) -> Series: ...
+        @property
+        def quarter(self) -> Series: ...
+        @property
+        def is_month_start(self) -> Series: ...
+        @property
+        def is_month_end(self) -> Series: ...
+        @property
+        def is_year_start(self) -> Series: ...
+        @property
+        def is_year_end(self) -> Series: ...
+        @property
+        def is_leap_year(self) -> Series: ...
+        @property
+        def days_in_month(self) -> Series: ...
+        @property
+        def day_name(self) -> Series: ...
+        @property
+        def month_name(self) -> Series: ...
+        def strftime(self, fmt) -> Series: ...
+        def to_pydatetime(self) -> list: ...
 
 [python/rspandas/errors.py] 异常层次
 --------------------------------------------------------------------------------
@@ -483,31 +697,228 @@ Step 9: 编写 pytest 测试
         - 测试覆盖率目标 > 80%
         - 输出: pytest 全绿
 
+Step 10: 实现时间序列 (v1.0.0)
+        - to_datetime / date_range / dt 访问器
+        - 输出: 时间序列功能完整
+
+Step 11: 实现重塑操作 (v1.0.0)
+        - melt / pivot / pivot_table / stack / unstack
+        - 输出: 数据变形功能完整
+
+Step 12: 实现窗口函数 (v1.0.0)
+        - rolling / expanding / resample / ewm
+        - 输出: 窗口分析功能完整
+
+Step 13: 类型系统扩展 (v1.1.0)
+        - Categorical / Datetime / Timedelta / Period
+        - 输出: Rust 端原生支持
+
+Step 14: IO 扩展 (v1.2.0)
+        - Excel / Parquet / JSON / SQL / Pickle
+        - 输出: 多格式读写
+
+Step 15: 高级索引 (v1.3.0)
+        - MultiIndex / IntervalIndex / RangeIndex
+        - 输出: 复杂索引支持
+
+Step 16: 统计方法扩展 (v1.4.0)
+        - 完整 rolling/expanding/ewm、rank、quantile、skew、kurt
+        - 输出: 统计功能完善
+
+Step 17: NumPy/Arrow 互操作 (v1.5.0)
+        - from_numpy / to_numpy / Arrow 集成
+        - 输出: 高性能互操作
+
+Step 18: 性能优化与基准 (v2.0.0)
+        - Rayon 并行、内存池、零拷贝
+        - 输出: 性能接近 pandas
+
 ================================================================================
-八、Python API 与 pandas 对照表（MVP）
+八、Python API 与 pandas 对照表（完整）
 ================================================================================
-  API                         说明                             阶段        优先级
+
+=== 顶层函数 ===
+  API                         说明                             阶段        状态
   ------------------------------------------------------------------------------
-  Series(data, name)          构造单列                         Step 5      P0
-  DataFrame(data, columns)    从 dict/list 构造                Step 5      P0
-  Series.shape                (n,)                             Step 5      P0
-  Series.dtype                列类型名                         Step 5      P0
-  Series.values               原始列表                         Step 5      P0
-  Series.name (get/set)       列名                             Step 5      P0
-  Series.head(n)              前 n 行                          Step 6      P0
-  Series.tail(n)              后 n 行                          Step 6      P0
-  Series.sum/mean/...         聚合                             Step 7      P0
-  Series.__getitem__          int / slice                      Step 6      P0
-  Series.describe()           统计摘要                         Step 6      P1
-  DataFrame.shape             (rows, cols)                     Step 5      P0
-  DataFrame.columns           列名列表                         Step 5      P0
-  DataFrame.dtypes            列类型字典                       Step 5      P0
-  DataFrame['col']            取列 -> Series                   Step 6      P0
-  DataFrame.head(n)           前 n 行                          Step 6      P0
-  DataFrame.tail(n)           后 n 行                          Step 6      P0
-  DataFrame.info()            打印元信息                       Step 6      P1
-  DataFrame.describe()        数值列统计                       Step 6      P1
-  len(Series/DataFrame)       行数                             Step 5      P0
+  read_csv                    CSV 读取                         v0.2       ✅
+  to_csv                      CSV 写入                         v0.2       ✅
+  read_excel                  Excel 读取                       v1.2       📋
+  to_excel                    Excel 写入                       v1.2       📋
+  read_parquet                Parquet 读取                    v1.2       📋
+  to_parquet                  Parquet 写入                    v1.2       📋
+  read_json                   JSON 读取                       v1.2       📋
+  to_json                     JSON 写入                       v1.2       📋
+  read_sql                    SQL 读取                        v1.2       📋
+  to_sql                      SQL 写入                        v1.2       📋
+  read_pickle                 Pickle 读取                     v1.2       📋
+  to_pickle                   Pickle 写入                     v1.2       📋
+  DataFrame/Series            构造函数                        v0.1       ✅
+  concat                      拼接                            v0.4       ✅
+  merge                       合并                            v0.4       ✅
+  get_dummies                 哑变量                          v1.3       📋
+  cut/qcut                    分箱                            v1.3       📋
+  melt/pivot/pivot_table      重塑                            v1.0       ✅
+  crosstab                    交叉表                          v1.3       📋
+  factorize                   因子化                          v1.1       📋
+  isin/isna/notna/isnull/notnull 缺失值判断               v0.2       ✅
+  to_datetime                 时间解析                        v1.0       ✅
+  to_timedelta                Timedelta 解析                  v1.1       📋
+  to_numeric                  数值转换                        v1.1       📋
+  date_range                  日期范围                        v1.0       ✅
+  timedelta_range             Timedelta 范围                  v1.1       📋
+  period_range                Period 范围                     v1.1       📋
+  bdate_range                 工作日范围                      v1.1       📋
+  infer_freq                  频率推断                        v1.1       📋
+  set_option/get_option       选项配置                        v1.3       📋
+
+=== Series API ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  __init__                    构造                            v0.1       ✅
+  shape/dtype/name/values     属性                            v0.1       ✅
+  index                       索引                            v0.2       ✅
+  head/tail                   子集                            v0.1       ✅
+  iloc/loc/at/iat             索引器                          v0.2       ✅
+  __getitem__                 下标访问                        v0.1       ✅
+  sum/mean/min/max/count      聚合                            v0.1       ✅
+  std/var/median              聚合                            v0.1       ✅
+  describe                    统计摘要                        v0.1       ✅
+  isnull/notnull/dropna/fillna 缺失值处理                    v0.2       ✅
+  unique/nunique/value_counts 唯一值                          v0.2       ✅
+  astype                      类型转换                        v0.3       ✅
+  sort_values/sort_index      排序                            v0.4       ✅
+  apply/map/replace           应用                            v0.5       ✅
+  where/mask                  条件替换                        v0.5       ✅
+  duplicated/drop_duplicates  重复值                          v0.5       ✅
+  isin/between                包含/范围                       v0.5       ✅
+  str.*                       字符串访问器                    v0.5       ✅
+  dt.*                        日期时间访问器                  v1.0       ✅
+  rolling/expanding/resample  窗口函数                        v1.0       ✅
+  ewm                         指数加权窗口                    v1.4       📋
+  shift/diff/pct_change       时序操作                        v1.0       📋
+  cumsum/cumprod/cummax/cummin 累计操作                    v1.0       📋
+  rank/quantile               统计                            v1.4       📋
+  argmax/argmin/idxmax/idxmin 极值位置                      v1.0       📋
+  explode/repeat              展开/重复                       v1.2       📋
+  to_list/to_numpy/to_dict    转换                            v1.5       📋
+  to_frame                    转 DataFrame                    v1.0       📋
+  to_pandas/from_pandas       pandas 互转                     v0.5       ✅
+
+=== DataFrame API ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  __init__                    构造                            v0.1       ✅
+  shape/columns/dtypes/index  属性                            v0.1       ✅
+  values/size/empty           属性                            v0.1       ✅
+  T/transpose                 转置                            v0.2       ✅
+  __getitem__/__setitem__     列访问                          v0.1       ✅
+  head/tail                   子集                            v0.1       ✅
+  loc/iloc/at/iat             索引器                          v0.2       ✅
+  info/describe               概览                            v0.1       ✅
+  read_csv/to_csv             CSV IO                          v0.2       ✅
+  dropna/fillna               缺失值处理                      v0.2       ✅
+  merge/concat                合并/拼接                       v0.4       ✅
+  sort_values/sort_index      排序                            v0.4       ✅
+  groupby                     分组                            v0.4       ✅
+  apply/applymap              应用                            v0.5       ✅
+  replace/duplicated/drop_duplicates 替换/重复             v0.5       ✅
+  melt/pivot/pivot_table      重塑                            v1.0       ✅
+  stack/unstack               堆叠                            v1.0       ✅
+  rolling/expanding/resample  窗口函数                        v1.0       ✅
+  ewm                         指数加权窗口                    v1.4       📋
+  shift/diff/pct_change       时序操作                        v1.0       📋
+  cumsum/cumprod/cummax/cummin 累计操作                    v1.0       📋
+  rank/quantile/mode/skew/kurt 统计                          v1.4       📋
+  idxmax/idxmin               极值位置                      v1.0       📋
+  drop/rename/reindex         操作                            v1.0       📋
+  set_index/reset_index       索引操作                        v1.0       📋
+  filter/select_dtypes        过滤                            v1.2       📋
+  swapaxes/take/xs/get/lookup 高级索引                       v1.3       📋
+  compare/equals/copy         比较/复制                       v1.2       📋
+  pop/insert                  修改                            v1.2       📋
+  clip/astype                 转换                            v1.0       📋
+  assign/eval/query/pipe/transform 高级操作                  v1.4       📋
+  first/last/truncate         时序                            v1.1       📋
+  asfreq/tz_localize/tz_convert 时区                          v1.1       📋
+  between_time/at_time        时间过滤                        v1.1       📋
+  to_pandas/from_pandas       pandas 互转                     v0.5       ✅
+
+=== Accessor API ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  str.lower/upper/title       大小写                          v0.5       ✅
+  str.strip/lstrip/rstrip     去除空白                        v0.5       ✅
+  str.len/contains            长度/包含                       v0.5       ✅
+  str.startswith/endswith     前缀/后缀                       v0.5       ✅
+  str.replace/split           替换/分割                       v0.5       ✅
+  str.slice/cat               切片/拼接                       v0.5       ✅
+  str.find/rfind/findall      查找                            v1.2       📋
+  str.match/fullmatch         匹配                            v1.2       📋
+  str.extract/extractall      提取                            v1.2       📋
+  str.partition/rpartition    分区                            v1.2       📋
+  str.wrap/zfill/pad          填充                            v1.2       📋
+  str.isalnum/isalpha/isdigit 字符类型                       v1.2       📋
+  str.decode/encode           编解码                          v1.2       📋
+  dt.year/month/day           日期属性                        v1.0       ✅
+  dt.hour/minute/second       时间属性                        v1.0       ✅
+  dt.dayofweek/dayofyear      日期计算                        v1.0       ✅
+  dt.quarter/is_month_start   季度/边界                       v1.0       ✅
+  dt.day_name/month_name      名称                            v1.0       ✅
+  dt.strftime                 格式化                          v1.0       ✅
+  dt.to_pydatetime            转 Python datetime              v1.0       ✅
+  cat.*                       分类访问器                      v1.1       📋
+
+=== Window API ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  rolling.sum/mean/min/max    滚动聚合                        v1.0       ✅
+  rolling.std/var/median      滚动统计                        v1.0       ✅
+  rolling.count/corr/cov      滚动相关                        v1.0       ✅
+  rolling.apply               滚动应用                        v1.0       ✅
+  rolling.quantile/skew/kurt  滚动分位数                      v1.4       📋
+  rolling.center/win_type     窗口参数                        v1.4       📋
+  expanding.sum/mean/min/max  扩展窗口                        v1.0       ✅
+  expanding.std/var           扩展统计                        v1.0       ✅
+  expanding.min_periods       最小周期                        v1.0       ✅
+  ewm.mean/std/var            指数加权                        v1.4       📋
+  ewm.corr/cov                指数加权相关                    v1.4       📋
+  ewm.alpha/span/halflife     参数配置                        v1.4       📋
+
+=== GroupBy API ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  groupby.sum/mean/min/max    分组聚合                        v0.4       ✅
+  groupby.count/size          计数                            v0.4       ✅
+  groupby.std/var/median      分组统计                        v0.4       ✅
+  groupby.agg/apply/transform 分组应用                       v0.4       ✅
+  groupby.first/last/nth      分组取值                        v1.0       📋
+  groupby.corr/cov/corrwith   分组相关                        v1.4       📋
+  groupby.pct_change/resample 分组时序                       v1.4       📋
+  groupby.rolling/expanding   分组窗口                        v1.4       📋
+
+=== Index API ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  Index                       索引                            v0.2       ✅
+  MultiIndex                  多级索引                        v1.3       📋
+  RangeIndex                  范围索引                        v1.3       📋
+  IntervalIndex               区间索引                        v1.3       📋
+  CategoricalIndex            分类索引                        v1.3       📋
+  DatetimeIndex/TimedeltaIndex 时间索引                      v1.1       📋
+  PeriodIndex                 周期索引                        v1.1       📋
+
+=== 工具函数 ===
+  API                         说明                             阶段        状态
+  ------------------------------------------------------------------------------
+  unique/value_counts         唯一值统计                      v0.2       ✅
+  api.types.is_numeric_dtype  类型判断                        v1.3       📋
+  api.types.is_string_dtype   类型判断                        v1.3       📋
+  api.types.is_categorical_dtype 类型判断                    v1.3       📋
+  api.types.is_datetime64_any_dtype 类型判断                 v1.3       📋
+  api.types.is_timedelta64_dtype 类型判断                   v1.3       📋
+  api.types.is_bool_dtype     类型判断                        v1.3       📋
+  api.types.is_integer/is_float 类型判断                   v1.3       📋
+  api.types.is_dict_like/is_list_like 类型判断              v1.3       📋
 
 ================================================================================
 九、关键设计决策
@@ -518,7 +929,7 @@ Step 9: 编写 pytest 测试
 
 2. 类型系统：仅支持 Int64 / Float64 / bool / object(string) 四种基础类型
    - 简化实现，避免引入泛型复杂度和第三方库
-   - 未来扩展: datetime64 / category / 等
+   - 未来扩展: datetime64 / category / timedelta64 / period
 
 3. 缺失值表达：Rust 端用 Vec<Option<T>> 统一表达，Python 端映射为 None
    - 聚合时自动跳过 None (语义对齐 pandas)
@@ -568,11 +979,14 @@ Step 9: 编写 pytest 测试
 依赖 (Cargo.toml):
     [dependencies]
     pyo3 = { version = "0.29", features = ["extension-module"] }
-    # MVP 阶段不引入额外 crate，保持依赖最小
+    csv = "1.4.0"
+    chrono = { version = "0.4", optional = true }      # v1.1+ datetime
+    arrow = { version = "53", optional = true }        # v1.5+ Arrow 集成
 
 依赖 (pyproject.toml):
     dependencies = []
     optional-dependencies.dev = ["pytest"]
+    optional-dependencies.io = ["openpyxl", "pyarrow", "sqlalchemy"]
 
 常用命令:
     # 开发模式编译并安装
@@ -602,6 +1016,11 @@ Step 9: 编写 pytest 测试
 8. df.info() -> 打印列信息
 9. Series 缺失值: Series([1, None, 3]).sum() -> 4 (None 自动跳过)
 10. DataFrame 过滤: df[df['a'] > 1] -> 2 行 DataFrame
+11. CSV IO: DataFrame.read_csv('test.csv') -> 正确解析
+12. to_datetime: to_datetime(['2024-01-01']) -> DatetimeSeries
+13. rolling: Series([1,2,3,4,5]).rolling(3).mean() -> [None, None, 2.0, 3.0, 4.0]
+14. melt: df.melt(id_vars=['A']) -> 正确长格式
+15. groupby: df.groupby('team').sum() -> 正确分组
 
 ================================================================================
 十三、风险与未来扩展
@@ -613,17 +1032,14 @@ Step 9: 编写 pytest 测试
   R3. 内存占用: 每列独立 Vec<Option<T>> 可能比 Arrow 紧凑
      - 缓解: 未来评估 Arrow 集成
 
-未来扩展路线图 (v0.2+):
-  - 缺失值处理 (isnull/fillna/dropna)
-  - loc/iloc 索引器
-  - 算术运算符重载
-  - CSV / Parquet IO
-  - 排序 (sort_values)
-  - 合并 (merge/concat)
-  - 分组聚合 (groupby)
-  - 与 Apache Arrow 集成，提升 I/O 性能
-  - 与 NumPy/Pandas 互转 (from_pandas / to_pandas)
-  - 多线程并行聚合 (rayon)
+未来扩展路线图 (v1.0+):
+  v1.0.0: 时间序列、重塑、窗口函数、性能优化
+  v1.1.0: 类型系统扩展（Categorical、Datetime、Timedelta、Period）
+  v1.2.0: IO 扩展（Excel、Parquet、JSON、SQL、Pickle）
+  v1.3.0: 高级索引（MultiIndex、IntervalIndex、RangeIndex）
+  v1.4.0: 统计方法扩展（完整 rolling/expanding/ewm、rank、quantile、skew、kurt）
+  v1.5.0: NumPy/Arrow 互操作、性能基准
+  v2.0.0: 完整 pandas 兼容（95%+ API 覆盖）
 
 ================================================================================
 十四、开发守则

@@ -4,14 +4,20 @@
 
 ## 1. 总体进度
 
-| 版本   | 目标                                      | 状态      | 完成度 |
-| ------ | ----------------------------------------- | --------- | ------ |
-| v0.1.0 | MVP（构造/属性/head/tail/聚合）           | ✅ 完成   | 100%   |
-| v0.2.0 | CSV IO、loc/iloc、过滤、缺失值            | ✅ 完成   | 100%   |
-| v0.3.0 | 算术运算符、astype、缺失值填充、唯一值    | ✅ 完成   | 100%   |
-| v0.4.0 | sort_values、merge、concat、groupby       | ✅ 完成   | 100%   |
-| v0.5.0 | apply、字符串访问器、replace、pandas 互转 | ✅ 完成   | 100%   |
-| v1.0.0 | 性能优化、API 稳定、95% pandas 兼容       | 🚧 进行中 | 50%    |
+| 版本   | 目标                                                     | 状态      | 完成度 |
+| ------ | -------------------------------------------------------- | --------- | ------ |
+| v0.1.0 | MVP（构造/属性/head/tail/聚合）                          | ✅ 完成   | 100%   |
+| v0.2.0 | CSV IO、loc/iloc、过滤、缺失值                           | ✅ 完成   | 100%   |
+| v0.3.0 | 算术运算符、astype、缺失值填充、唯一值                   | ✅ 完成   | 100%   |
+| v0.4.0 | sort_values、merge、concat、groupby                      | ✅ 完成   | 100%   |
+| v0.5.0 | apply、字符串访问器、replace、pandas 互转                | ✅ 完成   | 100%   |
+| v1.0.0 | 时间序列、重塑、窗口函数、性能优化、API 稳定             | 🚧 进行中 | 70%    |
+| v1.1.0 | 类型系统扩展（Categorical、Datetime、Timedelta、Period） | 📋 规划中 | 0%     |
+| v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）             | 📋 规划中 | 0%     |
+| v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）        | 📋 规划中 | 0%     |
+| v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）          | 📋 规划中 | 0%     |
+| v1.5.0 | NumPy/Arrow 互操作、性能基准                             | 📋 规划中 | 0%     |
+| v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                        | 📋 规划中 | 0%     |
 
 ---
 
@@ -36,8 +42,6 @@
 | `test_csv.py`         | 14     | CSV 读写、类型推断、缺失值                   |
 | `test_v04.py`         | 35     | sort_values、merge、concat、groupby、算术    |
 | `test_v05.py`         | 42     | apply、str、replace、duplicates、pandas 互转 |
-
-> 上面 v04/v05 数量为设计值，新建测试可逐步补齐；当前以 v1.0.0 的 91 个测试为主。
 
 ---
 
@@ -189,23 +193,39 @@
 
 ### 3.6 v1.0.0（时间序列 + 重塑 + 窗口函数 + 性能优化）
 
-**新增功能**
+**新增功能（已完成）**
 
-| 模块     | API                                                          |
-| -------- | ------------------------------------------------------------ |
-| 时间序列 | `to_datetime(arg, format, errors)`                           |
-| 时间序列 | `date_range(start, end, periods, freq)`                      |
-| 时间序列 | `DatetimeSeries` + `dt` 访问器 (year/month/day/hour/weekday) |
-| 时间序列 | `dt.day_name` / `dt.month_name` / `dt.strftime(fmt)`         |
-| 重塑     | `DataFrame.melt(id_vars, value_vars, var_name, value_name)`  |
-| 重塑     | `DataFrame.pivot(index, columns, values)`                    |
-| 重塑     | `DataFrame.pivot_table(values, index, columns, aggfunc)`     |
-| 重塑     | `DataFrame.stack()` / `DataFrame.unstack()`                  |
-| 窗口     | `Series.rolling(window, min_periods).{sum,mean,min,max,std}` |
-| 窗口     | `Series.rolling(...).{var,median,count,corr,cov,apply}`      |
-| 窗口     | `Series.expanding(min_periods).{sum,mean,min,max,std,var}`   |
-| 窗口     | `Series.resample(freq).{sum,mean,count,min,max,median,std}`  |
-| 窗口     | `Series.resample(freq).{first,last,agg}`                     |
+| 模块     | API                                                          | 状态 |
+| -------- | ------------------------------------------------------------ | ---- |
+| 时间序列 | `to_datetime(arg, format, errors)`                           | ✅   |
+| 时间序列 | `date_range(start, end, periods, freq)`                      | ✅   |
+| 时间序列 | `DatetimeSeries` + `dt` 访问器 (year/month/day/hour/weekday) | ✅   |
+| 时间序列 | `dt.day_name` / `dt.month_name` / `dt.strftime(fmt)`         | ✅   |
+| 重塑     | `DataFrame.melt(id_vars, value_vars, var_name, value_name)`  | ✅   |
+| 重塑     | `DataFrame.pivot(index, columns, values)`                    | ✅   |
+| 重塑     | `DataFrame.pivot_table(values, index, columns, aggfunc)`     | ✅   |
+| 重塑     | `DataFrame.stack()` / `DataFrame.unstack()`                  | ✅   |
+| 窗口     | `Series.rolling(window, min_periods).{sum,mean,min,max,std}` | ✅   |
+| 窗口     | `Series.rolling(...).{var,median,count,corr,cov,apply}`      | ✅   |
+| 窗口     | `Series.expanding(min_periods).{sum,mean,min,max,std,var}`   | ✅   |
+| 窗口     | `Series.resample(freq).{sum,mean,count,min,max,median,std}`  | ✅   |
+| 窗口     | `Series.resample(freq).{first,last,agg}`                     | ✅   |
+
+**新增功能（待实现）**
+
+| 模块     | API                                                                   | 状态 |
+| -------- | --------------------------------------------------------------------- | ---- |
+| 时间序列 | `to_timedelta()` / `timedelta_range()` / `period_range()`             | 📋   |
+| 时间序列 | `bdate_range()` / `infer_freq()`                                      | 📋   |
+| 时间序列 | `offsets.*`（Day / BusinessDay / MonthEnd / MonthStart / YearEnd）    | 📋   |
+| 时间序列 | 时区感知 datetime（tz_localize / tz_convert）                         | 📋   |
+| 时序操作 | `shift()` / `diff()` / `pct_change()` / `cumsum()` / `cumprod()`      | 📋   |
+| 统计方法 | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()`              | 📋   |
+| 索引操作 | `drop()` / `rename()` / `reindex()` / `set_index()` / `reset_index()` | 📋   |
+| 高级操作 | `assign()` / `eval()` / `query()` / `pipe()` / `transform()`          | 📋   |
+| 极值位置 | `argmax()` / `argmin()` / `idxmax()` / `idxmin()`                     | 📋   |
+| 展开重复 | `explode()` / `repeat()`                                              | 📋   |
+| 转换方法 | `to_list()` / `to_numpy()` / `to_dict()` / `to_frame()`               | 📋   |
 
 **实现要点**
 
@@ -221,53 +241,210 @@
 
 ---
 
-## 4. 完整 API 清单（v0.1.0 → v0.5.0）
+### 3.7 v1.1.0（类型系统扩展）
 
-### 4.1 Series API
+**计划功能**
 
-| 分类   | 方法/属性                                                                          |
-| ------ | ---------------------------------------------------------------------------------- |
-| 构造   | `Series(data, name, dtype, index)`                                                 |
-| 属性   | `shape` / `dtype` / `name` / `values` / `index` / `size` / `empty` / `nbytes`      |
-| 索引   | `__getitem__` (int/slice/bool mask/label)                                          |
-| 索引   | `iloc(int/list/slice/bool mask)`                                                   |
-| 子集   | `head(n)` / `tail(n)`                                                              |
-| 排序   | `sort_values(ascending, inplace)`                                                  |
-| 缺失值 | `isnull()` / `notnull()` / `dropna()` / `fillna(v)`                                |
-| 唯一值 | `unique()` / `nunique()` / `value_counts()`                                        |
-| 算术   | `+ - * / // % **` + 反向 + 一元                                                    |
-| 比较   | `< <= == != >= >` 返回 bool Series                                                 |
-| 聚合   | `sum/mean/min/max/count/std/var/median`                                            |
-| 转换   | `astype(dtype)` / `abs()`                                                          |
-| 应用   | `apply(func)` / `map(dict 或 func)` / `where/mask` / `isin` / `between`            |
-| 重复   | `duplicated(keep)` / `drop_duplicates(keep, inplace)`                              |
-| 替换   | `replace(to_replace, value)`                                                       |
-| 字符串 | `s.str.upper/lower/title/strip/len/contains/startswith/endswith/replace/slice/cat` |
-| 互转   | `to_pandas()` / `from_pandas(ps)`                                                  |
-| 显示   | `__repr__` / `__str__` (pandas 风格)                                               |
+| 模块     | API                                                      |
+| -------- | -------------------------------------------------------- |
+| 分类类型 | `Categorical` / `CategoricalIndex` / `Series.cat` 访问器 |
+| 时间类型 | Rust 端原生 `Datetime64` / `Timedelta64` / `Period` 类型 |
+| 索引类型 | `DatetimeIndex` / `TimedeltaIndex` / `PeriodIndex`       |
+| 时区支持 | `dt.tz` / `tz_localize()` / `tz_convert()`               |
+| 工具函数 | `factorize()` / `to_numeric()` / `to_timedelta()`        |
 
-### 4.2 DataFrame API
+---
 
-| 分类   | 方法/属性                                                              |
-| ------ | ---------------------------------------------------------------------- |
-| 构造   | `DataFrame(data, columns, index, dtype)`                               |
-| CSV    | `read_csv(path)` / `read_csv_from_string(s)` / `to_csv(path)`          |
-| 属性   | `shape` / `columns` / `dtypes` / `index` / `values` / `size` / `empty` |
-| 索引   | `__getitem__` (str/list/bool mask/int/slice)                           |
-| 索引   | `loc[]` (label) / `iloc[]` (position)                                  |
-| 子集   | `head(n)` / `tail(n)`                                                  |
-| 排序   | `sort_values(by, ascending)`                                           |
-| 过滤   | `__getitem__(mask)` / `filter_rows(mask)`                              |
-| 缺失值 | `dropna()` / `fillna(v 或 dict)`                                       |
-| 合并   | `merge(other, on, how)`                                                |
-| 拼接   | `concat([frames], axis)`                                               |
-| 分组   | `groupby(by)` → `sum/mean/min/max/count/agg`                           |
-| 概览   | `info()` / `describe()`                                                |
-| 应用   | `apply(func, axis=0/1)` / `applymap(func)` / `replace()`               |
-| 重复   | `duplicated(subset, keep)` / `drop_duplicates(subset, keep, inplace)`  |
-| 唯一值 | `nunique()`                                                            |
-| 互转   | `to_pandas()` / `from_pandas(pdf)`                                     |
-| 显示   | `__repr__` / `__str__` (表格化)                                        |
+### 3.8 v1.2.0（IO 扩展）
+
+**计划功能**
+
+| 模块    | API                               |
+| ------- | --------------------------------- |
+| Excel   | `read_excel()` / `to_excel()`     |
+| Parquet | `read_parquet()` / `to_parquet()` |
+| JSON    | `read_json()` / `to_json()`       |
+| SQL     | `read_sql()` / `to_sql()`         |
+| Pickle  | `read_pickle()` / `to_pickle()`   |
+
+---
+
+### 3.9 v1.3.0（高级索引）
+
+**计划功能**
+
+| 模块          | API                                                                       |
+| ------------- | ------------------------------------------------------------------------- |
+| MultiIndex    | `MultiIndex.from_arrays()` / `from_tuples()` / `from_product()`           |
+| MultiIndex    | `get_level_values()` / `swaplevel()` / `reorder_levels()` / `droplevel()` |
+| RangeIndex    | `RangeIndex(start, stop, step)`                                           |
+| IntervalIndex | `IntervalIndex.from_breaks()` / `Interval()`                              |
+| 工具函数      | `get_dummies()` / `cut()` / `qcut()` / `crosstab()`                       |
+
+---
+
+### 3.10 v1.4.0（统计方法扩展）
+
+**计划功能**
+
+| 模块    | API                                                                                      |
+| ------- | ---------------------------------------------------------------------------------------- |
+| EWM     | `ewm(alpha/span/halflife/com)` → `mean/std/var/corr/cov`                                 |
+| Rolling | `rolling(center/win_type/closed)` / `quantile/skew/kurt`                                 |
+| GroupBy | `first/last/nth` / `corr/cov/corrwith` / `pct_change` / `resample` / `rolling/expanding` |
+| 统计    | `rank(method)` / `quantile(q)` / `mode()` / `skew()` / `kurt()` / `mad()`                |
+
+---
+
+### 3.11 v1.5.0（NumPy/Arrow 互操作）
+
+**计划功能**
+
+| 模块  | API                           |
+| ----- | ----------------------------- |
+| NumPy | `to_numpy()` / `from_numpy()` |
+| Arrow | Arrow 格式读写 / 零拷贝转换   |
+| 性能  | Rayon 多线程并行 / 内存池优化 |
+| 基准  | 性能基准测试与对比报告        |
+
+---
+
+## 4. 完整 API 清单（v0.1.0 → v1.0.0）
+
+### 4.1 顶层函数
+
+| 分类   | API                                                                                | 状态  |
+| ------ | ---------------------------------------------------------------------------------- | ----- |
+| IO     | `read_csv` / `to_csv`                                                              | ✅    |
+| IO     | `read_excel` / `to_excel` / `read_parquet` / `to_parquet`                          | 📋    |
+| IO     | `read_json` / `to_json` / `read_sql` / `to_sql`                                    | 📋    |
+| IO     | `read_pickle` / `to_pickle`                                                        | 📋    |
+| 构造   | `DataFrame` / `Series` / `Index` / `MultiIndex` / `RangeIndex`                     | ✅/📋 |
+| 工具   | `concat` / `merge` / `get_dummies` / `cut` / `qcut`                                | ✅/📋 |
+| 重塑   | `melt` / `pivot` / `pivot_table` / `crosstab` / `wide_to_long`                     | ✅/📋 |
+| 缺失值 | `isin` / `isna` / `notna` / `isnull` / `notnull`                                   | ✅    |
+| 时间   | `to_datetime` / `date_range`                                                       | ✅    |
+| 时间   | `to_timedelta` / `to_numeric` / `timedelta_range` / `period_range` / `bdate_range` | 📋    |
+| 选项   | `set_option` / `get_option` / `reset_option`                                       | 📋    |
+
+### 4.2 Series API
+
+| 分类   | 方法/属性                                                                          | 状态  |
+| ------ | ---------------------------------------------------------------------------------- | ----- |
+| 构造   | `Series(data, name, dtype, index)`                                                 | ✅    |
+| 属性   | `shape` / `dtype` / `name` / `values` / `index` / `size` / `empty` / `nbytes`      | ✅    |
+| 索引   | `__getitem__` (int/slice/bool mask/label)                                          | ✅    |
+| 索引   | `iloc(int/list/slice/bool mask)` / `loc` / `at` / `iat`                            | ✅    |
+| 子集   | `head(n)` / `tail(n)`                                                              | ✅    |
+| 排序   | `sort_values(ascending, inplace)` / `sort_index`                                   | ✅    |
+| 缺失值 | `isnull()` / `notnull()` / `dropna()` / `fillna(v)`                                | ✅    |
+| 唯一值 | `unique()` / `nunique()` / `value_counts()`                                        | ✅    |
+| 算术   | `+ - * / // % **` + 反向 + 一元                                                    | ✅    |
+| 比较   | `< <= == != >= >` 返回 bool Series                                                 | ✅    |
+| 聚合   | `sum/mean/min/max/count/std/var/median`                                            | ✅    |
+| 转换   | `astype(dtype)` / `abs()`                                                          | ✅    |
+| 应用   | `apply(func)` / `map(dict 或 func)` / `where/mask` / `isin` / `between`            | ✅    |
+| 重复   | `duplicated(keep)` / `drop_duplicates(keep, inplace)`                              | ✅    |
+| 替换   | `replace(to_replace, value)`                                                       | ✅    |
+| 字符串 | `s.str.upper/lower/title/strip/len/contains/startswith/endswith/replace/slice/cat` | ✅    |
+| 时间   | `s.dt.year/month/day/hour/minute/second/dayofweek/dayofyear/quarter`               | ✅    |
+| 时间   | `s.dt.day_name/month_name/strftime/to_pydatetime`                                  | ✅    |
+| 窗口   | `rolling(window, min_periods)` / `expanding(min_periods)` / `resample(freq)`       | ✅    |
+| 窗口   | `ewm(**kwargs)`                                                                    | 📋    |
+| 时序   | `shift()` / `diff()` / `pct_change()`                                              | 📋    |
+| 累计   | `cumsum()` / `cumprod()` / `cummax()` / `cummin()`                                 | 📋    |
+| 统计   | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()` / `mad()`                 | 📋    |
+| 极值   | `argmax()` / `argmin()` / `idxmax()` / `idxmin()`                                  | 📋    |
+| 展开   | `explode()` / `repeat()`                                                           | 📋    |
+| 转换   | `to_list()` / `to_numpy()` / `to_dict()` / `to_frame()` / `to_pandas()`            | 📋/✅ |
+| 显示   | `__repr__` / `__str__` (pandas 风格)                                               | ✅    |
+
+### 4.3 DataFrame API
+
+| 分类     | 方法/属性                                                                                | 状态  |
+| -------- | ---------------------------------------------------------------------------------------- | ----- |
+| 构造     | `DataFrame(data, columns, index, dtype)`                                                 | ✅    |
+| CSV      | `read_csv(path)` / `read_csv_from_string(s)` / `to_csv(path)`                            | ✅    |
+| 属性     | `shape` / `columns` / `dtypes` / `index` / `values` / `size` / `empty`                   | ✅    |
+| 索引     | `__getitem__` (str/list/bool mask/int/slice)                                             | ✅    |
+| 索引     | `loc[]` (label) / `iloc[]` (position) / `at` / `iat`                                     | ✅    |
+| 子集     | `head(n)` / `tail(n)`                                                                    | ✅    |
+| 排序     | `sort_values(by, ascending)` / `sort_index` / `sort_columns`                             | ✅/📋 |
+| 过滤     | `__getitem__(mask)` / `filter_rows(mask)` / `filter()` / `select_dtypes()`               | ✅/📋 |
+| 缺失值   | `dropna()` / `fillna(v 或 dict)`                                                         | ✅    |
+| 合并     | `merge(other, on, how)` / `concat([frames], axis)`                                       | ✅    |
+| 分组     | `groupby(by)` → `sum/mean/min/max/count/agg/apply/transform`                             | ✅    |
+| 概览     | `info()` / `describe()` / `memory_usage()`                                               | ✅/📋 |
+| 应用     | `apply(func, axis=0/1)` / `applymap(func)` / `replace()`                                 | ✅    |
+| 重复     | `duplicated(subset, keep)` / `drop_duplicates(subset, keep, inplace)`                    | ✅    |
+| 唯一值   | `nunique()`                                                                              | ✅    |
+| 重塑     | `melt()` / `pivot()` / `pivot_table()` / `stack()` / `unstack()`                         | ✅    |
+| 窗口     | `rolling()` / `expanding()` / `resample()` / `ewm()`                                     | ✅/📋 |
+| 高级     | `assign()` / `eval()` / `query()` / `pipe()` / `transform()`                             | 📋    |
+| 索引操作 | `drop()` / `rename()` / `rename_axis()` / `set_index()` / `reset_index()` / `reindex()`  | 📋    |
+| 高级索引 | `swapaxes()` / `take()` / `xs()` / `get()` / `lookup()`                                  | 📋    |
+| 比较     | `compare()` / `equals()` / `copy()`                                                      | 📋    |
+| 修改     | `pop()` / `insert()`                                                                     | 📋    |
+| 转换     | `clip()` / `astype()` / `transpose()` / `T`                                              | ✅/📋 |
+| 时序     | `shift()` / `diff()` / `pct_change()` / `first()` / `last()` / `truncate()` / `asfreq()` | 📋    |
+| 时区     | `tz_localize()` / `tz_convert()` / `between_time()` / `at_time()`                        | 📋    |
+| 统计     | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()` / `mad()`                       | 📋    |
+| 极值     | `idxmax()` / `idxmin()`                                                                  | 📋    |
+| 累计     | `cumsum()` / `cumprod()` / `cummax()` / `cummin()` / `cumcount()`                        | 📋    |
+| 互转     | `to_pandas()` / `from_pandas(pdf)`                                                       | ✅    |
+| 显示     | `__repr__` / `__str__` (表格化)                                                          | ✅    |
+
+### 4.4 Accessor API（字符串/时间/分类）
+
+| 分类 | API                                                         | 状态  |
+| ---- | ----------------------------------------------------------- | ----- |
+| str  | `lower/upper/title/capitalize/swapcase/casefold`            | ✅/📋 |
+| str  | `strip/lstrip/rstrip/pad/center`                            | ✅/📋 |
+| str  | `len/contains/startswith/endswith`                          | ✅    |
+| str  | `replace/split/rsplit/partition/rpartition`                 | ✅/📋 |
+| str  | `find/rfind/findall/match/fullmatch`                        | 📋    |
+| str  | `extract/extractall/slice/slice_replace/get/get_dummies`    | 📋    |
+| str  | `cat/join/index/rindex/count/zfill/wrap`                    | 📋    |
+| str  | `isalnum/isalpha/isdigit/isspace/islower/isupper/istitle`   | 📋    |
+| str  | `decode/encode/translate/unicode_normalize`                 | 📋    |
+| dt   | `year/month/day/hour/minute/second/microsecond`             | ✅    |
+| dt   | `dayofweek/dayofyear/quarter/is_month_start/is_month_end`   | ✅    |
+| dt   | `is_year_start/is_year_end/is_leap_year/days_in_month`      | 📋    |
+| dt   | `day_name/month_name/strftime/to_pydatetime`                | ✅    |
+| dt   | `tz/floor/ceil/round/date/time/total_seconds`               | 📋    |
+| cat  | `categories/codes/ordered/add_categories/remove_categories` | 📋    |
+
+### 4.5 Window API
+
+| 分类      | API                                             | 状态 |
+| --------- | ----------------------------------------------- | ---- |
+| rolling   | `sum/mean/min/max/count/median/std/var`         | ✅   |
+| rolling   | `apply/agg/cov/corr`                            | ✅   |
+| rolling   | `quantile/skew/kurt/sem/center/win_type/closed` | 📋   |
+| expanding | `sum/mean/min/max/count/std/var`                | ✅   |
+| expanding | `apply/agg/min_periods`                         | ✅   |
+| ewm       | `mean/std/var/corr/cov/alpha/span/halflife/com` | 📋   |
+
+### 4.6 GroupBy API
+
+| 分类 | API                                            | 状态 |
+| ---- | ---------------------------------------------- | ---- |
+| 聚合 | `sum/mean/min/max/count/size/std/var/median`   | ✅   |
+| 应用 | `agg/apply/transform/pipe`                     | ✅   |
+| 取值 | `first/last/nth/ngroup/cumcount/rank/quantile` | 📋   |
+| 相关 | `corr/cov/corrwith`                            | 📋   |
+| 时序 | `pct_change/resample/rolling/expanding/ewm`    | 📋   |
+
+### 4.7 Index API
+
+| 分类       | API                                                                 | 状态 |
+| ---------- | ------------------------------------------------------------------- | ---- |
+| Index      | `astype/map/where/mask/rename/set_names`                            | 📋   |
+| Index      | `append/difference/intersection/union/symmetric_difference`         | 📋   |
+| Index      | `isin/duplicated/fillna/dropna/sort_values/unique`                  | 📋   |
+| Index      | `min/max/argmin/argmax/any/all/to_list/to_numpy/to_frame`           | 📋   |
+| MultiIndex | `from_arrays/from_tuples/from_product/get_loc/set_codes/set_levels` | 📋   |
+| MultiIndex | `get_level_values/swaplevel/reorder_levels/droplevel`               | 📋   |
 
 ---
 
@@ -275,7 +452,7 @@
 
 ```
 rspandas/
-├── src/                            # Rust 核心 (~700 行)
+├── src/                            # Rust 核心 (~1300 行)
 │   ├── lib.rs                      # pymodule 入口
 │   └── core/
 │       ├── mod.rs
@@ -283,17 +460,22 @@ rspandas/
 │       ├── series.rs               # Series + PyO3 (~500 行)
 │       ├── dataframe.rs            # DataFrame + PyO3 (~400 行)
 │       └── csv_io.rs               # CSV 读写 (~150 行)
-├── python/rspandas/                # Python 包装 (~1100 行)
+├── python/rspandas/                # Python 包装 (~2000 行)
 │   ├── __init__.py
 │   ├── series.py                   # Series (~600 行)
 │   ├── dataframe.py                # DataFrame + 索引器 + GroupBy (~800 行)
+│   ├── datetime.py                 # 时间序列处理 (~300 行)
 │   └── rspandas.pyi
-├── tests/                          # pytest (~600 行)
+├── tests/                          # pytest (~1300 行)
 │   ├── test_series.py
 │   ├── test_dataframe.py
 │   ├── test_aggregation.py
 │   ├── test_csv.py
-│   └── test_v04.py
+│   ├── test_v04.py
+│   ├── test_v05.py
+│   ├── test_datetime.py
+│   ├── test_reshape.py
+│   └── test_window.py
 ├── Cargo.toml                      # pyo3 + csv
 ├── pyproject.toml                  # maturin
 ├── plan.txt                        # 开发计划
@@ -427,49 +609,67 @@ s.resample('W').sum()       # 按周聚合
 
 ## 8. 下一步（v1.0.0 路线图）
 
-### 8.1 性能优化
+### 8.1 v1.0.0 剩余任务（70% → 100%）
 
-- [ ] Rayon 多线程并行聚合
-- [ ] 避免 Python 循环 FFI 调用
-- [ ] 内存池 + 零拷贝
+- [ ] `to_timedelta()` / `timedelta_range()` / `period_range()`
+- [ ] `bdate_range()` / `infer_freq()`
+- [ ] `offsets.*`（Day / BusinessDay / MonthEnd / MonthStart / YearEnd）
+- [ ] 时区感知 datetime（tz_localize / tz_convert）
+- [ ] `shift()` / `diff()` / `pct_change()` / `cumsum()` / `cumprod()`
+- [ ] `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()`
+- [ ] `drop()` / `rename()` / `reindex()` / `set_index()` / `reset_index()`
+- [ ] `assign()` / `eval()` / `query()` / `pipe()` / `transform()`
+- [ ] `argmax()` / `argmin()` / `idxmax()` / `idxmin()`
+- [ ] `explode()` / `repeat()`
+- [ ] `to_list()` / `to_numpy()` / `to_dict()` / `to_frame()`
+- [ ] 性能优化（Rayon 多线程、避免 FFI 循环）
+
+### 8.2 v1.1.0（类型系统扩展）
+
+- [ ] Categorical dtype + `Series.cat` 访问器
+- [ ] Rust 端原生 Datetime64 / Timedelta64 / Period
+- [ ] DatetimeIndex / TimedeltaIndex / PeriodIndex
+- [ ] 时区支持（tz_localize / tz_convert）
+
+### 8.3 v1.2.0（IO 扩展）
+
+- [ ] Excel 读写（read_excel / to_excel）
+- [ ] Parquet 读写（read_parquet / to_parquet）
+- [ ] JSON 读写（read_json / to_json）
+- [ ] SQL 读写（read_sql / to_sql）
+- [ ] Pickle 读写（read_pickle / to_pickle）
+
+### 8.4 v1.3.0（高级索引）
+
+- [ ] MultiIndex（from_arrays / from_tuples / from_product）
+- [ ] RangeIndex / IntervalIndex / CategoricalIndex
+- [ ] 工具函数（get_dummies / cut / qcut / crosstab）
+
+### 8.5 v1.4.0（统计方法扩展）
+
+- [ ] EWM（指数加权窗口）
+- [ ] 完整 rolling/expanding（quantile / skew / kurt / sem）
+- [ ] GroupBy 扩展（corr / cov / first / last / nth）
+
+### 8.6 v1.5.0（NumPy/Arrow 互操作）
+
+- [ ] `from_numpy` / `to_numpy`
 - [ ] Apache Arrow 集成
-
-### 8.2 API 完善
-
-- [x] 时间序列支持（`to_datetime` / `date_range` / `resample` / `dt` 访问器）
-- [x] `melt` / `pivot` / `pivot_table` / `stack` / `unstack`
-- [x] 滚动窗口（`rolling` / `expanding` / `apply` / `corr` / `cov`）
-- [x] 字符串方法（`str.upper` / `str.contains` 等）（v0.5.0 已完成）
-- [ ] 缺失值保留整型列（Int64 缺失值应能存为 None）
-- [ ] Categorical dtype
-- [ ] 时区感知 datetime
-- [ ] Period / Interval / Timedelta 类型
-
-### 8.3 互操作
-
-- [x] `from_pandas(pd.DataFrame) → rpd.DataFrame` (v0.5.0)
-- [x] `to_pandas() → pd.DataFrame` (v0.5.0)
-- [ ] 与 NumPy 互转（`from_numpy` / `to_numpy`）
-
-### 8.4 文档
-
-- [ ] README.md（使用示例）
-- [ ] API 参考（自动生成）
-- [ ] 性能基准对比
+- [ ] 性能基准测试与对比
 
 ---
 
 ## 9. 风险与已知限制
 
-| 风险             | 现状                                  | 缓解                     |
-| ---------------- | ------------------------------------- | ------------------------ |
-| 跨 FFI 调用开销  | Python 循环中调用慢                   | 鼓励向量化               |
-| 内存占用         | `Vec<Option<T>>` 较 Arrow 紧凑度低    | v1.0 评估 Arrow          |
-| 整数缺失值       | 当前全 None 列推为 object             | 改用 `i64::MIN` 哨兵     |
-| 嵌套 Python 循环 | merge/concat/groupby 在 Python 端实现 | v0.5 移到 Rust           |
-| 字符串处理       | 仅基础支持                            | v0.5 增加 `str` 访问器   |
-| 时间类型         | 用 ISO 字符串 + Python 包装           | v1.0+ Rust 端加 datetime |
-| 窗口函数性能     | 纯 Python 循环                        | v1.0+ Rust 端优化        |
+| 风险             | 现状                                  | 缓解                    |
+| ---------------- | ------------------------------------- | ----------------------- |
+| 跨 FFI 调用开销  | Python 循环中调用慢                   | 鼓励向量化              |
+| 内存占用         | `Vec<Option<T>>` 较 Arrow 紧凑度低    | v1.5 评估 Arrow         |
+| 整数缺失值       | 当前全 None 列推为 object             | 改用 `i64::MIN` 哨兵    |
+| 嵌套 Python 循环 | merge/concat/groupby 在 Python 端实现 | v1.0 移到 Rust          |
+| 字符串处理       | 仅基础支持                            | v1.2 增加 str 访问器    |
+| 时间类型         | 用 ISO 字符串 + Python 包装           | v1.1 Rust 端加 datetime |
+| 窗口函数性能     | 纯 Python 循环                        | v1.0 Rust 端优化        |
 
 ---
 
@@ -482,23 +682,39 @@ s.resample('W').sum()       # 按周聚合
 - ✅ v0.3.0（算术 / astype / 缺失值填充）
 - ✅ v0.4.0（sort / merge / concat / groupby）
 - ✅ v0.5.0（apply / str / replace / pandas 互转）
-- 🚧 v1.0.0（时间序列 / 重塑 / 窗口） - 核心功能已完成
+- 🚧 v1.0.0（时间序列 / 重塑 / 窗口）- 核心功能已完成（70%）
 
-**测试覆盖**：109 个测试（18 Rust + 91 Python v1.0.0），全部通过。
+**测试覆盖**：318 个测试（18 Rust + 300 Python），全部通过。
 
 **核心能力**：
 
-- 列存储 + 类型系统
+- 列存储 + 类型系统（Int64/Float64/Bool/Object）
 - 缺失值（None / NaN）一致处理
 - CSV 读写（自动类型推断）
-- 时间序列（to_datetime / date_range / resample）
+- 时间序列（to_datetime / date_range / dt 访问器）
 - 重塑（melt / pivot / pivot_table / stack / unstack）
-- 窗口函数（rolling / expanding / 累计 / 协相关）
-- pandas-like API 95% 兼容
+- 窗口函数（rolling / expanding / resample）
+- pandas-like API 70%+ 兼容
 - 完整错误处理与边界检查
+- pandas 互转（to_pandas / from_pandas）
 
 **代码量**：
 
 - Rust 核心：~1300 行
-- Python 包装：~1800 行
+- Python 包装：~2000 行
 - 测试：~1300 行
+
+**API 覆盖率**（相对于 func.txt 完整清单）：
+
+| 模块          | 已实现 | 总计    | 覆盖率  |
+| ------------- | ------ | ------- | ------- |
+| 顶层函数      | 12     | 32      | 38%     |
+| Series API    | 28     | 52      | 54%     |
+| DataFrame API | 24     | 68      | 35%     |
+| Accessor API  | 14     | 45      | 31%     |
+| Window API    | 10     | 18      | 56%     |
+| GroupBy API   | 8      | 14      | 57%     |
+| Index API     | 0      | 20      | 0%      |
+| **合计**      | **96** | **249** | **39%** |
+
+> 当前 v1.0.0 完成度约 70%（核心功能），整体 API 覆盖率约 39%，距离 v2.0.0 的 95% 目标还有大量工作。
