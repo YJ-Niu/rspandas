@@ -17,6 +17,7 @@ def _infer_dtype(values: list) -> str:
         return "object"
 
     has_none = False
+    has_non_null = False
     all_bool = True
     all_int = True
     all_float = True
@@ -26,6 +27,7 @@ def _infer_dtype(values: list) -> str:
         if v is None:
             has_none = True
             continue
+        has_non_null = True
         # bool 优先于 int（True/False is int in Python）
         if isinstance(v, bool):
             all_int = False
@@ -51,6 +53,9 @@ def _infer_dtype(values: list) -> str:
             all_str = False
             return "object"
 
+    # 全 None -> object
+    if not has_non_null:
+        return "object"
     if all_bool:
         return "bool"
     if all_int:

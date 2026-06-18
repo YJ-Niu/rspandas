@@ -321,19 +321,23 @@ impl PySeries {
         let mut all_int = true;
         let mut all_float = true;
         let mut all_str = true;
+        let mut any_non_null = false;
 
         for item in pylist.iter() {
             if item.is_none() { continue; }
+            any_non_null = true;
             if !item.is_instance_of::<PyBool>() { all_bool = false; }
             if !item.is_instance_of::<PyInt>() { all_int = false; }
             if !item.is_instance_of::<PyFloat>() { all_float = false; }
             if !item.is_instance_of::<PyString>() { all_str = false; }
         }
 
-        let dtype = if all_bool && !pylist.is_empty() { DType::Bool }
-                    else if all_int && !pylist.is_empty() { DType::Int64 }
-                    else if all_float && !pylist.is_empty() { DType::Float64 }
-                    else if all_str && !pylist.is_empty() { DType::Object }
+        // 全 None 时默认 object (避免误判为 bool)
+        let dtype = if !any_non_null { DType::Object }
+                    else if all_bool { DType::Bool }
+                    else if all_int { DType::Int64 }
+                    else if all_float { DType::Float64 }
+                    else if all_str { DType::Object }
                     else { DType::Object };
 
         let inner = match dtype {
