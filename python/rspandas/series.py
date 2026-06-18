@@ -73,6 +73,9 @@ def _to_python_list(data: Any) -> list:
         return list(data.values)
     if isinstance(data, (list, tuple)):
         return list(data)
+    if isinstance(data, dict):
+        # dict: 默认用 values
+        return list(data.values())
     if data is None:
         return []
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
@@ -246,6 +249,154 @@ class Series:
         mask = self._inner.ge_scalar(other)
         return Series(mask, name=self.name, dtype="bool")
 
+    # ---------- 算术运算符 (v0.3.0) ----------
+
+    def _arith(self, other, op: str) -> "Series":
+        """逐元素算术运算，缺失值用 None。"""
+        if isinstance(other, Series):
+            if len(other) != len(self):
+                raise ValueError("Series lengths must match")
+            other_vals = other.values
+        else:
+            # 标量广播
+            other_vals = [other] * len(self)
+
+        result = []
+        for a, b in zip(self.values, other_vals):
+            if a is None or b is None:
+                result.append(None)
+                continue
+            try:
+                if op == "add":
+                    result.append(a + b)
+                elif op == "sub":
+                    result.append(a - b)
+                elif op == "mul":
+                    result.append(a * b)
+                elif op == "truediv":
+                    if b == 0:
+                        result.append(None)
+                    else:
+                        result.append(a / b)
+                elif op == "floordiv":
+                    if b == 0:
+                        result.append(None)
+                    else:
+                        result.append(a // b)
+                elif op == "mod":
+                    if b == 0:
+                        result.append(None)
+                    else:
+                        result.append(a % b)
+                elif op == "pow":
+                    result.append(a ** b)
+            except (TypeError, ValueError):
+                result.append(None)
+        # 推断结果 dtype
+        nums = [v for v in result if isinstance(v, (int, float))]
+        if not nums:
+            return Series(result, name=self.name, dtype="object")
+        if any(isinstance(v, float) for v in nums):
+            return Series(result, name=self.name, dtype="float64")
+        return Series(result, name=self.name, dtype="int64")
+
+    def __add__(self, other) -> "Series":
+        return self._arith(other, "add")
+
+    def __radd__(self, other) -> "Series":
+        return self._arith(other, "add")
+
+    def __sub__(self, other) -> "Series":
+        return self._arith(other, "sub")
+
+    def __rsub__(self, other) -> "Series":
+        return self._arith(other, "sub")
+
+    def __mul__(self, other) -> "Series":
+        return self._arith(other, "mul")
+
+    def __rmul__(self, other) -> "Series":
+        return self._arith(other, "mul")
+
+    def __truediv__(self, other) -> "Series":
+        return self._arith(other, "truediv")
+
+    def __rtruediv__(self, other) -> "Series":
+        return self._arith(other, "truediv")
+
+    def __floordiv__(self, other) -> "Series":
+        return self._arith(other, "floordiv")
+
+    def __rfloordiv__(self, other) -> "Series":
+        return self._arith(other, "floordiv")
+
+    def __mod__(self, other) -> "Series":
+        return self._arith(other, "mod")
+
+    def __rmod__(self, other) -> "Series":
+        return self._arith(other, "mod")
+
+    def __pow__(self, other) -> "Series":
+        return self._arith(other, "pow")
+
+    def __neg__(self) -> "Series":
+        return self._arith(-1, "mul")
+
+    def __pos__(self) -> "Series":
+        return self
+
+    def __abs__(self) -> "Series":
+        result = [None if v is None else abs(v) for v in self.values]
+        return Series(result, name=self.name, dtype=self._dtype_str)
+
+    @property
+    def str(self):
+        """字符串访问器。"""
+        return StringAccessor(self)
+
+    def isin(self, other) -> "Series":
+        """判断每个元素是否在 other 中。"""
+        s = set(other)
+        out = [v in s for v in self.values]
+        return Series(out, name=self.name, index=self._index, dtype="bool")
+
+    def between(self, left, right, inclusive: str = "both") -> "Series":
+        """判断每个元素是否在 [left, right] 范围内。"""
+        if inclusive == "both":
+            out = [v is not None and left <= v <= right for v in self.values]
+        elif inclusive == "left":
+            out = [v is not None and left <= v < right for v in self.values]
+        elif inclusive == "right":
+            out = [v is not None and left < v <= right for v in self.values]
+        elif inclusive == "neither":
+            out = [v is not None and left < v < right for v in self.values]
+        else:
+            raise ValueError("inclusive must be one of: both/left/right/neither")
+        return Series(out, name=self.name, index=self._index, dtype="bool")
+
+    def to_pandas(self):
+        """转换为 pandas Series。"""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError:
+            raise ImportError("pandas is required for to_pandas()")
+        index = self._index if self._index is not None else None
+        return pd.Series(list(self.values), name=self.name, index=index)
+
+    @classmethod
+    def from_pandas(cls, ps) -> "Series":
+        """从 pandas Series 构造。"""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError:
+            raise ImportError("pandas is required for from_pandas()")
+        if not isinstance(ps, pd.Series):
+            raise TypeError("expected pandas Series")
+        vals = [None if pd.isna(v) else v.item() if hasattr(v, 'item') else v
+                for v in ps.values]
+        index = list(ps.index) if ps.index is not None else None
+        return cls(vals, name=ps.name, index=index)
+
     def __bool__(self) -> bool:
         if len(self) == 1:
             v = self.values[0]
@@ -261,6 +412,186 @@ class Series:
 
     def tail(self, n: int = 5) -> "Series":
         return Series(self._inner.tail(n), name=self.name)
+
+    def iloc(self, key) -> "Series":
+        """按位置索引。key: int / list[int] / slice / bool mask。"""
+        n = len(self)
+        if isinstance(key, int):
+            if key < 0:
+                key += n
+            if key < 0 or key >= n:
+                raise IndexError("index out of range")
+            return Series([self.values[key]], name=self.name, dtype=self._dtype_str)
+        if isinstance(key, slice):
+            values = self.values[key]
+            if self._index is not None:
+                new_index = self._index[key]
+            else:
+                new_index = None
+            return Series(values, name=self.name, index=new_index, dtype=self._dtype_str)
+        if isinstance(key, (list, tuple)):
+            if all(isinstance(x, bool) for x in key):
+                return self._filter_mask(key)
+            # 整数列表
+            indices = [int(x) + n if int(x) < 0 else int(x) for x in key]
+            values = [self.values[i] for i in indices]
+            if self._index is not None:
+                new_index = [self._index[i] for i in indices]
+            else:
+                new_index = None
+            return Series(values, name=self.name, index=new_index, dtype=self._dtype_str)
+        raise TypeError(f"iloc: unsupported key {type(key).__name__}")
+
+    def sort_values(self, ascending: bool = True, inplace: bool = False) -> "Series":
+        """按值排序。None 始终在末尾。"""
+        pairs = [(i, v) for i, v in enumerate(self.values)]
+        # stable sort: None 在末尾
+        non_none = [(i, v) for i, v in pairs if v is not None]
+        none_items = [(i, v) for i, v in pairs if v is None]
+        try:
+            non_none.sort(key=lambda x: x[1], reverse=not ascending)
+        except TypeError:
+            raise TypeError("cannot sort mixed types")
+        sorted_pairs = non_none + none_items
+        new_values = [v for _, v in sorted_pairs]
+        if self._index is not None:
+            new_index = [self._index[i] for i, _ in sorted_pairs]
+        else:
+            new_index = None
+        if inplace:
+            self._inner = _PySeries(new_values, self.name)
+            self._index = new_index
+            return self
+        return Series(new_values, name=self.name, index=new_index)
+
+    def apply(self, func) -> "Series":
+        """对每个非 None 元素应用 func。
+
+        :param func: callable (scalar) -> scalar
+        """
+        out = [None if v is None else func(v) for v in self.values]
+        return Series(out, name=self.name, index=self._index)
+
+    def map(self, arg) -> "Series":
+        """映射: 可以传 dict 或 callable。
+
+        - dict: 用值匹配, 缺失 -> None
+        - callable: 逐元素应用, 同 apply
+        """
+        if isinstance(arg, dict):
+            out = [None if v is None else arg.get(v, None) for v in self.values]
+        else:
+            out = [None if v is None else arg(v) for v in self.values]
+        return Series(out, name=self.name, index=self._index)
+
+    def replace(self, to_replace, value=None) -> "Series":
+        """替换值。
+
+        三种用法:
+        - df.replace(old, new)
+        - df.replace({old: new})
+        - df.replace([old1, old2], [new1, new2])
+        """
+        # 形式 1: scalar
+        if not isinstance(to_replace, (list, tuple, dict)):
+            out = [value if v == to_replace else v for v in self.values]
+            return Series(out, name=self.name, index=self._index)
+        # 形式 3: list[old] + list[new]
+        if isinstance(to_replace, (list, tuple)) and isinstance(value, (list, tuple)):
+            if len(to_replace) != len(value):
+                raise ValueError("to_replace and value must have the same length")
+            mapping = dict(zip(to_replace, value))
+        elif isinstance(to_replace, dict):
+            mapping = to_replace
+        else:
+            raise TypeError("invalid replace arguments")
+        out = [mapping.get(v, v) if v is not None else None for v in self.values]
+        return Series(out, name=self.name, index=self._index)
+
+    def duplicated(self, keep: str = "first") -> "Series":
+        """返回 bool Series 标记重复行。
+
+        :param keep: 'first' / 'last' / False
+        """
+        if keep == "first":
+            seen = set()
+            out = []
+            for v in self.values:
+                if v in seen:
+                    out.append(True)
+                else:
+                    out.append(False)
+                    seen.add(v)
+        elif keep == "last":
+            seen = set()
+            rev_out = []
+            for v in reversed(self.values):
+                if v in seen:
+                    rev_out.append(True)
+                else:
+                    rev_out.append(False)
+                    seen.add(v)
+            out = list(reversed(rev_out))
+        elif keep is False:
+            from collections import Counter
+            c = Counter(self.values)
+            dup = {k for k, n in c.items() if n > 1}
+            out = [v in dup for v in self.values]
+        else:
+            raise ValueError("keep must be 'first', 'last', or False")
+        return Series(out, name=self.name, index=self._index, dtype="bool")
+
+    def drop_duplicates(self, keep: str = "first", inplace: bool = False) -> "Series":
+        """删除重复值。"""
+        seen = set()
+        out = []
+        out_idx = []
+        for v, i in zip(self.values,
+                        self._index if self._index else range(len(self))):
+            if v in seen:
+                continue
+            seen.add(v)
+            out.append(v)
+            out_idx.append(i)
+        if keep == "last":
+            seen = set()
+            out = []
+            out_idx = []
+            for v, i in zip(reversed(self.values),
+                            reversed(self._index if self._index else range(len(self)))):
+                if v in seen:
+                    continue
+                seen.add(v)
+                out.append(v)
+                out_idx.append(i)
+            out.reverse()
+            out_idx.reverse()
+        new_index = out_idx if self._index is not None else None
+        if inplace:
+            self._inner = _PySeries(out, self.name)
+            self._index = new_index
+            return self
+        return Series(out, name=self.name, index=new_index)
+
+    def where(self, cond, other=None) -> "Series":
+        """三元: cond 为 True 保留 self, 否则取 other。"""
+        if isinstance(cond, Series):
+            cond = cond.values
+        out = [
+            (v if c else other) if v is not None and c else (other if not c else v)
+            for v, c in zip(self.values, cond)
+        ]
+        return Series(out, name=self.name, index=self._index)
+
+    def mask(self, cond, other=None) -> "Series":
+        """where 的反义: cond 为 True 替换为 other, 否则保留 self。"""
+        if isinstance(cond, Series):
+            cond = cond.values
+        out = [
+            (other if c else v) if v is not None or not c else other
+            for v, c in zip(self.values, cond)
+        ]
+        return Series(out, name=self.name, index=self._index)
 
     def astype(self, dtype: str) -> "Series":
         """类型转换（简化版）。"""
@@ -413,3 +744,77 @@ class Series:
 def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:
     """辅助函数：调用 Rust 端 filter。"""
     return inner.filter(mask)
+
+
+class StringAccessor:
+    """Series.str 字符串访问器。"""
+
+    def __init__(self, series: "Series"):
+        self._s = series
+
+    def _wrap(self, values: list, name: str = None) -> "Series":
+        return Series(values, name=name or self._s.name, index=self._s._index)
+
+    def _ensure_str(self, v):
+        return None if v is None else str(v)
+
+    def upper(self) -> "Series":
+        return self._wrap([self._ensure_str(v).upper() if v is not None else None for v in self._s.values])
+
+    def lower(self) -> "Series":
+        return self._wrap([self._ensure_str(v).lower() if v is not None else None for v in self._s.values])
+
+    def title(self) -> "Series":
+        return self._wrap([self._ensure_str(v).title() if v is not None else None for v in self._s.values])
+
+    def capitalize(self) -> "Series":
+        return self._wrap([self._ensure_str(v).capitalize() if v is not None else None for v in self._s.values])
+
+    def strip(self) -> "Series":
+        return self._wrap([self._ensure_str(v).strip() if v is not None else None for v in self._s.values])
+
+    def lstrip(self) -> "Series":
+        return self._wrap([self._ensure_str(v).lstrip() if v is not None else None for v in self._s.values])
+
+    def rstrip(self) -> "Series":
+        return self._wrap([self._ensure_str(v).rstrip() if v is not None else None for v in self._s.values])
+
+    def len(self) -> "Series":
+        return self._wrap([len(v) if v is not None else None for v in self._s.values])
+
+    def contains(self, pat, case: bool = True, na=None) -> "Series":
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(na)
+            else:
+                target = str(v) if case else str(v).lower()
+                needle = pat if case else pat.lower()
+                out.append(needle in target)
+        return self._wrap(out)
+
+    def startswith(self, pat) -> "Series":
+        return self._wrap([str(v).startswith(pat) if v is not None else None for v in self._s.values])
+
+    def endswith(self, pat) -> "Series":
+        return self._wrap([str(v).endswith(pat) if v is not None else None for v in self._s.values])
+
+    def replace(self, pat, repl) -> "Series":
+        return self._wrap([str(v).replace(pat, repl) if v is not None else None for v in self._s.values])
+
+    def split(self, pat: str = None, n: int = -1) -> list:
+        """字符串分割。返回 list[list[str]]。"""
+        return [
+            str(v).split(pat, n) if v is not None else None
+            for v in self._s.values
+        ]
+
+    def slice(self, start=None, stop=None, step=None) -> "Series":
+        s = slice(start, stop, step)
+        return self._wrap([
+            str(v)[s] if v is not None else None
+            for v in self._s.values
+        ])
+
+    def cat(self, sep: str = "") -> str:
+        return sep.join(str(v) for v in self._s.values if v is not None)

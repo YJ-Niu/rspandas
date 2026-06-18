@@ -279,6 +279,36 @@ class DataFrame:
         new_data = {c: list(self._inner.get_column(c).tail(n).values) for c in cols}
         return DataFrame(new_data)
 
+    def sort_values(self, by, ascending: bool = True) -> "DataFrame":
+        """按 by 列排序。by 可以是列名或列名列表。"""
+        if isinstance(by, str):
+            by = [by]
+        for c in by:
+            if c not in self._columns:
+                raise KeyError(f"column not found: {c}")
+        n = self._nrows
+        # 取出 by 列用于排序
+        sort_keys = [
+            [self._inner.get_column(c).values[i] for c in by]
+            for i in range(n)
+        ]
+
+        def key_func(row):
+            return tuple(
+                (1 if v is None else 0, v) for v in row
+            )
+
+        try:
+            order = sorted(range(n), key=lambda i: key_func(sort_keys[i]),
+                           reverse=not ascending)
+        except TypeError:
+            raise TypeError("cannot sort mixed types")
+        new_data = {
+            c: [self._inner.get_column(c).values[i] for i in order]
+            for c in self._columns
+        }
+        return DataFrame(new_data)
+
     def filter_rows(self, mask: list) -> "DataFrame":
         if len(mask) != self._nrows:
             raise ValueError(
@@ -291,7 +321,144 @@ class DataFrame:
             new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
         return DataFrame(new_data)
 
-    # ---------- 缺失值 ----------
+    def merge(
+        self,
+        other: "DataFrame",
+        on=None,
+        how: str = "inner",
+    ) -> "DataFrame":
+        """连接两个 DataFrame (v0.4.0)。"""
+        if on is None:
+            raise ValueError("on must be specified")
+        if isinstance(on, str):
+            keys = [on]
+        else:
+            keys = list(on)
+        for k in keys:
+            if k not in self._columns:
+                raise KeyError(f"column {k!r} not in left")
+            if k not in other._columns:
+                raise KeyError(f"column {k!r} not in right")
+
+        left = [
+            (tuple(self._inner.get_column(k).values[i] for k in keys),
+             {c: self._inner.get_column(c).values[i] for c in self._columns})
+            for i in range(self._nrows)
+        ]
+        right = [
+            (tuple(other._inner.get_column(k).values[i] for k in keys),
+             {c: other._inner.get_column(c).values[i] for c in other._columns})
+            for i in range(other._nrows)
+        ]
+        left_keys = {lk: i for i, (lk, _) in enumerate(left)}
+        right_keys = {rk: i for i, (rk, _) in enumerate(right)}
+
+        merged_rows: List[dict] = []
+        if how == "inner":
+            common = set(left_keys) & set(right_keys)
+            for k in common:
+                lv = left[left_keys[k]][1]
+                rv = right[right_keys[k]][1]
+                row = {}
+                for c, v in lv.items():
+                    row[c] = v
+                for c, v in rv.items():
+                    row[c] = v
+                merged_rows.append(row)
+        elif how == "left":
+            right_only = [c for c in other._columns if c not in self._columns]
+            for lk, lv in left:
+                rv = right[right_keys[lk]][1] if lk in right_keys else None
+                row = {}
+                for c, v in lv.items():
+                    row[c] = v
+                if rv is None:
+                    for c in right_only:
+                        row[c] = None
+                else:
+                    for c, v in rv.items():
+                        row[c] = v
+                merged_rows.append(row)
+        elif how == "outer":
+            right_only = [c for c in other._columns if c not in self._columns]
+            left_only = [c for c in self._columns if c not in other._columns]
+            seen_l = set()
+            for lk, lv in left:
+                seen_l.add(lk)
+                rv = right[right_keys[lk]][1] if lk in right_keys else None
+                row = {}
+                for c, v in lv.items():
+                    row[c] = v
+                if rv is None:
+                    for c in right_only:
+                        row[c] = None
+                else:
+                    for c, v in rv.items():
+                        row[c] = v
+                merged_rows.append(row)
+            for rk, rv in right:
+                if rk in seen_l:
+                    continue
+                lv = left[left_keys[rk]][1] if rk in left_keys else None
+                row = {}
+                if lv is None:
+                    for c in left_only:
+                        row[c] = None
+                else:
+                    for c, v in lv.items():
+                        row[c] = v
+                for c, v in rv.items():
+                    row[c] = v
+                merged_rows.append(row)
+        else:
+            raise ValueError(f"unsupported how: {how}")
+
+        all_cols: List[str] = list(self._columns)
+        for c in other._columns:
+            if c not in all_cols:
+                all_cols.append(c)
+        col_data: Dict[str, list] = {c: [] for c in all_cols}
+        for row in merged_rows:
+            for c in all_cols:
+                col_data[c].append(row.get(c))
+        return DataFrame(col_data)
+
+    @staticmethod
+    def concat(frames: List["DataFrame"], axis: int = 0) -> "DataFrame":
+        """拼接 DataFrame (v0.4.0)。"""
+        if not frames:
+            return DataFrame({})
+        if axis == 0:
+            all_cols: List[str] = []
+            for f in frames:
+                for c in f._columns:
+                    if c not in all_cols:
+                        all_cols.append(c)
+            col_data: Dict[str, list] = {c: [] for c in all_cols}
+            for f in frames:
+                for c in all_cols:
+                    if c in f._columns:
+                        col_data[c].extend(f._inner.get_column(c).values)
+                    else:
+                        col_data[c].extend([None] * f._nrows)
+            return DataFrame(col_data)
+        elif axis == 1:
+            nrows = frames[0]._nrows
+            for f in frames[1:]:
+                if f._nrows != nrows:
+                    raise ValueError("all frames must have the same number of rows")
+            all_cols: List[str] = []
+            for f in frames:
+                for c in f._columns:
+                    if c not in all_cols:
+                        all_cols.append(c)
+            col_data: Dict[str, list] = {c: [] for c in all_cols}
+            for f in frames:
+                for c in f._columns:
+                    col_data[c].extend(f._inner.get_column(c).values)
+            return DataFrame(col_data)
+        else:
+            raise ValueError(f"axis must be 0 or 1, got {axis}")
 
     def dropna(self) -> "DataFrame":
         """删除任意一列含 None 的行。"""
@@ -311,6 +478,128 @@ class DataFrame:
             filled = ser.fillna(value)
             new_data[c] = list(filled.values)
         return DataFrame(new_data)
+
+    def apply(self, func, axis: int = 0) -> "Series":
+        """应用函数。
+
+        :param axis: 0=按列 (每列传入 Series); 1=按行 (每行传入 dict)
+        """
+        if axis == 0:
+            results = []
+            for c in self._columns:
+                ser = self[c]
+                results.append(func(ser))
+            return Series(results, index=list(self._columns))
+        else:  # axis == 1
+            results = []
+            for i in range(self._nrows):
+                row = {c: self._inner.get_column(c).values[i] for c in self._columns}
+                results.append(func(row))
+            return Series(results, index=list(range(self._nrows)))
+
+    def applymap(self, func) -> "DataFrame":
+        """对每个元素应用 func。"""
+        new_data: Dict[str, list] = {}
+        for c in self._columns:
+            ser = self[c]
+            new_data[c] = [None if v is None else func(v) for v in ser.values]
+        return DataFrame(new_data)
+
+    def replace(self, to_replace, value=None) -> "DataFrame":
+        """替换 DataFrame 中的值。"""
+        new_data: Dict[str, list] = {}
+        for c in self._columns:
+            ser = self[c]
+            new_data[c] = list(ser.replace(to_replace, value).values)
+        return DataFrame(new_data)
+
+    def duplicated(self, subset=None, keep: str = "first") -> "Series":
+        """标记重复行。"""
+        if subset is None:
+            subset = self._columns
+        elif isinstance(subset, str):
+            subset = [subset]
+        # 取每行的 key tuple
+        n = self._nrows
+        row_keys = []
+        for i in range(n):
+            key = tuple(self._inner.get_column(c).values[i] for c in subset)
+            row_keys.append(key)
+        seen = set()
+        mark = []
+        if keep == "first":
+            for k in row_keys:
+                mark.append(k in seen)
+                seen.add(k)
+        elif keep == "last":
+            for k in reversed(row_keys):
+                mark.append(k in seen)
+                seen.add(k)
+            mark.reverse()
+        elif keep is False:
+            from collections import Counter
+            c = Counter(row_keys)
+            dup = {k for k, n in c.items() if n > 1}
+            mark = [k in dup for k in row_keys]
+        return Series(mark, name=None, index=list(range(n)))
+
+    def drop_duplicates(self, subset=None, keep: str = "first", inplace: bool = False) -> "DataFrame":
+        """删除重复行。"""
+        if subset is None:
+            subset = self._columns
+        elif isinstance(subset, str):
+            subset = [subset]
+        n = self._nrows
+        row_keys = [tuple(self._inner.get_column(c).values[i] for c in subset) for i in range(n)]
+        seen = set()
+        keep_idx = []
+        if keep == "first":
+            for i, k in enumerate(row_keys):
+                if k not in seen:
+                    keep_idx.append(i)
+                    seen.add(k)
+        elif keep == "last":
+            for i, k in reversed(list(enumerate(row_keys))):
+                if k not in seen:
+                    keep_idx.append(i)
+                    seen.add(k)
+            keep_idx.reverse()
+        new_data: Dict[str, list] = {}
+        for c in self._columns:
+            vals = self._inner.get_column(c).values
+            new_data[c] = [vals[i] for i in keep_idx]
+        return DataFrame(new_data)
+
+    def nunique(self) -> "Series":
+        """每列不同值数量。"""
+        out = {}
+        for c in self._columns:
+            ser = self[c]
+            out[c] = ser.nunique()
+        return Series(out, name=None, index=list(self._columns))
+
+    def to_pandas(self):
+        """转换为 pandas DataFrame。"""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError:
+            raise ImportError("pandas is required for to_pandas()")
+        data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        return pd.DataFrame(data)
+
+    @classmethod
+    def from_pandas(cls, pdf) -> "DataFrame":
+        """从 pandas DataFrame 构造。"""
+        try:
+            import pandas as pd  # type: ignore
+        except ImportError:
+            raise ImportError("pandas is required for from_pandas()")
+        if not isinstance(pdf, pd.DataFrame):
+            raise TypeError("expected pandas DataFrame")
+        data = {c: [None if pd.isna(v) else v.item() if hasattr(v, 'item') else v
+                    for v in pdf[c].values]
+                for c in pdf.columns}
+        return cls(data)
 
     @classmethod
     def _from_inner(cls, inner) -> "DataFrame":
@@ -510,6 +799,100 @@ class DataFrame:
             prev_i = i
 
         return "\n".join(lines) + f"\n\n[{n} rows x {len(self._columns)} columns]"
+
+    def groupby(self, by, as_index: bool = True):
+        """按 by 列分组 (v0.4.0)。"""
+        return DataFrameGroupBy(self, by, as_index=as_index)
+
+
+class DataFrameGroupBy:
+    """DataFrame 分组结果 (极简版)。"""
+
+    def __init__(self, df: "DataFrame", by, as_index: bool = True):
+        if isinstance(by, str):
+            self._by = [by]
+        else:
+            self._by = list(by)
+        self._df = df
+        self._as_index = as_index
+        # 分组: { key_tuple: [row_indices] }
+        self._groups: Dict[tuple, list] = {}
+        n = df._nrows
+        for i in range(n):
+            key = tuple(
+                df._inner.get_column(c).values[i] for c in self._by
+            )
+            self._groups.setdefault(key, []).append(i)
+
+    def _agg(self, agg_funcs: Dict[str, str]) -> "DataFrame":
+        """对每列应用聚合函数。
+
+        :param agg_funcs: {列名: 'sum' | 'mean' | 'min' | 'max' | 'count' | 'std' | 'var' | 'median' | 'first' | 'last'}
+        """
+        result: Dict[str, list] = {c: [] for c in self._by}
+        agg_cols = list(agg_funcs.keys())
+        for c in agg_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for k, c in zip(key, self._by):
+                result[c].append(k)
+            for c in agg_cols:
+                # 用 iloc 取子集 (Series.iloc 接受 list[int])
+                ser = self._df[c]
+                sub = ser.iloc(idxs)
+                func = agg_funcs[c]
+                if func == "sum":
+                    result[c].append(sub.sum())
+                elif func == "mean":
+                    result[c].append(sub.mean())
+                elif func == "min":
+                    result[c].append(sub.min())
+                elif func == "max":
+                    result[c].append(sub.max())
+                elif func == "count":
+                    result[c].append(sub.count())
+                elif func == "std":
+                    result[c].append(sub.std())
+                elif func == "var":
+                    result[c].append(sub.var())
+                elif func == "median":
+                    result[c].append(sub.median())
+                elif func == "first":
+                    result[c].append(sub.iloc(0) if len(sub) > 0 else None)
+                elif func == "last":
+                    result[c].append(sub.iloc(-1) if len(sub) > 0 else None)
+                else:
+                    raise ValueError(f"unsupported agg: {func}")
+        return DataFrame(result)
+
+    def sum(self) -> "DataFrame":
+        return self._agg({c: "sum" for c in self._df._columns if c not in self._by})
+
+    def mean(self) -> "DataFrame":
+        numeric_cols = [
+            c for c in self._df._columns
+            if c not in self._by
+            and self._df._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        return self._agg({c: "mean" for c in numeric_cols})
+
+    def min(self) -> "DataFrame":
+        return self._agg({c: "min" for c in self._df._columns if c not in self._by})
+
+    def max(self) -> "DataFrame":
+        return self._agg({c: "max" for c in self._df._columns if c not in self._by})
+
+    def count(self) -> "DataFrame":
+        return self._agg({c: "count" for c in self._df._columns if c not in self._by})
+
+    def agg(self, func) -> "DataFrame":
+        """通用聚合: 可以传 str 或 dict[列名->str]。"""
+        if isinstance(func, str):
+            return self._agg({c: func for c in self._df._columns if c not in self._by})
+        if isinstance(func, dict):
+            return self._agg(func)
+        raise TypeError("agg must be str or dict")
 
 
 # ---------------------------------------------------------------------------
