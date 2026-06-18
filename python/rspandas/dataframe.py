@@ -322,39 +322,47 @@ class DataFrame:
     # ---------- 显示 ----------
 
     def _format_repr(self) -> str:
-        # 简化：构造表格
-        cols = self._columns
-        # 准备列数据
-        col_strs = {}
-        col_widths = {}
-        for c in cols:
+        # 准备每列的字符串化数据
+        col_strs: Dict[str, list] = {}
+        col_widths: Dict[str, int] = {}
+        for c in self._columns:
             ser = self._inner.get_column(c)
             svec = ser.to_string_vec()
             col_strs[c] = svec
             col_widths[c] = max(len(c), max((len(s) for s in svec), default=0))
 
-        # 截断列
-        if len(cols) > 20:
-            shown_cols = cols[:10] + cols[-10:]
+        # 截断列: > 20 列时显示前 10 + ... + 后 10
+        if len(self._columns) > 20:
+            shown_cols = self._columns[:10] + self._columns[-10:]
         else:
-            shown_cols = cols
+            shown_cols = list(self._columns)
 
-        # 截断行
+        # 截断行: > 60 行时显示前 30 + ... + 后 30
         n = self._nrows
         if n > 60:
             shown_rows = list(range(30)) + list(range(n - 30, n))
         else:
             shown_rows = list(range(n))
 
+        # 索引列宽度
+        idx_width = max(len(str(max(n - 1, 0))), 1)
+
         # 表头
-        header = "   " + "  ".join(c.ljust(col_widths[c]) for c in shown_cols)
+        header_cells = [c.ljust(col_widths[c]) for c in shown_cols]
+        header = " " * (idx_width + 1) + "  ".join(header_cells)
         lines = [header]
+
+        prev_i = -1
         for i in shown_rows:
-            row_cells = []
-            for c in shown_cols:
-                s = col_strs[c][i] if i < len(col_strs[c]) else ""
-                row_cells.append(s.ljust(col_widths[c]))
-            lines.append(f"{i:>3} " + "  ".join(row_cells))
-            if i == 29 and n > 60:
-                lines.append("..  " + "  ".join("." * col_widths[c] for c in shown_cols))
-        return "\n".join(lines) + f"\n\n[{n} rows x {len(cols)} columns]"
+            if prev_i >= 0 and i != prev_i + 1:
+                # 截断行之间的省略号
+                ellipsis_cells = ["." * col_widths[c] for c in shown_cols]
+                lines.append("." * (idx_width + 1) + "  " + "  ".join(ellipsis_cells))
+            row_cells = [
+                col_strs[c][i].ljust(col_widths[c]) if i < len(col_strs[c]) else ""
+                for c in shown_cols
+            ]
+            lines.append(f"{i:>{idx_width}} " + "  ".join(row_cells))
+            prev_i = i
+
+        return "\n".join(lines) + f"\n\n[{n} rows x {len(self._columns)} columns]"
