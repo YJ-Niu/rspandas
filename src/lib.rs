@@ -5,7 +5,7 @@ use crate::core::series::PySeries;
 use crate::core::dataframe::PyDataFrame;
 
 #[pymodule]
-fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySeries>()?;
     m.add_class::<PyDataFrame>()?;
     Ok(())

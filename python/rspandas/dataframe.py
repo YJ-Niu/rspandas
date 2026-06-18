@@ -275,6 +275,38 @@ class DataFrame:
             new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
         return DataFrame(new_data)
 
+    # ---------- 缺失值 ----------
+
+    def dropna(self) -> "DataFrame":
+        """删除任意一列含 None 的行。"""
+        return DataFrame._from_inner(self._inner.dropna())
+
+    def fillna(self, value) -> "DataFrame":
+        """填充整个 DataFrame 中所有列的缺失值。
+
+        :param value: 标量 -> 应用到所有列; dict -> 按列名填充不同值
+        """
+        if isinstance(value, dict):
+            return DataFrame._from_inner(self._inner.fillna(value))
+        # 标量: 对每列单独调用 fillna
+        new_data: Dict[str, list] = {}
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            filled = ser.fillna(value)
+            new_data[c] = list(filled.values)
+        return DataFrame(new_data)
+
+    @classmethod
+    def _from_inner(cls, inner) -> "DataFrame":
+        """从 Rust DataFrame 直接构造 Python DataFrame。"""
+        cols = list(inner.columns)
+        df = cls.__new__(cls)
+        df._inner = inner
+        df._columns = cols
+        df._nrows = inner.nrows
+        df._index = list(range(df._nrows))
+        return df
+
     # ---------- 概览 ----------
 
     def info(self) -> None:

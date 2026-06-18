@@ -15,5 +15,5 @@ dev = ["pytest"]
 
 [tool.maturin]
 python-source = "python"
-module-name = "rspandas._rust"
+module-name = "_rust"
 features = ["pyo3/extension-module"]

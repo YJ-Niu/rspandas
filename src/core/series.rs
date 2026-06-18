@@ -343,7 +343,7 @@ impl Series {
 // =====================================================================
 
 /// Python 端 _Series，包装 Rust Series
-#[pyclass(name = "_Series", module = "rspandas._rust")]
+#[pyclass(name = "_Series", module = "rspandas", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PySeries {
     pub inner: Series,

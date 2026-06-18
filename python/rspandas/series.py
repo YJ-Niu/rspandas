@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Optional, Tuple, Union
 
-from ._rust import _Series as _PySeries  # type: ignore
+from rspandas import _Series as _PySeries  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +307,42 @@ class Series:
         # 构建一个 Series
         result = Series(list(stats.values()), index=list(stats.keys()))
         return result
+
+    # ---------- 缺失值 ----------
+
+    def isnull(self) -> "Series":
+        """返回 bool Series，True 表示该位置是 None。"""
+        mask = self._inner.isnull()
+        return Series(mask, name=self.name, dtype="bool")
+
+    def notnull(self) -> "Series":
+        """返回 bool Series，True 表示该位置不是 None。"""
+        mask = self._inner.notnull()
+        return Series(mask, name=self.name, dtype="bool")
+
+    def dropna(self) -> "Series":
+        """删除缺失值所在行。"""
+        return Series(self._inner.dropna(), name=self.name)
+
+    def fillna(self, value) -> "Series":
+        """用 value 填充缺失值。"""
+        return Series(self._inner.fillna(value), name=self.name)
+
+    # ---------- 唯一值 ----------
+
+    def unique(self) -> "Series":
+        """返回去重后的 Series (保持首次出现顺序)。"""
+        return Series(self._inner.unique(), name=self.name)
+
+    def nunique(self) -> int:
+        """返回不同值的数量 (None 不计入)。"""
+        return self._inner.nunique()
+
+    def value_counts(self) -> "Series":
+        """统计每个值出现的次数，返回按出现顺序排序的 Series，索引为值。"""
+        values, counts = self._inner.value_counts()
+        s = Series(counts, index=values, name=self.name)
+        return s
 
     # ---------- 过滤 ----------
 

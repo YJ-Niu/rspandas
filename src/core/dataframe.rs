@@ -92,13 +92,61 @@ impl DataFrame {
         let n_data: Vec<Series> = self.data.iter().map(|s| s.filter(mask)).collect();
         Ok(DataFrame { columns: self.columns.clone(), data: n_data })
     }
+
+    /// 删除任意一列为 None 的行 (axis=0)
+    pub fn dropna_rows(&self) -> DataFrame {
+        if self.nrows() == 0 {
+            return self.clone();
+        }
+        // 收集"全行非空"的 mask
+        let nrows = self.nrows();
+        let mut keep = vec![true; nrows];
+        for s in &self.data {
+            for (i, is_null) in s.isnull().iter().enumerate() {
+                if *is_null { keep[i] = false; }
+            }
+        }
+        let n_data: Vec<Series> = self.data.iter().map(|s| s.filter(&keep)).collect();
+        DataFrame { columns: self.columns.clone(), data: n_data }
+    }
+
+    /// 填充整个 DataFrame 中所有列的 None 值
+    pub fn fillna_rows(&self, fill_dict: &std::collections::HashMap<String, FillValue>) -> PyResult<DataFrame> {
+        let mut n_data = Vec::with_capacity(self.data.len());
+        for (col, series) in self.columns.iter().zip(self.data.iter()) {
+            let new_series = if let Some(v) = fill_dict.get(col) {
+                match (v, series.dtype()) {
+                    (FillValue::Int(x), DType::Int64) => series.fillna_i64(*x),
+                    (FillValue::Float(x), DType::Float64) => series.fillna_f64(*x),
+                    (FillValue::Bool(x), DType::Bool) => series.fillna_bool(*x),
+                    (FillValue::String(x), DType::Object) => series.fillna_string(x),
+                    _ => return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "fill value type mismatch for column '{}'", col
+                    ))),
+                }
+            } else {
+                series.clone()
+            };
+            n_data.push(new_series);
+        }
+        Ok(DataFrame { columns: self.columns.clone(), data: n_data })
+    }
+}
+
+/// DataFrame fillna 用的填充值类型
+#[derive(Debug, Clone)]
+pub enum FillValue {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    String(String),
 }
 
 // =====================================================================
 // PyO3 绑定
 // =====================================================================
 
-#[pyclass(name = "_DataFrame", module = "rspandas._rust")]
+#[pyclass(name = "_DataFrame", module = "rspandas", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyDataFrame {
     pub inner: DataFrame,
@@ -178,6 +226,36 @@ impl PyDataFrame {
     }
     fn filter_rows(&self, mask: Vec<bool>) -> PyResult<Self> {
         Ok(PyDataFrame { inner: self.inner.filter_rows(&mask)? })
+    }
+
+    // ---------- 缺失值 ----------
+
+    fn dropna(&self) -> Self {
+        PyDataFrame { inner: self.inner.dropna_rows() }
+    }
+
+    /// fillna: 接受 dict {col_name: value}，只填充指定列
+    fn fillna(&self, fill_dict: &Bound<'_, PyDict>) -> PyResult<Self> {
+        use pyo3::types::PyAnyMethods;
+        let mut converted = std::collections::HashMap::new();
+        for (key, val) in fill_dict.iter() {
+            let col: String = key.extract()?;
+            // 优先尝试 bool，再 int，再 float，最后 string
+            if let Ok(b) = val.extract::<bool>() {
+                converted.insert(col, FillValue::Bool(b));
+            } else if let Ok(i) = val.extract::<i64>() {
+                converted.insert(col, FillValue::Int(i));
+            } else if let Ok(f) = val.extract::<f64>() {
+                converted.insert(col, FillValue::Float(f));
+            } else if let Ok(s) = val.extract::<String>() {
+                converted.insert(col, FillValue::String(s));
+            } else {
+                return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                    "unsupported fill value type for column '{}'", col
+                )));
+            }
+        }
+        Ok(PyDataFrame { inner: self.inner.fillna_rows(&converted)? })
     }
 
     // ---------- 显示辅助 ----------
