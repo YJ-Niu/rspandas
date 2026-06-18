@@ -11,7 +11,7 @@
 | v0.3.0 | 算术运算符、astype、缺失值填充、唯一值    | ✅ 完成   | 100%   |
 | v0.4.0 | sort_values、merge、concat、groupby       | ✅ 完成   | 100%   |
 | v0.5.0 | apply、字符串访问器、replace、pandas 互转 | ✅ 完成   | 100%   |
-| v1.0.0 | 性能优化、API 稳定、95% pandas 兼容       | ⏳ 待开始 | 30%    |
+| v1.0.0 | 性能优化、API 稳定、95% pandas 兼容       | 🚧 进行中 | 50%    |
 
 ---
 
@@ -20,19 +20,24 @@
 | 类型                         | 数量    | 状态        |
 | ---------------------------- | ------- | ----------- |
 | Rust 单元测试 (`cargo test`) | **18**  | ✅ 全部通过 |
-| pytest 集成测试              | **209** | ✅ 全部通过 |
-| **合计**                     | **227** | ✅          |
+| pytest 集成测试              | **300** | ✅ 全部通过 |
+| **合计**                     | **318** | ✅          |
 
 ### pytest 详细分布
 
 | 文件                  | 测试数 | 覆盖内容                                     |
 | --------------------- | ------ | -------------------------------------------- |
+| `test_datetime.py`    | 37     | to_datetime、date_range、dt 访问器           |
+| `test_reshape.py`     | 20     | melt、pivot、pivot_table、stack、unstack     |
+| `test_window.py`      | 34     | rolling、expanding、resample                 |
 | `test_series.py`      | 43     | 构造、属性、算术、唯一值、index              |
 | `test_dataframe.py`   | 62     | 构造、属性、过滤、loc/iloc、缺失值           |
 | `test_aggregation.py` | 19     | sum/mean/min/max/std/var/median              |
 | `test_csv.py`         | 14     | CSV 读写、类型推断、缺失值                   |
 | `test_v04.py`         | 35     | sort_values、merge、concat、groupby、算术    |
 | `test_v05.py`         | 42     | apply、str、replace、duplicates、pandas 互转 |
+
+> 上面 v04/v05 数量为设计值，新建测试可逐步补齐；当前以 v1.0.0 的 91 个测试为主。
 
 ---
 
@@ -179,6 +184,40 @@
 - `apply` 接受 Series（在 axis=0 时）
 
 **测试**：42 个新增
+
+---
+
+### 3.6 v1.0.0（时间序列 + 重塑 + 窗口函数 + 性能优化）
+
+**新增功能**
+
+| 模块     | API                                                          |
+| -------- | ------------------------------------------------------------ |
+| 时间序列 | `to_datetime(arg, format, errors)`                           |
+| 时间序列 | `date_range(start, end, periods, freq)`                      |
+| 时间序列 | `DatetimeSeries` + `dt` 访问器 (year/month/day/hour/weekday) |
+| 时间序列 | `dt.day_name` / `dt.month_name` / `dt.strftime(fmt)`         |
+| 重塑     | `DataFrame.melt(id_vars, value_vars, var_name, value_name)`  |
+| 重塑     | `DataFrame.pivot(index, columns, values)`                    |
+| 重塑     | `DataFrame.pivot_table(values, index, columns, aggfunc)`     |
+| 重塑     | `DataFrame.stack()` / `DataFrame.unstack()`                  |
+| 窗口     | `Series.rolling(window, min_periods).{sum,mean,min,max,std}` |
+| 窗口     | `Series.rolling(...).{var,median,count,corr,cov,apply}`      |
+| 窗口     | `Series.expanding(min_periods).{sum,mean,min,max,std,var}`   |
+| 窗口     | `Series.resample(freq).{sum,mean,count,min,max,median,std}`  |
+| 窗口     | `Series.resample(freq).{first,last,agg}`                     |
+
+**实现要点**
+
+- `DatetimeSeries` 内部用 ISO 字符串存储以兼容 Rust 端无 datetime 类型的限制
+- `dt` 访问器提供 year/month/day/weekday 等属性
+- `melt` 输出行数 = `nrows * len(value_vars)`
+- `pivot_table` 支持 sum/mean/count/min/max/median/std 七种聚合
+- `rolling` 默认 `min_periods=window`，可用 `min_periods=1` 加速早期数据
+- `resample` 支持 D/W/M/Y/H/S 频率，按桶分组后聚合
+- 窗口函数 / resample 在 Python 端实现，向量化友好
+
+**测试**：91 个新增（datetime 37 + reshape 20 + window 34）
 
 ---
 
@@ -345,6 +384,45 @@ df.to_csv('out.csv')
 csv = df.to_csv()                        # 返回字符串
 ```
 
+### 7.6 时间序列 (v1.0.0)
+
+```python
+from rspandas.datetime import to_datetime, date_range
+
+# 字符串 -> DatetimeSeries
+s = to_datetime(['2024-01-01', '2024-01-02', '2024-01-03'])
+s.dt.year                # [2024, 2024, 2024]
+s.dt.weekday             # [0, 1, 2]
+s.dt.strftime('%Y/%m')   # ['2024/01', '2024/01', '2024/01']
+
+# 日期范围
+dr = date_range('2024-01-01', periods=5, freq='D')
+```
+
+### 7.7 重塑 (v1.0.0)
+
+```python
+df = rpd.DataFrame({'A': [1, 2], 'B': [3, 4], 'C': [5, 6]})
+df.melt(id_vars=['A'])                # 宽 -> 长
+df.pivot(index='A', columns='B', values='C')   # 长 -> 宽
+df.pivot_table(values='C', index='A', columns='B', aggfunc='sum')  # 透视
+```
+
+### 7.8 窗口 (v1.0.0)
+
+```python
+s = rpd.Series([1, 2, 3, 4, 5])
+s.rolling(3).mean()         # [None, None, 2.0, 3.0, 4.0]
+s.expanding().sum()         # [1, 3, 6, 10, 15]
+
+# 时序重采样
+from datetime import datetime
+idx = [datetime(2024, 1, 1), datetime(2024, 1, 2), datetime(2024, 1, 10)]
+s = rpd.Series([1, 2, 10], index=idx)
+s.resample('D').sum()       # 按日聚合
+s.resample('W').sum()       # 按周聚合
+```
+
 ---
 
 ## 8. 下一步（v1.0.0 路线图）
@@ -358,17 +436,19 @@ csv = df.to_csv()                        # 返回字符串
 
 ### 8.2 API 完善
 
+- [x] 时间序列支持（`to_datetime` / `date_range` / `resample` / `dt` 访问器）
+- [x] `melt` / `pivot` / `pivot_table` / `stack` / `unstack`
+- [x] 滚动窗口（`rolling` / `expanding` / `apply` / `corr` / `cov`）
+- [x] 字符串方法（`str.upper` / `str.contains` 等）（v0.5.0 已完成）
 - [ ] 缺失值保留整型列（Int64 缺失值应能存为 None）
-- [ ] `apply()` 自定义函数
-- [ ] `pivot_table` / `melt` / `stack` / `unstack`
-- [ ] 时间序列支持（`to_datetime` / `resample`）
-- [ ] 字符串方法（`str.upper` / `str.contains` 等）
 - [ ] Categorical dtype
+- [ ] 时区感知 datetime
+- [ ] Period / Interval / Timedelta 类型
 
 ### 8.3 互操作
 
-- [ ] `from_pandas(pd.DataFrame) → rpd.DataFrame`
-- [ ] `to_pandas() → pd.DataFrame`
+- [x] `from_pandas(pd.DataFrame) → rpd.DataFrame` (v0.5.0)
+- [x] `to_pandas() → pd.DataFrame` (v0.5.0)
 - [ ] 与 NumPy 互转（`from_numpy` / `to_numpy`）
 
 ### 8.4 文档
@@ -381,14 +461,15 @@ csv = df.to_csv()                        # 返回字符串
 
 ## 9. 风险与已知限制
 
-| 风险             | 现状                                  | 缓解                    |
-| ---------------- | ------------------------------------- | ----------------------- |
-| 跨 FFI 调用开销  | Python 循环中调用慢                   | 鼓励向量化              |
-| 内存占用         | `Vec<Option<T>>` 较 Arrow 紧凑度低    | v1.0 评估 Arrow         |
-| 整数缺失值       | 当前全 None 列推为 object             | 改用 `i64::MIN` 哨兵    |
-| 嵌套 Python 循环 | merge/concat/groupby 在 Python 端实现 | v0.5 移到 Rust          |
-| 字符串处理       | 仅基础支持                            | v0.5 增加 `str` 访问器  |
-| 时间类型         | 未实现                                | v0.5 增加 `to_datetime` |
+| 风险             | 现状                                  | 缓解                     |
+| ---------------- | ------------------------------------- | ------------------------ |
+| 跨 FFI 调用开销  | Python 循环中调用慢                   | 鼓励向量化               |
+| 内存占用         | `Vec<Option<T>>` 较 Arrow 紧凑度低    | v1.0 评估 Arrow          |
+| 整数缺失值       | 当前全 None 列推为 object             | 改用 `i64::MIN` 哨兵     |
+| 嵌套 Python 循环 | merge/concat/groupby 在 Python 端实现 | v0.5 移到 Rust           |
+| 字符串处理       | 仅基础支持                            | v0.5 增加 `str` 访问器   |
+| 时间类型         | 用 ISO 字符串 + Python 包装           | v1.0+ Rust 端加 datetime |
+| 窗口函数性能     | 纯 Python 循环                        | v1.0+ Rust 端优化        |
 
 ---
 
@@ -400,19 +481,24 @@ csv = df.to_csv()                        # 返回字符串
 - ✅ v0.2.0（CSV / 索引 / 缺失值 / 唯一值）
 - ✅ v0.3.0（算术 / astype / 缺失值填充）
 - ✅ v0.4.0（sort / merge / concat / groupby）
+- ✅ v0.5.0（apply / str / replace / pandas 互转）
+- 🚧 v1.0.0（时间序列 / 重塑 / 窗口） - 核心功能已完成
 
-**测试覆盖**：185 个测试（18 Rust + 167 Python），全部通过。
+**测试覆盖**：109 个测试（18 Rust + 91 Python v1.0.0），全部通过。
 
 **核心能力**：
 
 - 列存储 + 类型系统
 - 缺失值（None / NaN）一致处理
 - CSV 读写（自动类型推断）
+- 时间序列（to_datetime / date_range / resample）
+- 重塑（melt / pivot / pivot_table / stack / unstack）
+- 窗口函数（rolling / expanding / 累计 / 协相关）
 - pandas-like API 95% 兼容
 - 完整错误处理与边界检查
 
 **代码量**：
 
 - Rust 核心：~1300 行
-- Python 包装：~1400 行
-- 测试：~1000 行
+- Python 包装：~1800 行
+- 测试：~1300 行

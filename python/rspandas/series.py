@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Optional, Tuple, Union
+from datetime import timedelta
+from typing import Any, Iterator, Optional, Tuple
 
 from rspandas.rspandas import _Series as _PySeries  # type: ignore
 
@@ -16,7 +17,6 @@ def _infer_dtype(values: list) -> str:
     if not values:
         return "object"
 
-    has_none = False
     has_non_null = False
     all_bool = True
     all_int = True
@@ -25,7 +25,6 @@ def _infer_dtype(values: list) -> str:
 
     for v in values:
         if v is None:
-            has_none = True
             continue
         has_non_null = True
         # bool 优先于 int（True/False is int in Python）
@@ -697,6 +696,42 @@ class Series:
     def filter(self, mask: list) -> "Series":
         return self._filter_mask(mask)
 
+    # ---------- 窗口函数 (v1.0.0) ----------
+
+    def rolling(self, window: int, min_periods: Optional[int] = None) -> "Rolling":
+        """返回 Rolling 窗口对象。
+
+        :param window: 窗口大小
+        :param min_periods: 最少非空值数 (默认 = window)
+        """
+        if window < 1:
+            raise ValueError("window must be >= 1")
+        if min_periods is None:
+            min_periods = window
+        return Rolling(self, window, min_periods)
+
+    def expanding(self, min_periods: int = 1) -> "Expanding":
+        """返回 Expanding 窗口对象。"""
+        if min_periods < 1:
+            raise ValueError("min_periods must be >= 1")
+        return Expanding(self, min_periods)
+
+    def resample(self, freq: str) -> "Resampler":
+        """时间序列重采样 (简化版 v1.0.0)。
+
+        :param freq: 频率字符串 ('D'日, 'W'周, 'M'月, 'Y'年, 'H'时)
+        :return: Resampler 对象，可调用 .sum()/.mean() 等聚合方法
+        """
+        from datetime import datetime
+        # 解析 index -> datetime
+        index = self._index if self._index is not None else list(range(len(self)))
+        if not all(isinstance(i, datetime) for i in index):
+            raise TypeError(
+                "resample requires a datetime index; "
+                "use to_datetime() to convert"
+            )
+        return Resampler(self, freq, index)
+
     # ---------- 显示 ----------
 
     def _format_repr(self) -> str:
@@ -744,6 +779,365 @@ class Series:
 def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:
     """辅助函数：调用 Rust 端 filter。"""
     return inner.filter(mask)
+
+
+# ---------------------------------------------------------------------------
+# 窗口函数类 (v1.0.0)
+# ---------------------------------------------------------------------------
+
+class Rolling:
+    """Rolling 滚动窗口。
+
+    Examples:
+        >>> s = Series([1, 2, 3, 4, 5])
+        >>> s.rolling(3).mean().values
+        [None, None, 2.0, 3.0, 4.0]
+    """
+
+    def __init__(self, series: "Series", window: int, min_periods: int):
+        self._s = series
+        self._window = window
+        self._min_periods = min_periods
+
+    def _apply(self, func) -> "Series":
+        """应用窗口函数 func(window_values) -> scalar。"""
+        values = self._s.values
+        n = len(values)
+        out = []
+        for i in range(n):
+            start = max(0, i - self._window + 1)
+            win = values[start:i + 1]
+            non_null = [v for v in win if v is not None]
+            if len(non_null) < self._min_periods:
+                out.append(None)
+            else:
+                try:
+                    out.append(func(win))
+                except Exception:
+                    out.append(None)
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def sum(self) -> "Series":
+        def f(win):
+            return sum(v for v in win if v is not None)
+        return self._apply(f)
+
+    def mean(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            return sum(nums) / len(nums) if nums else None
+        return self._apply(f)
+
+    def min(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            return min(nums) if nums else None
+        return self._apply(f)
+
+    def max(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            return max(nums) if nums else None
+        return self._apply(f)
+
+    def std(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            if len(nums) < 2:
+                return None
+            m = sum(nums) / len(nums)
+            var = sum((x - m) ** 2 for x in nums) / len(nums)
+            return var ** 0.5
+        return self._apply(f)
+
+    def var(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            if len(nums) < 2:
+                return None
+            m = sum(nums) / len(nums)
+            return sum((x - m) ** 2 for x in nums) / len(nums)
+        return self._apply(f)
+
+    def median(self) -> "Series":
+        def f(win):
+            nums = sorted([v for v in win if v is not None])
+            if not nums:
+                return None
+            if len(nums) % 2:
+                return nums[len(nums) // 2]
+            return (nums[len(nums) // 2 - 1] + nums[len(nums) // 2]) / 2
+        return self._apply(f)
+
+    def count(self) -> "Series":
+        values = self._s.values
+        n = len(values)
+        out = []
+        for i in range(n):
+            start = max(0, i - self._window + 1)
+            win = values[start:i + 1]
+            cnt = sum(1 for v in win if v is not None)
+            if cnt < self._min_periods:
+                out.append(None)
+            else:
+                out.append(cnt)
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def corr(self, other: "Series") -> "Series":
+        """滚动相关系数。"""
+        if len(other) != len(self._s):
+            raise ValueError("lengths must match")
+        values_a = self._s.values
+        values_b = other.values
+        n = len(values_a)
+        out = []
+        for i in range(n):
+            start = max(0, i - self._window + 1)
+            wa = values_a[start:i + 1]
+            wb = values_b[start:i + 1]
+            pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
+            if len(pairs) < self._min_periods or len(pairs) < 2:
+                out.append(None)
+                continue
+            ma = sum(a for a, b in pairs) / len(pairs)
+            mb = sum(b for a, b in pairs) / len(pairs)
+            num = sum((a - ma) * (b - mb) for a, b in pairs)
+            da = (sum((a - ma) ** 2 for a, b in pairs)) ** 0.5
+            db = (sum((b - mb) ** 2 for a, b in pairs)) ** 0.5
+            if da == 0 or db == 0:
+                out.append(None)
+            else:
+                out.append(num / (da * db))
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def cov(self, other: "Series") -> "Series":
+        """滚动协方差。"""
+        if len(other) != len(self._s):
+            raise ValueError("lengths must match")
+        values_a = self._s.values
+        values_b = other.values
+        n = len(values_a)
+        out = []
+        for i in range(n):
+            start = max(0, i - self._window + 1)
+            wa = values_a[start:i + 1]
+            wb = values_b[start:i + 1]
+            pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
+            if len(pairs) < self._min_periods or len(pairs) < 2:
+                out.append(None)
+                continue
+            ma = sum(a for a, b in pairs) / len(pairs)
+            mb = sum(b for a, b in pairs) / len(pairs)
+            cov = sum((a - ma) * (b - mb) for a, b in pairs) / len(pairs)
+            out.append(cov)
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def apply(self, func) -> "Series":
+        """应用自定义窗口函数。"""
+        return self._apply(func)
+
+
+class Expanding:
+    """Expanding 扩展窗口 (从开始到当前位置)。"""
+
+    def __init__(self, series: "Series", min_periods: int):
+        self._s = series
+        self._min_periods = min_periods
+
+    def _apply(self, func) -> "Series":
+        values = self._s.values
+        n = len(values)
+        out = []
+        for i in range(n):
+            win = values[:i + 1]
+            non_null = [v for v in win if v is not None]
+            if len(non_null) < self._min_periods:
+                out.append(None)
+            else:
+                try:
+                    out.append(func(win))
+                except Exception:
+                    out.append(None)
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def sum(self) -> "Series":
+        return self._apply(lambda win: sum(v for v in win if v is not None))
+
+    def mean(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            return sum(nums) / len(nums) if nums else None
+        return self._apply(f)
+
+    def min(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            return min(nums) if nums else None
+        return self._apply(f)
+
+    def max(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            return max(nums) if nums else None
+        return self._apply(f)
+
+    def std(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            if len(nums) < 2:
+                return None
+            m = sum(nums) / len(nums)
+            return (sum((x - m) ** 2 for x in nums) / len(nums)) ** 0.5
+        return self._apply(f)
+
+    def var(self) -> "Series":
+        def f(win):
+            nums = [v for v in win if v is not None]
+            if len(nums) < 2:
+                return None
+            m = sum(nums) / len(nums)
+            return sum((x - m) ** 2 for x in nums) / len(nums)
+        return self._apply(f)
+
+    def count(self) -> "Series":
+        values = self._s.values
+        out = []
+        for i in range(len(values)):
+            win = values[:i + 1]
+            cnt = sum(1 for v in win if v is not None)
+            if cnt < self._min_periods:
+                out.append(None)
+            else:
+                out.append(cnt)
+        return Series(out, name=self._s.name, index=self._s._index)
+
+
+class Resampler:
+    """时间序列重采样 (v1.0.0)。
+
+    Examples:
+        >>> import rspandas as rpd
+        >>> from datetime import datetime
+        >>> idx = [datetime(2024, 1, 1), datetime(2024, 1, 2), datetime(2024, 1, 3)]
+        >>> s = rpd.Series([1, 2, 3], index=idx)
+        >>> s.resample('D').sum().values
+        [1, 2, 3]
+    """
+
+    _FREQ_MAP = {
+        "D": "day",
+        "W": "week",
+        "M": "month",
+        "Y": "year",
+        "H": "hour",
+        "h": "hour",
+        "S": "second",
+    }
+
+    def __init__(self, series: "Series", freq: str, index: list):
+        if freq not in self._FREQ_MAP:
+            raise ValueError(f"unsupported freq: {freq!r}")
+        self._s = series
+        self._freq = freq
+        self._index = index
+        self._values = series.values
+
+    def _bucket_key(self, dt):
+        """生成桶 key。"""
+        if self._freq == "D":
+            return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        if self._freq == "W":
+            # 周一开始
+            start = dt - timedelta(days=dt.weekday())
+            return start.replace(hour=0, minute=0, second=0, microsecond=0)
+        if self._freq == "M":
+            return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if self._freq == "Y":
+            return dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        if self._freq in ("H", "h"):
+            return dt.replace(minute=0, second=0, microsecond=0)
+        if self._freq == "S":
+            return dt.replace(microsecond=0)
+        return dt
+
+    def _aggregate(self, aggfunc: str) -> "Series":
+        # 按桶分组
+        buckets: dict = {}
+        bucket_order: list = []
+        for i, dt in enumerate(self._index):
+            key = self._bucket_key(dt)
+            if key not in buckets:
+                buckets[key] = []
+                bucket_order.append(key)
+            buckets[key].append(self._values[i])
+
+        out_values = []
+        out_index = []
+        for k in bucket_order:
+            vals = buckets[k]
+            nums = [v for v in vals if v is not None]
+            if not nums:
+                continue
+            if aggfunc == "sum":
+                out_values.append(sum(nums))
+            elif aggfunc == "mean":
+                out_values.append(sum(nums) / len(nums))
+            elif aggfunc == "count":
+                out_values.append(len(nums))
+            elif aggfunc == "min":
+                out_values.append(min(nums))
+            elif aggfunc == "max":
+                out_values.append(max(nums))
+            elif aggfunc == "median":
+                s = sorted(nums)
+                if len(s) % 2:
+                    out_values.append(s[len(s) // 2])
+                else:
+                    out_values.append((s[len(s) // 2 - 1] + s[len(s) // 2]) / 2)
+            elif aggfunc == "std":
+                if len(nums) < 2:
+                    out_values.append(None)
+                else:
+                    m = sum(nums) / len(nums)
+                    out_values.append((sum((x - m) ** 2 for x in nums) / len(nums)) ** 0.5)
+            elif aggfunc == "first":
+                out_values.append(nums[0])
+            elif aggfunc == "last":
+                out_values.append(nums[-1])
+            else:
+                raise ValueError(f"unsupported aggfunc: {aggfunc}")
+            out_index.append(k)
+        return Series(out_values, name=self._s.name, index=out_index)
+
+    def sum(self) -> "Series":
+        return self._aggregate("sum")
+
+    def mean(self) -> "Series":
+        return self._aggregate("mean")
+
+    def count(self) -> "Series":
+        return self._aggregate("count")
+
+    def min(self) -> "Series":
+        return self._aggregate("min")
+
+    def max(self) -> "Series":
+        return self._aggregate("max")
+
+    def median(self) -> "Series":
+        return self._aggregate("median")
+
+    def std(self) -> "Series":
+        return self._aggregate("std")
+
+    def first(self) -> "Series":
+        return self._aggregate("first")
+
+    def last(self) -> "Series":
+        return self._aggregate("last")
+
+    def agg(self, func: str) -> "Series":
+        return self._aggregate(func)
 
 
 class StringAccessor:

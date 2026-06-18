@@ -804,6 +804,353 @@ class DataFrame:
         """按 by 列分组 (v0.4.0)。"""
         return DataFrameGroupBy(self, by, as_index=as_index)
 
+    def melt(
+        self,
+        id_vars=None,
+        value_vars=None,
+        var_name: str = "variable",
+        value_name: str = "value",
+        ignore_index: bool = True,
+    ) -> "DataFrame":
+        """将宽表转为长表 (v1.0.0)。
+
+        将 id_vars 之外 (或 value_vars 指定) 的列"折叠"成 variable + value 两列。
+
+        :param id_vars: 用作标识符的列 (str | list[str] | None)
+        :param value_vars: 要展开为值的列 (str | list[str] | None)，None 表示其余列
+        :param var_name: 存放原列名的列名
+        :param value_name: 存放原值的列名
+        :param ignore_index: 是否重置索引
+        :return: DataFrame
+
+        Examples:
+            >>> df = DataFrame({'A': [1, 2], 'B': [3, 4], 'C': [5, 6]})
+            >>> df.melt(id_vars=['A'])
+               A variable  value
+            0  1        B      3
+            1  1        C      5
+            2  2        B      4
+            3  2        C      6
+        """
+        # 解析 id_vars
+        if id_vars is None:
+            id_vars = []
+        elif isinstance(id_vars, str):
+            id_vars = [id_vars]
+        else:
+            id_vars = list(id_vars)
+        for c in id_vars:
+            if c not in self._columns:
+                raise KeyError(f"id_var column not found: {c}")
+
+        # 解析 value_vars
+        if value_vars is None:
+            value_vars = [c for c in self._columns if c not in id_vars]
+        elif isinstance(value_vars, str):
+            value_vars = [value_vars]
+        else:
+            value_vars = list(value_vars)
+        for c in value_vars:
+            if c not in self._columns:
+                raise KeyError(f"value_var column not found: {c}")
+
+        if not value_vars:
+            raise ValueError("value_vars cannot be empty")
+
+        # 构造结果
+        new_data: Dict[str, list] = {c: [] for c in id_vars}
+        new_data[var_name] = []
+        new_data[value_name] = []
+
+        for i in range(self._nrows):
+            for vc in value_vars:
+                for iv in id_vars:
+                    new_data[iv].append(self._inner.get_column(iv).values[i])
+                new_data[var_name].append(vc)
+                new_data[value_name].append(self._inner.get_column(vc).values[i])
+
+        return DataFrame(new_data)
+
+    def pivot(
+        self,
+        index=None,
+        columns=None,
+        values=None,
+    ) -> "DataFrame":
+        """将长表转为宽表 (v1.0.0)。
+
+        与 pivot_table 不同，pivot 不支持聚合，仅在每个 (index, columns) 组合
+        对应一个唯一 value 时使用。
+
+        :param index: 用作行索引的列 (str | None -> 使用现有 index)
+        :param columns: 用作列的列 (str)
+        :param values: 填充值的列 (str | list[str] | None)
+        :return: DataFrame
+
+        Examples:
+            >>> df = DataFrame({
+            ...     'foo': ['one', 'one', 'two', 'two'],
+            ...     'bar': ['A', 'B', 'A', 'B'],
+            ...     'baz': [1, 2, 3, 4],
+            ... })
+            >>> df.pivot(index='foo', columns='bar', values='baz')
+            bar    A    B
+            foo
+            one    1    2
+            two    3    4
+        """
+        if columns is None:
+            raise ValueError("columns must be specified")
+        if values is None:
+            raise ValueError("values must be specified")
+        if isinstance(values, str):
+            values = [values]
+        else:
+            values = list(values)
+        if isinstance(index, str):
+            index = [index]
+        elif index is None:
+            index = []
+
+        for c in [columns] + values + index:
+            if c not in self._columns:
+                raise KeyError(f"column not found: {c}")
+
+        n = self._nrows
+        # 取出关键列
+        col_vals = list(self._inner.get_column(columns).values)
+        idx_tuples = [
+            tuple(self._inner.get_column(c).values[i] for c in index)
+            for i in range(n)
+        ]
+        # 收集所有 column 值
+        new_cols_set: list = []
+        seen = set()
+        for v in col_vals:
+            if v not in seen:
+                new_cols_set.append(v)
+                seen.add(v)
+
+        # 收集所有 index 值 (保持顺序)
+        new_idx_set: list = []
+        idx_seen = set()
+        for t in idx_tuples:
+            if t not in idx_seen:
+                new_idx_set.append(t)
+                idx_seen.add(t)
+
+        # 构造 (idx_tuple, col_val) -> value dict
+        cell: Dict[tuple, list] = {}
+        for i in range(n):
+            key = (idx_tuples[i], col_vals[i])
+            cell.setdefault(key, []).extend(
+                self._inner.get_column(v).values[i] for v in values
+            )
+
+        # 构造结果 DataFrame
+        new_data: Dict[str, list] = {}
+        for ic in index:
+            new_data[ic] = [t[index.index(ic)] for t in new_idx_set]
+        for cv in new_cols_set:
+            for j, v in enumerate(values):
+                col_name = str(cv) if len(values) == 1 else f"{cv}_{v}"
+                col_data = []
+                for t in new_idx_set:
+                    vals = cell.get((t, cv))
+                    if vals is None:
+                        col_data.append(None)
+                    else:
+                        col_data.append(vals[j] if j < len(vals) else None)
+                new_data[col_name] = col_data
+
+        return DataFrame(new_data)
+
+    def pivot_table(
+        self,
+        values=None,
+        index=None,
+        columns=None,
+        aggfunc: str = "mean",
+        fill_value=None,
+    ) -> "DataFrame":
+        """创建透视表 (v1.0.0)。
+
+        :param values: 聚合的列 (str | list[str] | None -> 所有数值列)
+        :param index: 行分组列 (str | list[str])
+        :param columns: 列分组列 (str | list[str])
+        :param aggfunc: 聚合函数 ('sum' / 'mean' / 'count' / 'min' / 'max' / 'median' / 'std')
+        :param fill_value: 用于替换缺失值的标量
+        :return: DataFrame
+
+        Examples:
+            >>> df = DataFrame({
+            ...     'A': ['foo', 'foo', 'bar', 'bar'],
+            ...     'B': ['one', 'two', 'one', 'two'],
+            ...     'C': [1, 2, 3, 4],
+            ...     'D': [10, 20, 30, 40],
+            ... })
+            >>> df.pivot_table(values='C', index='A', columns='B')
+            B      one  two
+            A
+            bar      3    4
+            foo      1    2
+        """
+        # 解析 values
+        if values is None:
+            # 默认选所有数值列
+            values = [
+                c for c in self._columns
+                if self._inner.get_column(c).dtype in ("int64", "float64")
+            ]
+        if isinstance(values, str):
+            values = [values]
+        else:
+            values = list(values)
+        for v in values:
+            if v not in self._columns:
+                raise KeyError(f"value column not found: {v}")
+
+        # 解析 index
+        if index is None:
+            index_cols: list = []
+        elif isinstance(index, str):
+            index_cols = [index]
+        else:
+            index_cols = list(index)
+        for c in index_cols:
+            if c not in self._columns:
+                raise KeyError(f"index column not found: {c}")
+
+        # 解析 columns
+        if columns is None:
+            raise ValueError("columns must be specified")
+        if isinstance(columns, str):
+            col_cols = [columns]
+        else:
+            col_cols = list(columns)
+        for c in col_cols:
+            if c not in self._columns:
+                raise KeyError(f"column key not found: {c}")
+
+        n = self._nrows
+        idx_tuples = [
+            tuple(self._inner.get_column(c).values[i] for c in index_cols)
+            for i in range(n)
+        ]
+        col_tuples = [
+            tuple(self._inner.get_column(c).values[i] for c in col_cols)
+            for i in range(n)
+        ]
+
+        # 收集所有 index 值
+        idx_set: list = []
+        idx_seen = set()
+        for t in idx_tuples:
+            if t not in idx_seen:
+                idx_set.append(t)
+                idx_seen.add(t)
+
+        # 收集所有 column 值
+        col_set: list = []
+        col_seen = set()
+        for t in col_tuples:
+            if t not in col_seen:
+                col_set.append(t)
+                col_seen.add(t)
+
+        # 构造 (idx, col) -> list of values
+        groups: Dict[tuple, Dict[str, list]] = {}
+        for i in range(n):
+            key = (idx_tuples[i], col_tuples[i])
+            if key not in groups:
+                groups[key] = {v: [] for v in values}
+            for v in values:
+                groups[key][v].append(self._inner.get_column(v).values[i])
+
+        # 构造结果
+        new_data: Dict[str, list] = {}
+        for ic in index_cols:
+            new_data[ic] = [t[index_cols.index(ic)] for t in idx_set]
+
+        for ct in col_set:
+            for v in values:
+                col_name_parts = [str(x) for x in ct] + [v]
+                col_name = "_".join(col_name_parts) if len(col_name_parts) > 1 else col_name_parts[0]
+                col_data = []
+                for it in idx_set:
+                    g = groups.get((it, ct))
+                    if g is None or not g[v]:
+                        col_data.append(fill_value)
+                    else:
+                        vals = g[v]
+                        if aggfunc == "sum":
+                            col_data.append(sum(x for x in vals if x is not None))
+                        elif aggfunc == "mean":
+                            nums = [x for x in vals if x is not None]
+                            col_data.append(sum(nums) / len(nums) if nums else fill_value)
+                        elif aggfunc == "count":
+                            col_data.append(sum(1 for x in vals if x is not None))
+                        elif aggfunc == "min":
+                            nums = [x for x in vals if x is not None]
+                            col_data.append(min(nums) if nums else fill_value)
+                        elif aggfunc == "max":
+                            nums = [x for x in vals if x is not None]
+                            col_data.append(max(nums) if nums else fill_value)
+                        elif aggfunc == "median":
+                            nums = sorted([x for x in vals if x is not None])
+                            if not nums:
+                                col_data.append(fill_value)
+                            elif len(nums) % 2:
+                                col_data.append(nums[len(nums) // 2])
+                            else:
+                                col_data.append((nums[len(nums) // 2 - 1] + nums[len(nums) // 2]) / 2)
+                        elif aggfunc == "std":
+                            nums = [x for x in vals if x is not None]
+                            if len(nums) < 2:
+                                col_data.append(fill_value)
+                            else:
+                                m = sum(nums) / len(nums)
+                                var = sum((x - m) ** 2 for x in nums) / len(nums)
+                                col_data.append(var ** 0.5)
+                        else:
+                            raise ValueError(f"unsupported aggfunc: {aggfunc}")
+                new_data[col_name] = col_data
+
+        return DataFrame(new_data)
+
+    def stack(self, level: int = -1) -> "DataFrame":
+        """将列堆叠为行 (v1.0.0)。"""
+        # 简化版: 仅支持单层
+        n = self._nrows
+        new_data: Dict[str, list] = {self._index_name or "index": []}
+        # 取所有列名作为 stack 后的变量
+        new_data["variable"] = []
+        new_data["value"] = []
+        for i in range(n):
+            for c in self._columns:
+                new_data[self._index_name or "index"].append(i)
+                new_data["variable"].append(c)
+                new_data["value"].append(self._inner.get_column(c).values[i])
+        return DataFrame(new_data)
+
+    @property
+    def _index_name(self) -> Optional[str]:
+        """返回 index 列名 (None 表示 RangeIndex)。"""
+        return None
+
+    def unstack(self) -> "DataFrame":
+        """stack 的反操作 (v1.0.0) - 简化版。"""
+        # 如果 DataFrame 包含 'variable' 和 'value' 列, 尝试 pivot
+        if "variable" in self._columns and "value" in self._columns:
+            other_cols = [c for c in self._columns if c not in ("variable", "value")]
+            if other_cols:
+                return self.pivot(
+                    index=other_cols[0],
+                    columns="variable",
+                    values="value",
+                )
+        raise NotImplementedError("unstack requires 'variable' and 'value' columns")
+
 
 class DataFrameGroupBy:
     """DataFrame 分组结果 (极简版)。"""
