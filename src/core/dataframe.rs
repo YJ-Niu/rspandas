@@ -201,7 +201,7 @@ impl PyDataFrame {
                         _ => py.None(),
                     },
                     super::dtype::ColumnData::Bool(v) => match v.get(i) {
-                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().into_any().unbind(),
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().as_any().clone().unbind(),
                         _ => py.None(),
                     },
                     super::dtype::ColumnData::String(v) => match v.get(i) {
