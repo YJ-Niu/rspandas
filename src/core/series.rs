@@ -609,7 +609,7 @@ impl PySeries {
         use pyo3::IntoPyObject;
         use pyo3::types::PyAnyMethods;
         match self.inner.any() {
-            Some(v) => Ok(v.into_pyobject(py)?.clone().into_any()),
+            Some(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
             None => Ok(py.None().into_bound(py)),
         }
     }
@@ -618,7 +618,7 @@ impl PySeries {
         use pyo3::IntoPyObject;
         use pyo3::types::PyAnyMethods;
         match self.inner.all() {
-            Some(v) => Ok(v.into_pyobject(py)?.clone().into_any()),
+            Some(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
             None => Ok(py.None().into_bound(py)),
         }
     }

@@ -185,7 +185,7 @@ impl PyDataFrame {
     /// 逐行构造 dict 列表 (用于 Python 端显示)
     fn to_rows<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
         use pyo3::IntoPyObject;
-        use pyo3::types::{PyAnyMethods, PyBoolMethods};
+        use pyo3::types::PyAnyMethods;
         let rows = PyList::empty(py);
         let nrows = self.inner.nrows();
         for i in 0..nrows {
