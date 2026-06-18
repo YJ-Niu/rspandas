@@ -11,6 +11,8 @@ __pycache__/
 dist/
 build/
 tests/
+test/
+test_*.py
 *.egg
 .venv/
 venv/
