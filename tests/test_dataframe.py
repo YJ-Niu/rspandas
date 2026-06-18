@@ -183,3 +183,45 @@ def test_dataframe_values():
     df = rpd.DataFrame({'a': [1, 2], 'b': ['x', 'y']})
     vals = df.values
     assert vals == [{'a': 1, 'b': 'x'}, {'a': 2, 'b': 'y'}]
+
+
+# ---------------------------------------------------------------------------
+# 缺失值 (v0.2.0)
+# ---------------------------------------------------------------------------
+
+def test_dataframe_dropna():
+    df = rpd.DataFrame({'a': [1, None, 3, 4], 'b': [10, 20, None, 40]})
+    d = df.dropna()
+    # 行 0, 3 不含 None
+    assert d.shape == (2, 2)
+    assert list(d['a'].values) == [1, 4]
+    assert list(d['b'].values) == [10, 40]
+
+
+def test_dataframe_dropna_no_null():
+    df = rpd.DataFrame({'a': [1, 2, 3]})
+    d = df.dropna()
+    assert d.shape == (3, 1)
+
+
+def test_dataframe_fillna_scalar():
+    """标量 fillna 只对匹配 dtype 的列生效，不匹配的列保持原样。"""
+    df = rpd.DataFrame({'a': [1, None, 3]})
+    f = df.fillna(0)
+    assert f.shape == (3, 1)
+    assert list(f['a'].values) == [1, 0, 3]
+
+
+def test_dataframe_fillna_dict():
+    df = rpd.DataFrame({'a': [1, None, 3], 'b': [10, 20, None]})
+    f = df.fillna({'a': 99, 'b': 0})
+    assert list(f['a'].values) == [1, 99, 3]
+    assert list(f['b'].values) == [10, 20, 0]
+
+
+def test_dataframe_fillna_dict_partial():
+    """只指定部分列，未指定列保持原样。"""
+    df = rpd.DataFrame({'a': [1, None, 3], 'b': [10, None, 30]})
+    f = df.fillna({'a': 0})
+    assert list(f['a'].values) == [1, 0, 3]
+    assert list(f['b'].values) == [10, None, 30]

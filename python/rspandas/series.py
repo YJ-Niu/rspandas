@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Optional, Tuple, Union
 
-from rspandas import _Series as _PySeries  # type: ignore
+from rspandas.rspandas import _Series as _PySeries  # type: ignore
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ._rust import _DataFrame as _PyDataFrame, _Series as _PySeries  # type: ignore
+from rspandas.rspandas import _DataFrame as _PyDataFrame, _Series as _PySeries  # type: ignore
 from .series import Series
 
 
@@ -311,7 +311,7 @@ class DataFrame:
 
     def info(self) -> None:
         """打印 DataFrame 概览。"""
-        print(f"<DataFrame>")
+        print("<DataFrame>")
         print(f"Shape: {self._nrows} rows x {len(self._columns)} columns")
         for c in self._columns:
             ser = self._inner.get_column(c)

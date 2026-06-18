@@ -241,3 +241,78 @@ def test_series_astype_to_str():
     f = s.astype('object')
     assert f.dtype == 'object'
     assert f.values == ['1', '2', '3']
+
+
+# ---------------------------------------------------------------------------
+# 缺失值 (v0.2.0)
+# ---------------------------------------------------------------------------
+
+def test_series_isnull():
+    s = rpd.Series([1, None, 3])
+    m = s.isnull()
+    assert m.dtype == 'bool'
+    assert list(m.values) == [False, True, False]
+
+
+def test_series_notnull():
+    s = rpd.Series([1, None, 3])
+    m = s.notnull()
+    assert m.dtype == 'bool'
+    assert list(m.values) == [True, False, True]
+
+
+def test_series_dropna():
+    s = rpd.Series([1, None, 3, None, 5])
+    d = s.dropna()
+    assert list(d.values) == [1, 3, 5]
+
+
+def test_series_dropna_no_null():
+    s = rpd.Series([1, 2, 3])
+    assert list(s.dropna().values) == [1, 2, 3]
+
+
+def test_series_fillna_int():
+    s = rpd.Series([1, None, 3])
+    f = s.fillna(0)
+    assert list(f.values) == [1, 0, 3]
+
+
+def test_series_fillna_string():
+    s = rpd.Series(['a', None, 'c'])
+    f = s.fillna('x')
+    assert list(f.values) == ['a', 'x', 'c']
+
+
+# ---------------------------------------------------------------------------
+# 唯一值 (v0.2.0)
+# ---------------------------------------------------------------------------
+
+def test_series_unique_int():
+    s = rpd.Series([1, 2, 2, 3, 1, 4])
+    u = s.unique()
+    assert list(u.values) == [1, 2, 3, 4]
+
+
+def test_series_unique_string():
+    s = rpd.Series(['a', 'b', 'a', 'c'])
+    u = s.unique()
+    assert list(u.values) == ['a', 'b', 'c']
+
+
+def test_series_nunique():
+    s = rpd.Series([1, 2, 2, 3, 1])
+    assert s.nunique() == 3
+
+
+def test_series_nunique_with_null():
+    s = rpd.Series([1, None, 2, None, 3])
+    assert s.nunique() == 3
+
+
+def test_series_value_counts():
+    s = rpd.Series(['a', 'b', 'a', 'c', 'b', 'a'])
+    vc = s.value_counts()
+    # 计数: a=3, b=2, c=1
+    assert vc.shape == (3,)
+    assert list(vc.values) == [3, 2, 1]
