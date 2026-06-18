@@ -270,6 +270,51 @@ impl Series {
         } else { None }
     }
 
+    // ---------- 缺失值 ----------
+
+    pub fn isnull(&self) -> Vec<bool> { self.data.isnull() }
+    pub fn notnull(&self) -> Vec<bool> { self.data.notnull() }
+
+    pub fn dropna(&self) -> Series {
+        Self { name: self.name.clone(), data: self.data.dropna() }
+    }
+
+    pub fn fillna_i64(&self, v: i64) -> Series {
+        Self { name: self.name.clone(), data: self.data.fillna_i64(v) }
+    }
+    pub fn fillna_f64(&self, v: f64) -> Series {
+        Self { name: self.name.clone(), data: self.data.fillna_f64(v) }
+    }
+    pub fn fillna_bool(&self, v: bool) -> Series {
+        Self { name: self.name.clone(), data: self.data.fillna_bool(v) }
+    }
+    pub fn fillna_string(&self, v: &str) -> Series {
+        Self { name: self.name.clone(), data: self.data.fillna_string(v) }
+    }
+
+    // ---------- 唯一值 ----------
+
+    pub fn unique(&self) -> Series {
+        Self { name: self.name.clone(), data: self.data.unique() }
+    }
+
+    pub fn nunique(&self) -> usize {
+        match &self.data {
+            ColumnData::Int(v) => v.iter().filter_map(|x| *x).collect::<std::collections::HashSet<_>>().len(),
+            ColumnData::Float(v) => {
+                let mut seen: Vec<f64> = Vec::new();
+                for x in v.iter().filter_map(|x| *x) {
+                    if !seen.iter().any(|y| y == &x) {
+                        seen.push(x);
+                    }
+                }
+                seen.len()
+            }
+            ColumnData::Bool(v) => v.iter().filter_map(|x| *x).collect::<std::collections::HashSet<_>>().len(),
+            ColumnData::String(v) => v.iter().filter_map(|x| x.clone()).collect::<std::collections::HashSet<_>>().len(),
+        }
+    }
+
     /// 转换为字符串列表 (None -> "NaN") - 给 DataFrame 显示用
     pub fn to_string_vec(&self) -> Vec<String> {
         match &self.data {
@@ -625,6 +670,78 @@ impl PySeries {
             Some(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
             None => Ok(py.None().into_bound(py)),
         }
+    }
+
+    // ---------- 缺失值 ----------
+
+    fn isnull<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        Ok(PyList::new(py, self.inner.isnull().iter().map(|x| *x))?)
+    }
+
+    fn notnull<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        Ok(PyList::new(py, self.inner.notnull().iter().map(|x| *x))?)
+    }
+
+    fn dropna(&self) -> Self {
+        PySeries { inner: self.inner.dropna() }
+    }
+
+    /// 填充缺失值 (根据 dtype 自动选择)
+    fn fillna<'py>(&self, py: Python<'py>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        use pyo3::types::PyAnyMethods;
+        let inner = match self.inner.dtype() {
+            DType::Int64 => {
+                let v: i64 = value.extract::<i64>()?;
+                self.inner.fillna_i64(v)
+            }
+            DType::Float64 => {
+                let v: f64 = value.extract::<f64>()?;
+                self.inner.fillna_f64(v)
+            }
+            DType::Bool => {
+                let v: bool = value.extract::<bool>()?;
+                self.inner.fillna_bool(v)
+            }
+            DType::Object => {
+                let v: String = value.extract::<String>()?;
+                self.inner.fillna_string(&v)
+            }
+        };
+        // suppress unused import warning
+        let _ = py;
+        Ok(PySeries { inner })
+    }
+
+    // ---------- 唯一值 ----------
+
+    fn unique(&self) -> Self {
+        PySeries { inner: self.inner.unique() }
+    }
+
+    fn nunique(&self) -> usize {
+        self.inner.nunique()
+    }
+
+    /// value_counts: 返回 (value, count) 两条 Series
+    fn value_counts<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
+        use std::collections::HashMap;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for s in self.inner.to_string_vec() {
+            // NaN 跳过
+            if s == "NaN" { continue; }
+            if let std::collections::hash_map::Entry::Vacant(e) = counts.entry(s.clone()) {
+                order.push(s.clone());
+                e.insert(0);
+            }
+            *counts.get_mut(&s).unwrap() += 1;
+        }
+        let values: Vec<&str> = order.iter().map(|s| s.as_str()).collect();
+        let cnts: Vec<usize> = order.iter().map(|s| counts[s]).collect();
+        Ok((
+            PyList::new(py, values)?,
+            PyList::new(py, cnts)?,
+        ))
     }
 
     // ---------- 显示辅助 ----------

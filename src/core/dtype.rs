@@ -191,6 +191,121 @@ impl ColumnData {
             }
         }
     }
+
+    /// 返回 bool 列: True 表示该位置是 None
+    pub fn isnull(&self) -> Vec<bool> {
+        match self {
+            ColumnData::Int(v) => v.iter().map(|x| x.is_none()).collect(),
+            ColumnData::Float(v) => v.iter().map(|x| x.is_none()).collect(),
+            ColumnData::Bool(v) => v.iter().map(|x| x.is_none()).collect(),
+            ColumnData::String(v) => v.iter().map(|x| x.is_none()).collect(),
+        }
+    }
+
+    /// 返回 bool 列: True 表示该位置不是 None
+    pub fn notnull(&self) -> Vec<bool> {
+        match self {
+            ColumnData::Int(v) => v.iter().map(|x| x.is_some()).collect(),
+            ColumnData::Float(v) => v.iter().map(|x| x.is_some()).collect(),
+            ColumnData::Bool(v) => v.iter().map(|x| x.is_some()).collect(),
+            ColumnData::String(v) => v.iter().map(|x| x.is_some()).collect(),
+        }
+    }
+
+    /// 用给定的值填充 None (类型必须匹配)
+    pub fn fillna_i64(&self, v: i64) -> ColumnData {
+        if let ColumnData::Int(col) = self {
+            ColumnData::Int(col.iter().map(|x| Some(x.unwrap_or(v))).collect())
+        } else { self.clone() }
+    }
+    pub fn fillna_f64(&self, v: f64) -> ColumnData {
+        if let ColumnData::Float(col) = self {
+            ColumnData::Float(col.iter().map(|x| Some(x.unwrap_or(v))).collect())
+        } else { self.clone() }
+    }
+    pub fn fillna_bool(&self, v: bool) -> ColumnData {
+        if let ColumnData::Bool(col) = self {
+            ColumnData::Bool(col.iter().map(|x| Some(x.unwrap_or(v))).collect())
+        } else { self.clone() }
+    }
+    pub fn fillna_string(&self, v: &str) -> ColumnData {
+        if let ColumnData::String(col) = self {
+            ColumnData::String(col.iter().map(|x| Some(x.clone().unwrap_or_else(|| v.to_string()))).collect())
+        } else { self.clone() }
+    }
+
+    /// 删除 None 所在行
+    pub fn dropna(&self) -> ColumnData {
+        match self {
+            ColumnData::Int(v) => {
+                ColumnData::Int(v.iter().filter_map(|x| *x).map(Some).collect())
+            }
+            ColumnData::Float(v) => {
+                ColumnData::Float(v.iter().filter_map(|x| *x).map(Some).collect())
+            }
+            ColumnData::Bool(v) => {
+                ColumnData::Bool(v.iter().filter_map(|x| *x).map(Some).collect())
+            }
+            ColumnData::String(v) => {
+                ColumnData::String(v.iter().filter_map(|x| x.clone()).map(Some).collect())
+            }
+        }
+    }
+
+    /// 获取不同值 (保持首次出现顺序)
+    pub fn unique(&self) -> ColumnData {
+        match self {
+            ColumnData::Int(v) => {
+                let mut seen = std::collections::HashSet::new();
+                let mut out: Vec<Option<i64>> = Vec::new();
+                for x in v {
+                    if let Some(val) = x {
+                        if seen.insert(*val) {
+                            out.push(Some(*val));
+                        }
+                    }
+                }
+                ColumnData::Int(out)
+            }
+            ColumnData::Float(v) => {
+                let mut seen: Vec<f64> = Vec::new();
+                let mut out: Vec<Option<f64>> = Vec::new();
+                for x in v {
+                    if let Some(val) = x {
+                        if !seen.iter().any(|y| y == val) {
+                            seen.push(*val);
+                            out.push(Some(*val));
+                        }
+                    }
+                }
+                ColumnData::Float(out)
+            }
+            ColumnData::Bool(v) => {
+                let mut seen = std::collections::HashSet::new();
+                let mut out: Vec<Option<bool>> = Vec::new();
+                for x in v {
+                    if let Some(val) = x {
+                        if seen.insert(*val) {
+                            out.push(Some(*val));
+                        }
+                    }
+                }
+                ColumnData::Bool(out)
+            }
+            ColumnData::String(v) => {
+                let mut seen = std::collections::HashSet::new();
+                let mut out: Vec<Option<String>> = Vec::new();
+                for x in v {
+                    if let Some(val) = x {
+                        if seen.insert(val.clone()) {
+                            out.push(Some(val.clone()));
+                        }
+                    }
+                }
+                ColumnData::String(out)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
