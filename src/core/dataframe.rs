@@ -130,13 +130,13 @@ impl PyDataFrame {
     fn empty(&self) -> bool { self.inner.nrows() == 0 }
 
     #[getter]
-    fn columns<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
-        PyList::new(py, self.inner.columns.iter())
+    fn columns<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        Ok(PyList::new(py, self.inner.columns.iter().map(|s| s.as_str()))?)
     }
 
     #[getter]
     fn dtypes<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         for (name, dt) in self.inner.dtypes() {
             d.set_item(name, dt).unwrap();
         }
@@ -191,21 +191,21 @@ impl PyDataFrame {
         for i in 0..nrows {
             let row = PyDict::new(py);
             for (col_name, series) in self.inner.columns.iter().zip(self.inner.data.iter()) {
-                let val: PyObject = match &series.data {
+                let val: pyo3::Py<pyo3::PyAny> = match &series.data {
                     super::dtype::ColumnData::Int(v) => match v.get(i) {
-                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().unbind(),
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().into_any().unbind(),
                         _ => py.None(),
                     },
                     super::dtype::ColumnData::Float(v) => match v.get(i) {
-                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().unbind(),
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().into_any().unbind(),
                         _ => py.None(),
                     },
                     super::dtype::ColumnData::Bool(v) => match v.get(i) {
-                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().unbind(),
+                        Some(Some(n)) => (*n).into_pyobject(py).unwrap().into_any().unbind(),
                         _ => py.None(),
                     },
                     super::dtype::ColumnData::String(v) => match v.get(i) {
-                        Some(Some(s)) => s.clone().into_pyobject(py).unwrap().unbind(),
+                        Some(Some(s)) => s.clone().into_pyobject(py).unwrap().into_any().unbind(),
                         _ => py.None(),
                     },
                 };
@@ -221,7 +221,7 @@ impl PyDataFrame {
         let d = PyDict::new(py);
         for (col_name, series) in self.inner.columns.iter().zip(self.inner.data.iter()) {
             let svec = series.to_string_vec();
-            let pylist = PyList::new(py, svec.iter().map(|s| s.as_str()));
+            let pylist: Bound<'_, PyList> = PyList::new(py, svec.iter().map(|s| s.as_str())).unwrap();
             d.set_item(col_name, pylist).unwrap();
         }
         d

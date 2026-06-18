@@ -609,7 +609,7 @@ impl PySeries {
         use pyo3::IntoPyObject;
         use pyo3::types::PyAnyMethods;
         match self.inner.any() {
-            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Some(v) => Ok(v.into_pyobject(py)?.clone().into_any()),
             None => Ok(py.None().into_bound(py)),
         }
     }
@@ -618,7 +618,7 @@ impl PySeries {
         use pyo3::IntoPyObject;
         use pyo3::types::PyAnyMethods;
         match self.inner.all() {
-            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+            Some(v) => Ok(v.into_pyobject(py)?.clone().into_any()),
             None => Ok(py.None().into_bound(py)),
         }
     }
@@ -626,10 +626,9 @@ impl PySeries {
     // ---------- 显示辅助 ----------
 
     /// 转换为字符串列表 (None -> "NaN")
-    fn to_string_vec<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
-        use pyo3::types::PyListMethods;
+    fn to_string_vec<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let svec = self.inner.to_string_vec();
-        PyList::new(py, svec.iter().map(|s| s.as_str()))
+        Ok(PyList::new(py, svec.iter().map(|s| s.as_str()))?)
     }
 }
 
