@@ -396,6 +396,61 @@ class Series:
         index = list(ps.index) if ps.index is not None else None
         return cls(vals, name=ps.name, index=index)
 
+    # ---------- 转换方法 (v1.0.0) ----------
+
+    def to_list(self) -> list:
+        """转换为 Python list。"""
+        return list(self.values)
+
+    def to_numpy(self):
+        """转换为 numpy array。"""
+        try:
+            import numpy as np  # type: ignore
+        except ImportError:
+            raise ImportError("numpy is required for to_numpy()")
+        return np.array(self.values)
+
+    def to_dict(self) -> dict:
+        """转换为 dict (index -> value)。"""
+        return {self._index[i] if self._index else i: v
+                for i, v in enumerate(self.values)}
+
+    def to_frame(self, name=None) -> "DataFrame":
+        """转换为 DataFrame。"""
+        from .dataframe import DataFrame
+        return DataFrame({name or self.name: self.values})
+
+    # ---------- 展开方法 (v1.0.0) ----------
+
+    def explode(self) -> "Series":
+        """展开列表元素为单独行。"""
+        values = self.values
+        out = []
+        for v in values:
+            if v is None:
+                out.append(None)
+            elif isinstance(v, (list, tuple)):
+                out.extend(v)
+            else:
+                out.append(v)
+        return Series(out, name=self.name)
+
+    def repeat(self, repeats) -> "Series":
+        """重复元素。
+        :param repeats: 重复次数 (int 或 list[int])
+        """
+        values = self.values
+        out = []
+        if isinstance(repeats, int):
+            for v in values:
+                out.extend([v] * repeats)
+        else:
+            if len(repeats) != len(values):
+                raise ValueError("repeats length must match series length")
+            for v, rep in zip(values, repeats):
+                out.extend([v] * rep)
+        return Series(out, name=self.name)
+
     def __bool__(self) -> bool:
         if len(self) == 1:
             v = self.values[0]
@@ -654,6 +709,48 @@ class Series:
         # 构建一个 Series
         result = Series(list(stats.values()), index=list(stats.keys()))
         return result
+
+    # ---------- 极值位置 (v1.0.0) ----------
+
+    def argmax(self) -> int:
+        """返回最大值的位置索引 (整数位置)。"""
+        values = self.values
+        max_val = None
+        max_idx = None
+        for i, v in enumerate(values):
+            if v is None:
+                continue
+            if max_val is None or v > max_val:
+                max_val = v
+                max_idx = i
+        return max_idx
+
+    def argmin(self) -> int:
+        """返回最小值的位置索引 (整数位置)。"""
+        values = self.values
+        min_val = None
+        min_idx = None
+        for i, v in enumerate(values):
+            if v is None:
+                continue
+            if min_val is None or v < min_val:
+                min_val = v
+                min_idx = i
+        return min_idx
+
+    def idxmax(self):
+        """返回最大值的标签索引。"""
+        idx = self.argmax()
+        if idx is None:
+            return None
+        return self._index[idx] if self._index is not None else idx
+
+    def idxmin(self):
+        """返回最小值的标签索引。"""
+        idx = self.argmin()
+        if idx is None:
+            return None
+        return self._index[idx] if self._index is not None else idx
 
     # ---------- 缺失值 ----------
 
