@@ -22,7 +22,7 @@ v1.1.0              - 类型系统扩展（Categorical、Datetime、Timedelta、
 v1.2.0              - IO 扩展（Excel、Parquet、JSON、SQL、Pickle）
 v1.3.0              - 高级索引（MultiIndex、IntervalIndex）
 v1.4.0              - 统计方法扩展（rolling/expanding/ewm、rank、quantile）
-v1.5.0              - NumPy/Arrow 互操作、性能基准
+v1.5.0              - rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)
 v2.0.0              - 完整 pandas 兼容（95%+ API 覆盖）
 
 当前迭代目标：v1.0.0
@@ -725,7 +725,7 @@ Step 16: 统计方法扩展 (v1.4.0)
         - 完整 rolling/expanding/ewm、rank、quantile、skew、kurt
         - 输出: 统计功能完善
 
-Step 17: NumPy/Arrow 互操作 (v1.5.0)
+Step 17: rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) (v1.5.0)
         - from_numpy / to_numpy / Arrow 集成
         - 输出: 高性能互操作
 
@@ -1038,7 +1038,7 @@ Step 18: 性能优化与基准 (v2.0.0)
   v1.2.0: IO 扩展（Excel、Parquet、JSON、SQL、Pickle）
   v1.3.0: 高级索引（MultiIndex、IntervalIndex、RangeIndex）
   v1.4.0: 统计方法扩展（完整 rolling/expanding/ewm、rank、quantile、skew、kurt）
-  v1.5.0: NumPy/Arrow 互操作、性能基准
+  v1.5.0: rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)
   v2.0.0: 完整 pandas 兼容（95%+ API 覆盖）
 
 ================================================================================

@@ -4,20 +4,20 @@
 
 ## 1. 总体进度
 
-| 版本   | 目标                                                     | 状态      | 完成度 |
-| ------ | -------------------------------------------------------- | --------- | ------ |
-| v0.1.0 | MVP（构造/属性/head/tail/聚合）                          | ✅ 完成   | 100%   |
-| v0.2.0 | CSV IO、loc/iloc、过滤、缺失值                           | ✅ 完成   | 100%   |
-| v0.3.0 | 算术运算符、astype、缺失值填充、唯一值                   | ✅ 完成   | 100%   |
-| v0.4.0 | sort_values、merge、concat、groupby                      | ✅ 完成   | 100%   |
-| v0.5.0 | apply、字符串访问器、replace、pandas 互转                | ✅ 完成   | 100%   |
-| v1.0.0 | 时间序列、重塑、窗口函数、性能优化、API 稳定             | 🚧 进行中 | 70%    |
-| v1.1.0 | 类型系统扩展（Categorical、Datetime、Timedelta、Period） | 📋 规划中 | 0%     |
-| v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）             | 📋 规划中 | 0%     |
-| v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）        | 📋 规划中 | 0%     |
-| v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）          | 📋 规划中 | 0%     |
-| v1.5.0 | NumPy/Arrow 互操作、性能基准                             | 📋 规划中 | 0%     |
-| v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                        | 📋 规划中 | 0%     |
+| 版本   | 目标                                                                   | 状态      | 完成度 |
+| ------ | ---------------------------------------------------------------------- | --------- | ------ |
+| v0.1.0 | MVP（构造/属性/head/tail/聚合）                                        | ✅ 完成   | 100%   |
+| v0.2.0 | CSV IO、loc/iloc、过滤、缺失值                                         | ✅ 完成   | 100%   |
+| v0.3.0 | 算术运算符、astype、缺失值填充、唯一值                                 | ✅ 完成   | 100%   |
+| v0.4.0 | sort_values、merge、concat、groupby                                    | ✅ 完成   | 100%   |
+| v0.5.0 | apply、字符串访问器、replace、pandas 互转                              | ✅ 完成   | 100%   |
+| v1.0.0 | 时间序列、重塑、窗口函数、性能优化、API 稳定                           | 🚧 进行中 | 70%    |
+| v1.1.0 | 类型系统扩展（Categorical、Datetime、Timedelta、Period）               | 📋 规划中 | 0%     |
+| v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）                           | 📋 规划中 | 0%     |
+| v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）                      | 📋 规划中 | 0%     |
+| v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）                        | 📋 规划中 | 0%     |
+| v1.5.0 | rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) | 📋 规划中 | 0%     |
+| v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                                      | 📋 规划中 | 0%     |
 
 ---
 
@@ -296,16 +296,16 @@
 
 ---
 
-### 3.11 v1.5.0（NumPy/Arrow 互操作）
+### 3.11 v1.5.0（rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)）
 
 **计划功能**
 
-| 模块  | API                           |
-| ----- | ----------------------------- |
-| NumPy | `to_numpy()` / `from_numpy()` |
-| Arrow | Arrow 格式读写 / 零拷贝转换   |
-| 性能  | Rayon 多线程并行 / 内存池优化 |
-| 基准  | 性能基准测试与对比报告        |
+| 模块    | API                           |
+| ------- | ----------------------------- |
+| rsnumpy | `to_numpy()` / `from_numpy()` |
+| Arrow   | Arrow 格式读写 / 零拷贝转换   |
+| 性能    | Rayon 多线程并行 / 内存池优化 |
+| 基准    | 性能基准测试与对比报告        |
 
 ---
 
@@ -651,7 +651,7 @@ s.resample('W').sum()       # 按周聚合
 - [ ] 完整 rolling/expanding（quantile / skew / kurt / sem）
 - [ ] GroupBy 扩展（corr / cov / first / last / nth）
 
-### 8.6 v1.5.0（NumPy/Arrow 互操作）
+### 8.6 v1.5.0（rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)）
 
 - [ ] `from_numpy` / `to_numpy`
 - [ ] Apache Arrow 集成

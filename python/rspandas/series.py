@@ -691,10 +691,273 @@ class Series:
         s = Series(counts, index=values, name=self.name)
         return s
 
+    # ---------- 统计方法 (v1.0.0) ----------
+
+    def rank(self, method: str = "average") -> "Series":
+        """计算排名。
+        :param method: 'average' / 'min' / 'max' / 'first' / 'dense'
+        """
+        values = self.values
+        n = len(values)
+        # 创建 (value, original_index) 对
+        indexed = [(v, i) for i, v in enumerate(values) if v is not None]
+        # 排序
+        indexed.sort(key=lambda x: x[0])
+        ranks = [None] * n
+        if not indexed:
+            return Series(ranks, name=self.name, index=self._index)
+
+        if method == "first":
+            for rank, (_, idx) in enumerate(indexed, 1):
+                ranks[idx] = rank
+        elif method == "min":
+            i = 0
+            while i < len(indexed):
+                current_val = indexed[i][0]
+                start = i
+                while i < len(indexed) and indexed[i][0] == current_val:
+                    i += 1
+                rank = start + 1
+                for j in range(start, i):
+                    ranks[indexed[j][1]] = rank
+        elif method == "max":
+            i = 0
+            while i < len(indexed):
+                current_val = indexed[i][0]
+                start = i
+                while i < len(indexed) and indexed[i][0] == current_val:
+                    i += 1
+                rank = i
+                for j in range(start, i):
+                    ranks[indexed[j][1]] = rank
+        elif method == "dense":
+            dense_rank = 1
+            i = 0
+            while i < len(indexed):
+                current_val = indexed[i][0]
+                while i < len(indexed) and indexed[i][0] == current_val:
+                    ranks[indexed[i][1]] = dense_rank
+                    i += 1
+                dense_rank += 1
+        else:
+            i = 0
+            while i < len(indexed):
+                current_val = indexed[i][0]
+                start = i
+                while i < len(indexed) and indexed[i][0] == current_val:
+                    i += 1
+                avg_rank = (start + 1 + i) / 2
+                for j in range(start, i):
+                    ranks[indexed[j][1]] = avg_rank
+        return Series(ranks, name=self.name, index=self._index)
+
+    def quantile(self, q=0.5) -> float:
+        """计算分位数。
+        :param q: 分位数值 (0.0-1.0)
+        """
+        values = [v for v in self.values if v is not None]
+        if not values:
+            return None
+        values.sort()
+        n = len(values)
+        if n == 1:
+            return values[0]
+        pos = q * (n - 1)
+        lower = int(pos)
+        upper = min(lower + 1, n - 1)
+        frac = pos - lower
+        return values[lower] * (1 - frac) + values[upper] * frac
+
+    def mode(self, dropna: bool = True) -> "Series":
+        """返回众数。"""
+        from collections import Counter
+        values = self.values
+        if dropna:
+            values = [v for v in values if v is not None]
+        if not values:
+            return Series([])
+        counter = Counter(values)
+        max_count = max(counter.values())
+        modes = [v for v, cnt in counter.items() if cnt == max_count]
+        return Series(sorted(modes), name=self.name)
+
+    def skew(self) -> float:
+        """计算偏度。"""
+        values = [v for v in self.values if v is not None]
+        n = len(values)
+        if n < 3:
+            return None
+        m = sum(values) / n
+        var = sum((x - m) ** 2 for x in values) / n
+        if var == 0:
+            return 0.0
+        std = var ** 0.5
+        skew = sum((x - m) ** 3 for x in values) / (n * std ** 3)
+        return skew
+
+    def kurt(self) -> float:
+        """计算峰度。"""
+        values = [v for v in self.values if v is not None]
+        n = len(values)
+        if n < 4:
+            return None
+        m = sum(values) / n
+        var = sum((x - m) ** 2 for x in values) / n
+        if var == 0:
+            return 0.0
+        std = var ** 0.5
+        kurt = sum((x - m) ** 4 for x in values) / (n * std ** 4) - 3
+        return kurt
+
     # ---------- 过滤 ----------
 
     def filter(self, mask: list) -> "Series":
         return self._filter_mask(mask)
+
+    # ---------- 时序操作 (v1.0.0) ----------
+
+    def shift(self, periods: int = 1) -> "Series":
+        """将数据移动 periods 位。
+        :param periods: 移动位数 (正数向后, 负数向前)
+        """
+        values = self.values
+        n = len(values)
+        out = [None] * n
+        if periods > 0:
+            for i in range(periods, n):
+                out[i] = values[i - periods]
+        elif periods < 0:
+            for i in range(n + periods):
+                out[i] = values[i - periods]
+        return Series(out, name=self.name, index=self._index)
+
+    def diff(self, periods: int = 1) -> "Series":
+        """计算相邻元素的差。
+        :param periods: 间隔位数
+        """
+        values = self.values
+        n = len(values)
+        out = []
+        for i in range(n):
+            prev_idx = i - periods
+            if prev_idx < 0 or prev_idx >= n:
+                out.append(None)
+            else:
+                a, b = values[i], values[prev_idx]
+                if a is None or b is None:
+                    out.append(None)
+                else:
+                    out.append(a - b)
+        return Series(out, name=self.name, index=self._index)
+
+    def pct_change(self, periods: int = 1, fill_method: str = "pad") -> "Series":
+        """计算百分比变化。
+        :param periods: 间隔位数
+        :param fill_method: 'pad' (填充前值) / 'backfill' / None
+        """
+        values = self.values
+        n = len(values)
+        out = []
+        for i in range(n):
+            prev_idx = i - periods
+            if prev_idx < 0 or prev_idx >= n:
+                out.append(None)
+            else:
+                a, b = values[i], values[prev_idx]
+                if b is None:
+                    if fill_method == "pad":
+                        out.append(None)
+                    elif fill_method == "backfill":
+                        out.append(None)
+                    else:
+                        out.append(None)
+                elif a is None:
+                    out.append(None)
+                elif b == 0:
+                    out.append(None)
+                else:
+                    out.append((a - b) / b)
+        return Series(out, name=self.name, index=self._index)
+
+    def cumsum(self, skipna: bool = True) -> "Series":
+        """累加和。"""
+        values = self.values
+        out = []
+        acc = None
+        for v in values:
+            if v is None:
+                if skipna:
+                    out.append(acc)
+                else:
+                    out.append(None)
+                    acc = None
+            else:
+                if acc is None:
+                    acc = v
+                else:
+                    acc = acc + v
+                out.append(acc)
+        return Series(out, name=self.name, index=self._index)
+
+    def cumprod(self, skipna: bool = True) -> "Series":
+        """累乘积。"""
+        values = self.values
+        out = []
+        acc = None
+        for v in values:
+            if v is None:
+                if skipna:
+                    out.append(acc)
+                else:
+                    out.append(None)
+                    acc = None
+            else:
+                if acc is None:
+                    acc = v
+                else:
+                    acc = acc * v
+                out.append(acc)
+        return Series(out, name=self.name, index=self._index)
+
+    def cummax(self, skipna: bool = True) -> "Series":
+        """累计最大值。"""
+        values = self.values
+        out = []
+        acc = None
+        for v in values:
+            if v is None:
+                if skipna:
+                    out.append(acc)
+                else:
+                    out.append(None)
+                    acc = None
+            else:
+                if acc is None:
+                    acc = v
+                else:
+                    acc = max(acc, v)
+                out.append(acc)
+        return Series(out, name=self.name, index=self._index)
+
+    def cummin(self, skipna: bool = True) -> "Series":
+        """累计最小值。"""
+        values = self.values
+        out = []
+        acc = None
+        for v in values:
+            if v is None:
+                if skipna:
+                    out.append(acc)
+                else:
+                    out.append(None)
+                    acc = None
+            else:
+                if acc is None:
+                    acc = v
+                else:
+                    acc = min(acc, v)
+                out.append(acc)
+        return Series(out, name=self.name, index=self._index)
 
     # ---------- 窗口函数 (v1.0.0) ----------
 
