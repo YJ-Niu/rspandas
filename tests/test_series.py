@@ -316,3 +316,58 @@ def test_series_value_counts():
     # 计数: a=3, b=2, c=1
     assert vc.shape == (3,)
     assert list(vc.values) == [3, 2, 1]
+
+
+# ---------------------------------------------------------------------------
+# 自定义 index
+# ---------------------------------------------------------------------------
+
+def test_series_custom_string_index():
+    s = rpd.Series([10, 20, 30], index=['a', 'b', 'c'], name='nums')
+    assert list(s.values) == [10, 20, 30]
+    assert list(s.index) == ['a', 'b', 'c']
+
+
+def test_series_getitem_str_label():
+    s = rpd.Series([10, 20, 30], index=['a', 'b', 'c'])
+    assert s['b'] == 20
+    assert s['a'] == 10
+
+
+def test_series_getitem_str_label_missing():
+    s = rpd.Series([10, 20, 30], index=['a', 'b', 'c'])
+    with pytest.raises(KeyError):
+        _ = s['z']
+
+
+def test_series_custom_int_index():
+    """自定义整数 index 时，整数 key 应按 label 查找。"""
+    s = rpd.Series([1, 2, 3], index=[100, 200, 300])
+    assert s[200] == 2
+    assert s[100] == 1
+
+
+def test_series_range_index_uses_position():
+    """RangeIndex 时整数 key 按位置查找。"""
+    s = rpd.Series([1, 2, 3])
+    assert s[0] == 1
+    assert s[2] == 3
+
+
+def test_series_index_in_repr():
+    s = rpd.Series([10, 20, 30], index=['a', 'b', 'c'], name='nums')
+    rep = repr(s)
+    assert 'a' in rep
+    assert 'b' in rep
+    assert 'c' in rep
+    assert 'nums' in rep
+
+
+def test_series_index_property():
+    s = rpd.Series([1, 2, 3], index=['x', 'y', 'z'])
+    assert list(s.index) == ['x', 'y', 'z']
+
+
+def test_series_default_index():
+    s = rpd.Series([1, 2, 3])
+    assert list(s.index) == [0, 1, 2]

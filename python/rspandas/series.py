@@ -78,6 +78,13 @@ def _to_python_list(data: Any) -> list:
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
 
 
+def _is_range_index(index) -> bool:
+    """判断 index 是否为默认的 RangeIndex (0, 1, 2, ...)。"""
+    if not index:
+        return True
+    return list(index) == list(range(len(index)))
+
+
 # ---------------------------------------------------------------------------
 # Series
 # ---------------------------------------------------------------------------
@@ -184,6 +191,15 @@ class Series:
         return self._format_repr()
 
     def __getitem__(self, key):
+        # 自定义 index: 优先按 label 查找
+        if self._index is not None and not _is_range_index(self._index):
+            if isinstance(key, (str, int, float, bool)):
+                try:
+                    pos = self._index.index(key)
+                    return self.values[pos]
+                except ValueError:
+                    raise KeyError(key)
+        # RangeIndex 或其他: 走位置
         if isinstance(key, int):
             if key < 0:
                 key += len(self)
@@ -197,15 +213,6 @@ class Series:
         if isinstance(key, (list, tuple)) and all(isinstance(x, bool) for x in key):
             # bool mask
             return self._filter_mask(key)
-        # 字符串 key -> 按 label 索引 (如果 _index 是字符串列表)
-        if isinstance(key, str) and self._index is not None:
-            if not self._index or not isinstance(self._index[0], (str, type(None))):
-                raise KeyError(key)
-            try:
-                pos = self._index.index(key)
-                return self.values[pos]
-            except ValueError:
-                raise KeyError(key)
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
 
     def _filter_mask(self, mask: list) -> "Series":
