@@ -201,26 +201,28 @@ class Series:
 
     def __eq__(self, other) -> "Series":
         mask = self._inner.eq_scalar(other)
-        return Series(_PySeries_filter(self._inner, list(mask)), name=self.name).astype("bool")
+        return Series(mask, name=self.name, dtype="bool")
 
     def __ne__(self, other) -> "Series":
-        return self.__eq__(other)  # 简化
+        # ne = not eq
+        eq_mask = self._inner.eq_scalar(other)
+        return Series([not x for x in eq_mask], name=self.name, dtype="bool")
 
     def __lt__(self, other) -> "Series":
         mask = self._inner.lt_scalar(other)
-        return Series(_PySeries_filter(self._inner, list(mask)), name=self.name).astype("bool")
+        return Series(mask, name=self.name, dtype="bool")
 
     def __gt__(self, other) -> "Series":
         mask = self._inner.gt_scalar(other)
-        return Series(_PySeries_filter(self._inner, list(mask)), name=self.name).astype("bool")
+        return Series(mask, name=self.name, dtype="bool")
 
     def __le__(self, other) -> "Series":
         mask = self._inner.le_scalar(other)
-        return Series(_PySeries_filter(self._inner, list(mask)), name=self.name).astype("bool")
+        return Series(mask, name=self.name, dtype="bool")
 
     def __ge__(self, other) -> "Series":
         mask = self._inner.ge_scalar(other)
-        return Series(_PySeries_filter(self._inner, list(mask)), name=self.name).astype("bool")
+        return Series(mask, name=self.name, dtype="bool")
 
     def __bool__(self) -> bool:
         if len(self) == 1:
@@ -309,34 +311,36 @@ class Series:
     # ---------- 显示 ----------
 
     def _format_repr(self) -> str:
-        # 简化：直接打印
-        if self._dtype_str in ("int64", "float64", "bool"):
-            strs = [str(v) if v is not None else "NaN" for v in self.values]
-        else:
-            strs = [str(v) if v is not None else "NaN" for v in self.values]
+        # 字符串化每个值
+        strs = [
+            str(v) if v is not None else "NaN"
+            for v in self.values
+        ]
 
         # 截断：> 60 行
         n = len(strs)
-        if n > 60:
+        show_truncated = n > 60
+        if show_truncated:
             head = strs[:30]
             tail = strs[-30:]
             strs = head + ["..."] + tail
 
-        # 列名
-        col_name = self.name if self.name is not None else ""
+        # 计算索引宽度
+        max_idx = max(n - 1, 0)
+        idx_width = max(len(str(max_idx)), 1)
 
-        # 索引和值对齐
         lines = []
         idx = 0
         for s in strs:
             if s == "...":
                 lines.append("..")
-                continue
-            lines.append(f"{idx:>4}    {s}")
-            idx += 1
-        # 不太好实现，先简化
-        body = "\n".join(f"{i:<6}{s}" for i, s in enumerate(self.values))
-        return body + f"\nName: {col_name}, dtype: {self._dtype_str}"
+            else:
+                lines.append(f"{idx:>{idx_width}}    {s}")
+                idx += 1
+
+        col_name = self.name if self.name is not None else ""
+        body = "\n".join(lines)
+        return f"{body}\nName: {col_name}, dtype: {self._dtype_str}"
 
 
 def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:

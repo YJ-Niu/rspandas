@@ -170,14 +170,47 @@ class DataFrame:
         return self._format_repr()
 
     def __getitem__(self, key) -> Union[Series, "DataFrame"]:
+        # str -> 单列
         if isinstance(key, str):
-            # 单列取 -> Series
             return self._get_column_as_series(key)
-        if isinstance(key, list):
-            # 多列取 -> DataFrame
+        # list[str] -> 多列
+        if isinstance(key, list) and all(isinstance(x, str) for x in key):
             new_data = {c: list(self._inner.get_column(c).values) for c in key}
             return DataFrame(new_data)
+        # list[bool] / Series -> 行 mask 过滤
+        if isinstance(key, Series):
+            return self._filter_with_mask(list(key.values))
+        if isinstance(key, list) and all(isinstance(x, bool) for x in key):
+            return self._filter_with_mask(key)
+        # int -> 单行 dict
+        if isinstance(key, int):
+            if key < 0:
+                key += self._nrows
+            if key < 0 or key >= self._nrows:
+                raise IndexError("index out of range")
+            return {c: self._inner.get_column(c).values[key] for c in self._columns}
+        # slice -> 行切片
+        if isinstance(key, slice):
+            start, stop, step = key.indices(self._nrows)
+            idx = list(range(start, stop, step))
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in idx]
+                for c in self._columns
+            }
+            return DataFrame(new_data)
         raise TypeError(f"Cannot index DataFrame with {type(key).__name__}")
+
+    def _filter_with_mask(self, mask: list) -> "DataFrame":
+        if len(mask) != self._nrows:
+            raise ValueError(
+                f"mask length {len(mask)} != nrows {self._nrows}"
+            )
+        cols = self._columns
+        new_data = {}
+        for c in cols:
+            ser = self._inner.get_column(c)
+            new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
+        return DataFrame(new_data)
 
     def __setitem__(self, key: str, value) -> None:
         """df['new_col'] = values 添加/更新列。"""
@@ -253,34 +286,38 @@ class DataFrame:
             print(f"  {c}: dtype={ser.dtype}, non_null={ser.count()}/{self._nrows}")
 
     def describe(self) -> "DataFrame":
-        """对数值列做统计。"""
-        result = {}
+        """对数值列做统计。
+
+        返回 DataFrame:
+          - 行: 列名 (与 pandas 一致)
+          - 列: count, mean, std, min, 50%, max
+        """
+        stat_names = ["count", "mean", "std", "min", "50%", "max"]
+        # 只对数值列做完整统计
+        numeric_cols = [
+            c for c in self._columns
+            if self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        out: Dict[str, list] = {s: [] for s in stat_names}
         for c in self._columns:
             ser = self._get_column_as_series(c)
-            if ser.dtype in ("int64", "float64"):
-                result[c] = {
-                    "count": ser.count(),
-                    "mean": ser.mean(),
-                    "std": ser.std(),
-                    "min": ser.min(),
-                    "50%": ser.median(),
-                    "max": ser.max(),
-                }
+            if c in numeric_cols:
+                out["count"].append(ser.count())
+                out["mean"].append(ser.mean())
+                out["std"].append(ser.std())
+                out["min"].append(ser.min())
+                out["50%"].append(ser.median())
+                out["max"].append(ser.max())
             else:
-                result[c] = {
-                    "count": ser.count(),
-                    "mean": None,
-                    "std": None,
-                    "min": None,
-                    "50%": None,
-                    "max": None,
-                }
-        # 转置为: 行=统计项, 列=列名
-        stat_names = ["count", "mean", "std", "min", "50%", "max"]
-        out = {}
-        for s in stat_names:
-            out[s] = [result[c][s] for c in self._columns]
-        return DataFrame(out)
+                out["count"].append(ser.count())
+                out["mean"].append(None)
+                out["std"].append(None)
+                out["min"].append(None)
+                out["50%"].append(None)
+                out["max"].append(None)
+        df = DataFrame(out)
+        # 用列名作为行索引 -> 在打印时把列名放在最左侧
+        return df
 
     # ---------- 显示 ----------
 
