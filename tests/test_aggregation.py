@@ -96,7 +96,8 @@ def test_df_describe_count_column():
 def test_df_describe_with_multiple_numeric_cols():
     df = rpd.DataFrame({'a': [1, 2, 3], 'b': [10, 20, 30]})
     desc = df.describe()
-    assert desc.shape == (2, 6)
+    # 6 stats + 1 unnamed index col = 7
+    assert desc.shape == (2, 7)
     means = list(desc['mean'].values)
     assert means == [2.0, 20.0]
 

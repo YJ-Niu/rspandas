@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from rspandas.rspandas import _DataFrame as _PyDataFrame, _Series as _PySeries  # type: ignore
+from rspandas.rspandas import (  # type: ignore
+    _DataFrame as _PyDataFrame,
+    _Series as _PySeries,
+    read_csv_path,
+    write_csv_path,
+    read_csv_string,
+    write_csv_string,
+)
 from .series import Series
 
 
@@ -147,6 +154,16 @@ class DataFrame:
         return 2
 
     @property
+    def loc(self):
+        """基于标签的索引器。"""
+        return _LocIndexer(self)
+
+    @property
+    def iloc(self):
+        """基于位置的索引器。"""
+        return _ILocIndexer(self)
+
+    @property
     def values(self) -> list:
         """返回 list[dict]，每行一个 dict。"""
         result = []
@@ -243,7 +260,6 @@ class DataFrame:
 
     def _reload(self, col_dict: Dict[str, list]) -> None:
         cols = list(col_dict.keys())
-        n = self._nrows
         rust_series_list = [_PySeries(col_dict[c], c) for c in cols]
         self._inner = _PyDataFrame(cols, rust_series_list)
 
@@ -307,6 +323,101 @@ class DataFrame:
         df._index = list(range(df._nrows))
         return df
 
+    # ---------- CSV I/O ----------
+
+    @classmethod
+    def read_csv(
+        cls,
+        path: str,
+        has_header: bool = True,
+    ) -> "DataFrame":
+        """从 CSV 文件读取 DataFrame。"""
+        cols, series_list = read_csv_path(path, has_header)
+        return cls._from_inner(_PyDataFrame(cols, series_list))
+
+    @classmethod
+    def read_csv_from_string(
+        cls,
+        content: str,
+        has_header: bool = True,
+    ) -> "DataFrame":
+        """从 CSV 字符串构造 DataFrame。"""
+        cols, series_list = read_csv_string(content, has_header)
+        return cls._from_inner(_PyDataFrame(cols, series_list))
+
+    def to_csv(
+        self,
+        path: Optional[str] = None,
+        include_header: bool = True,
+    ) -> Optional[str]:
+        """写入 CSV。
+
+        :param path: 文件路径；为 None 时返回字符串
+        :param include_header: 是否写入表头
+        :return: 如果 path 为 None，返回 CSV 字符串
+        """
+        if path is None:
+            return write_csv_string(
+                list(self._columns),
+                [self._inner.get_column(c) for c in self._columns],
+                include_header,
+            )
+        write_csv_path(
+            path,
+            list(self._columns),
+            [self._inner.get_column(c) for c in self._columns],
+            include_header,
+        )
+        return None
+
+    # ---------- 索引器辅助 ----------
+
+    def _select_row(self, idx: int) -> "DataFrame":
+        if idx < 0:
+            idx += self._nrows
+        if idx < 0 or idx >= self._nrows:
+            raise IndexError("single positional indexer is out-of-bounds")
+        new_data = {
+            c: [self._inner.get_column(c).values[idx]] for c in self._columns
+        }
+        return DataFrame(new_data)
+
+    def _select_slice(self, start, stop, step) -> "DataFrame":
+        if start is None:
+            start = 0
+        if stop is None:
+            stop = self._nrows
+        if step is None:
+            step = 1
+        if start < 0:
+            start += self._nrows
+        if stop < 0:
+            stop += self._nrows
+        if start is None or stop is None or start >= self._nrows:
+            return DataFrame({})
+        stop = min(stop, self._nrows)
+        idx = list(range(start, stop, step))
+        new_data = {
+            c: [self._inner.get_column(c).values[i] for i in idx]
+            for c in self._columns
+        }
+        return DataFrame(new_data)
+
+    def _select_indices(self, indices: list) -> "DataFrame":
+        n = self._nrows
+        norm = []
+        for i in indices:
+            if i < 0:
+                i += n
+            if i < 0 or i >= n:
+                raise IndexError(f"index {i} out of range")
+            norm.append(i)
+        new_data = {
+            c: [self._inner.get_column(c).values[i] for i in norm]
+            for c in self._columns
+        }
+        return DataFrame(new_data)
+
     # ---------- 概览 ----------
 
     def info(self) -> None:
@@ -321,8 +432,8 @@ class DataFrame:
         """对数值列做统计。
 
         返回 DataFrame:
-          - 行: 列名 (与 pandas 一致)
-          - 列: count, mean, std, min, 50%, max
+          - 第一列(无标题): 列名 (与 pandas 一致)
+          - 其他列: count, mean, std, min, 50%, max
         """
         stat_names = ["count", "mean", "std", "min", "50%", "max"]
         # 只对数值列做完整统计
@@ -331,7 +442,10 @@ class DataFrame:
             if self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         out: Dict[str, list] = {s: [] for s in stat_names}
+        # 第一列(无名)存放列名 -> 用空字符串作为"列名"
+        out[""] = []
         for c in self._columns:
+            out[""].append(c)
             ser = self._get_column_as_series(c)
             if c in numeric_cols:
                 out["count"].append(ser.count())
@@ -347,9 +461,7 @@ class DataFrame:
                 out["min"].append(None)
                 out["50%"].append(None)
                 out["max"].append(None)
-        df = DataFrame(out)
-        # 用列名作为行索引 -> 在打印时把列名放在最左侧
-        return df
+        return DataFrame(out)
 
     # ---------- 显示 ----------
 
@@ -398,3 +510,123 @@ class DataFrame:
             prev_i = i
 
         return "\n".join(lines) + f"\n\n[{n} rows x {len(self._columns)} columns]"
+
+
+# ---------------------------------------------------------------------------
+# 索引器
+# ---------------------------------------------------------------------------
+
+class _IndexerBase:
+    """loc/iloc 索引器基类。"""
+
+    def __init__(self, df: "DataFrame"):
+        self._df = df
+
+
+class _LocIndexer(_IndexerBase):
+    """基于标签的索引器 (MVP 索引为 0..n-1)。"""
+
+    def __getitem__(self, key):
+        if isinstance(key, tuple):
+            row_key, col_key = key
+        else:
+            row_key = key
+            col_key = None
+
+        # 1. 行选择
+        rows_df = self._select_rows(row_key)
+
+        # 2. 列选择
+        if col_key is not None:
+            if isinstance(col_key, str):
+                return rows_df[col_key]
+            if isinstance(col_key, list):
+                return rows_df[col_key]
+            raise TypeError(f"loc: unsupported column key {type(col_key).__name__}")
+        return rows_df
+
+    def _select_rows(self, key):
+        if isinstance(key, int):
+            return self._df._select_row(int(key))
+        if isinstance(key, slice):
+            # loc 切片: 双闭区间 (与 pandas 一致)
+            start, stop, step = key.start, key.stop, key.step
+            if step is None:
+                step = 1
+            if step <= 0:
+                raise ValueError("loc slice step must be positive")
+            n = self._df._nrows
+            if start is None:
+                start = 0
+            if stop is None:
+                stop = n - 1
+            if start < 0:
+                start += n
+            if stop < 0:
+                stop += n
+            if start >= n:
+                return DataFrame({})
+            stop = min(stop, n - 1)
+            idx = list(range(start, stop + 1, step))
+            new_data = {
+                c: [self._df._inner.get_column(c).values[i] for i in idx]
+                for c in self._df._columns
+            }
+            return DataFrame(new_data)
+        if isinstance(key, list):
+            if not key:
+                return DataFrame({})
+            if all(isinstance(x, bool) for x in key):
+                return self._df[key]
+            # list of labels
+            idx = list(key)
+            return self._df._select_indices(idx)
+        if isinstance(key, Series):
+            return self._df[key]
+        raise TypeError(f"loc: unsupported key {type(key).__name__}")
+
+
+class _ILocIndexer(_IndexerBase):
+    """基于位置的索引器 (整数位置)。"""
+
+    def __getitem__(self, key):
+        if isinstance(key, tuple):
+            row_key, col_key = key
+        else:
+            row_key = key
+            col_key = None
+
+        # 1. 行选择
+        if isinstance(row_key, int):
+            if row_key < 0:
+                row_key += self._df._nrows
+            rows_df = self._df._select_row(int(row_key))
+        elif isinstance(row_key, slice):
+            start, stop, step = row_key.indices(self._df._nrows)
+            rows_df = self._df._select_slice(start, stop, step)
+        elif isinstance(row_key, list):
+            if all(isinstance(x, bool) for x in row_key):
+                rows_df = self._df[row_key]
+            else:
+                idx = [int(i) if i >= 0 else int(i) + self._df._nrows for i in row_key]
+                rows_df = self._df._select_indices(idx)
+        else:
+            raise TypeError(f"iloc: unsupported row key {type(row_key).__name__}")
+
+        # 2. 列选择
+        if col_key is not None:
+            cols = rows_df.columns
+            if isinstance(col_key, int):
+                col_key = int(col_key) + len(cols) if col_key < 0 else int(col_key)
+                return rows_df[cols[col_key]]
+            if isinstance(col_key, list):
+                if all(isinstance(x, bool) for x in col_key):
+                    picked = [c for c, b in zip(cols, col_key) if b]
+                else:
+                    picked = [cols[int(i)] for i in col_key]
+                return rows_df[picked]
+            if isinstance(col_key, slice):
+                picked = cols[col_key]
+                return rows_df[list(picked)]
+            raise TypeError(f"iloc: unsupported column key {type(col_key).__name__}")
+        return rows_df

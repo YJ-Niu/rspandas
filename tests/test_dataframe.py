@@ -175,8 +175,8 @@ def test_dataframe_describe():
     df = rpd.DataFrame({'a': [1, 2, 3], 'b': ['x', 'y', 'z']})
     desc = df.describe()
     assert isinstance(desc, rpd.DataFrame)
-    # 6 stats x 2 columns
-    assert desc.shape == (2, 6)
+    # 6 stats + 1 unnamed index column = 7 columns
+    assert desc.shape == (2, 7)
 
 
 def test_dataframe_values():
@@ -225,3 +225,117 @@ def test_dataframe_fillna_dict_partial():
     f = df.fillna({'a': 0})
     assert list(f['a'].values) == [1, 0, 3]
     assert list(f['b'].values) == [10, None, 30]
+
+
+# ---------------------------------------------------------------------------
+# loc / iloc 索引器 (v0.2.0)
+# ---------------------------------------------------------------------------
+
+def test_loc_single_row():
+    df = rpd.DataFrame({'a': [10, 20, 30], 'b': ['x', 'y', 'z']})
+    row = df.loc[1]
+    assert row.shape == (1, 2)
+    assert list(row['a'].values) == [20]
+    assert list(row['b'].values) == ['y']
+
+
+def test_loc_slice_inclusive():
+    """loc 切片是双闭区间。"""
+    df = rpd.DataFrame({'a': [10, 20, 30, 40, 50]})
+    sub = df.loc[1:3]
+    assert list(sub['a'].values) == [20, 30, 40]
+
+
+def test_loc_fancy_index():
+    df = rpd.DataFrame({'a': [10, 20, 30, 40, 50]})
+    sub = df.loc[[0, 2, 4]]
+    assert list(sub['a'].values) == [10, 30, 50]
+
+
+def test_loc_bool_mask():
+    df = rpd.DataFrame({'a': [10, 20, 30, 40, 50]})
+    f = df.loc[df['a'] > 20]
+    assert list(f['a'].values) == [30, 40, 50]
+
+
+def test_loc_column_str():
+    df = rpd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+    s = df.loc[:, 'a']
+    assert isinstance(s, rpd.Series)
+    assert list(s.values) == [1, 2, 3]
+
+
+def test_loc_column_list():
+    df = rpd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+    sub = df.loc[:, ['a']]
+    assert sub.shape == (3, 1)
+    assert sub.columns == ['a']
+
+
+def test_loc_row_and_col():
+    df = rpd.DataFrame({'a': [10, 20, 30, 40], 'b': [1, 2, 3, 4]})
+    sub = df.loc[1:2, 'a']
+    assert isinstance(sub, rpd.Series)
+    assert list(sub.values) == [20, 30]
+
+
+def test_loc_fancy_row_and_col():
+    df = rpd.DataFrame({'a': [10, 20, 30], 'b': [1, 2, 3], 'c': ['x', 'y', 'z']})
+    sub = df.loc[[0, 2], ['a', 'b']]
+    assert sub.shape == (2, 2)
+    assert list(sub['a'].values) == [10, 30]
+    assert list(sub['b'].values) == [1, 3]
+
+
+def test_iloc_single_row():
+    df = rpd.DataFrame({'a': [10, 20, 30]})
+    row = df.iloc[1]
+    assert list(row['a'].values) == [20]
+
+
+def test_iloc_slice_exclusive():
+    """iloc 切片是右开区间 (Python 风格)。"""
+    df = rpd.DataFrame({'a': [10, 20, 30, 40, 50]})
+    sub = df.iloc[1:3]
+    assert list(sub['a'].values) == [20, 30]
+
+
+def test_iloc_fancy_index():
+    df = rpd.DataFrame({'a': [10, 20, 30, 40, 50]})
+    sub = df.iloc[[0, 2, 4]]
+    assert list(sub['a'].values) == [10, 30, 50]
+
+
+def test_iloc_negative_index():
+    df = rpd.DataFrame({'a': [10, 20, 30]})
+    assert list(df.iloc[-1]['a'].values) == [30]
+    assert list(df.iloc[-2]['a'].values) == [20]
+
+
+def test_iloc_column_int():
+    df = rpd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+    s = df.iloc[:, 0]
+    assert isinstance(s, rpd.Series)
+    assert list(s.values) == [1, 2, 3]
+
+
+def test_iloc_column_slice():
+    df = rpd.DataFrame({'a': [1, 2], 'b': [3, 4], 'c': [5, 6]})
+    sub = df.iloc[:, 0:2]
+    assert sub.shape == (2, 2)
+    assert sub.columns == ['a', 'b']
+
+
+def test_iloc_row_and_col():
+    df = rpd.DataFrame({'a': [10, 20, 30], 'b': [1, 2, 3]})
+    sub = df.iloc[0:2, 0:1]
+    assert sub.shape == (2, 1)
+    assert sub.columns == ['a']
+    assert list(sub['a'].values) == [10, 20]
+
+
+def test_iloc_fancy_row_and_col():
+    df = rpd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+    sub = df.iloc[[0, 2], [1]]
+    assert sub.shape == (2, 1)
+    assert list(sub['b'].values) == [4, 6]

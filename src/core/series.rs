@@ -30,6 +30,30 @@ impl Series {
         Self { name, data: ColumnData::String(v) }
     }
 
+    // 别名: 方便 CSV 等模块调用
+    pub fn from_options_i64(name: String, v: &[Option<i64>]) -> Self {
+        Self { name: Some(name), data: ColumnData::Int(v.to_vec()) }
+    }
+    pub fn from_options_f64(name: String, v: &[Option<f64>]) -> Self {
+        Self { name: Some(name), data: ColumnData::Float(v.to_vec()) }
+    }
+    pub fn from_options_bool(name: String, v: &[Option<bool>]) -> Self {
+        Self { name: Some(name), data: ColumnData::Bool(v.to_vec()) }
+    }
+    pub fn from_options_string(name: String, v: &[Option<String>]) -> Self {
+        Self { name: Some(name), data: ColumnData::String(v.to_vec()) }
+    }
+
+    /// 获取索引位置的字符串表示 (用于 CSV 写出)
+    pub fn get_str_at(&self, i: usize) -> String {
+        match &self.data {
+            ColumnData::Int(v) => v.get(i).map(|x| x.map(|n| n.to_string()).unwrap_or_default()).unwrap_or_default(),
+            ColumnData::Float(v) => v.get(i).map(|x| x.map(|n| n.to_string()).unwrap_or_default()).unwrap_or_default(),
+            ColumnData::Bool(v) => v.get(i).map(|x| x.map(|b| b.to_string()).unwrap_or_default()).unwrap_or_default(),
+            ColumnData::String(v) => v.get(i).cloned().flatten().unwrap_or_default(),
+        }
+    }
+
     pub fn new_null(name: Option<String>, dtype: DType, len: usize) -> Self {
         let data = match dtype {
             DType::Int64 => ColumnData::Int(vec![None; len]),
