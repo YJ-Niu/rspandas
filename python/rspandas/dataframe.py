@@ -2015,10 +2015,7 @@ class DataFrame:
                 # 过滤掉 before 之前的行
                 indices = [
                     i for i in indices
-                    if not (
-                        isinstance(self._index[i], type(before))
-                        and self._index[i] < before
-                    )
+                    if not (isinstance(self._index[i], type(before)) and self._index[i] < before)
                 ]
             if after is not None:
                 from datetime import datetime
@@ -2029,10 +2026,7 @@ class DataFrame:
                         pass
                 indices = [
                     i for i in indices
-                    if not (
-                        isinstance(self._index[i], type(after))
-                        and self._index[i] > after
-                    )
+                    if not (isinstance(self._index[i], type(after)) and self._index[i] > after)
                 ]
             new_data = {
                 c: [self._inner.get_column(c).values[i] for i in indices]
