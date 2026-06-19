@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import json as _json
 import pickle as _pickle
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from .dataframe import DataFrame
-# from .series import Series
+from .series import Series
 
 
 # ============================================================================
@@ -522,6 +522,11 @@ def to_sql(
             meta.create_all(connection)
 
         # Insert data
-        rows = [{c: v for c, v in zip(df.columns, row)} for row in df.values]
-        if rows:
-            connection.execute(sa.text(f"INSERT INTO {name} ({', '.join(df.columns)}) VALUES ({', '.join([':' + c for c in df.columns])})"), rows)
+        records = df.values  # list[dict]
+        if records:
+            col_names = list(df.columns)
+            placeholders = ", ".join([":" + c for c in col_names])
+            stmt = sa.text(
+                f"INSERT INTO {name} ({', '.join(col_names)}) VALUES ({placeholders})"
+            )
+            connection.execute(stmt, records)

@@ -1054,6 +1054,24 @@ class DataFrame:
         from .io import to_pickle as _to_pickle
         _to_pickle(self, path, **kwargs)
 
+    def to_sql(
+        self,
+        name: str,
+        conn,
+        if_exists: str = "fail",
+        index: bool = False,
+        **kwargs,
+    ) -> None:
+        """将 DataFrame 写入 SQL 数据库 (v1.2.0)。
+
+        :param name: 目标表名
+        :param conn: 数据库连接
+        :param if_exists: 'fail' / 'replace' / 'append'
+        :param index: 是否写入行索引
+        """
+        from .io import to_sql as _to_sql
+        _to_sql(self, name, conn, if_exists=if_exists, index=index, **kwargs)
+
     # ---------- 索引器辅助 ----------
 
     def _select_row(self, idx: int) -> "DataFrame":
