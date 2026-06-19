@@ -1085,6 +1085,25 @@ class Series:
             raise ValueError("min_periods must be >= 1")
         return Expanding(self, min_periods)
 
+    def ewm(
+        self,
+        alpha: Optional[float] = None,
+        span: Optional[int] = None,
+        halflife: Optional[float] = None,
+        com: Optional[float] = None,
+        adjust: bool = True,
+    ) -> "EWM":
+        """返回 EWM 指数加权移动窗口对象 (v1.4.0)。
+
+        :param alpha: 平滑因子 (0 < alpha <= 1)
+        :param span: N 日跨度，alpha = 2/(span+1)
+        :param halflife: 半衰期，alpha = 1 - exp(-log(2)/halflife)
+        :param com: 质心，alpha = 1/(com+1)
+        :param adjust: 是否使用调整因子
+        :return: EWM 对象
+        """
+        return EWM(self, alpha=alpha, span=span, halflife=halflife, com=com, adjust=adjust)
+
     def resample(self, freq: str) -> "Resampler":
         """时间序列重采样 (简化版 v1.0.0)。
 
@@ -1305,6 +1324,54 @@ class Rolling:
         """应用自定义窗口函数。"""
         return self._apply(func)
 
+    # ---------- 滚动统计扩展 (v1.4.0) ----------
+
+    def quantile(self, q: float = 0.5) -> _PySeries:
+        """滚动分位数。"""
+        def f(win):
+            nums = sorted([float(v) for v in win if v is not None])
+            if not nums:
+                return None
+            n = len(nums)
+            if n == 1:
+                return nums[0]
+            pos = q * (n - 1)
+            lo = int(pos)
+            hi = min(lo + 1, n - 1)
+            frac = pos - lo
+            return nums[lo] * (1 - frac) + nums[hi] * frac
+        return self._apply(f)
+
+    def skew(self) -> _PySeries:
+        """滚动偏度。"""
+        def f(win):
+            nums = [v for v in win if v is not None]
+            n = len(nums)
+            if n < 3:
+                return None
+            m = sum(nums) / n
+            var = sum((x - m) ** 2 for x in nums) / n
+            if var == 0:
+                return 0.0
+            m3 = sum((x - m) ** 3 for x in nums) / n
+            return m3 / (var ** 1.5)
+        return self._apply(f)
+
+    def kurt(self) -> _PySeries:
+        """滚动峰度 (excess kurtosis)。"""
+        def f(win):
+            nums = [v for v in win if v is not None]
+            n = len(nums)
+            if n < 4:
+                return None
+            m = sum(nums) / n
+            var = sum((x - m) ** 2 for x in nums) / n
+            if var == 0:
+                return None
+            m4 = sum((x - m) ** 4 for x in nums) / n
+            return m4 / (var ** 2) - 3.0
+        return self._apply(f)
+
 
 class Expanding:
     """Expanding 扩展窗口 (从开始到当前位置)。"""
@@ -1378,6 +1445,200 @@ class Expanding:
                 out.append(None)
             else:
                 out.append(cnt)
+        return Series(out, name=self._s.name, index=self._s._index)
+
+
+# ---------------------------------------------------------------------------
+# EWM 指数加权移动窗口 (v1.4.0)
+# ---------------------------------------------------------------------------
+
+class EWM:
+    """指数加权移动窗口。
+
+    EWM 通过衰减因子 alpha 对历史值进行加权平均，越近的值权重越大。
+
+    Parameters
+    ----------
+    series : Series
+        输入序列。
+    alpha : float, optional
+        平滑因子 (0 < alpha <= 1)。
+    span : int, optional
+        N 日跨度，alpha = 2/(span+1)。
+    halflife : float, optional
+        半衰期，alpha = 1 - exp(-log(2)/halflife)。
+    com : float, optional
+        质心，alpha = 1/(com+1)。
+    adjust : bool, default True
+        是否使用调整因子（除以权重和）。
+
+    Examples:
+        >>> s = Series([1, 2, 3, 4, 5])
+        >>> s.ewm(span=3).mean().values
+        [1.0, 1.5, 2.25, 3.125, 4.0625]
+    """
+
+    def __init__(
+        self,
+        series,
+        alpha: Optional[float] = None,
+        span: Optional[int] = None,
+        halflife: Optional[float] = None,
+        com: Optional[float] = None,
+        adjust: bool = True,
+    ):
+        import math
+        self._s = series
+        self._adjust = adjust
+
+        # 解析 alpha
+        if alpha is not None:
+            if not (0 < alpha <= 1):
+                raise ValueError("alpha must be in (0, 1]")
+            self._alpha = alpha
+        elif span is not None:
+            if span < 1:
+                raise ValueError("span must be >= 1")
+            self._alpha = 2.0 / (span + 1)
+        elif halflife is not None:
+            if halflife <= 0:
+                raise ValueError("halflife must be > 0")
+            self._alpha = 1.0 - math.exp(-math.log(2) / halflife)
+        elif com is not None:
+            if com < 0:
+                raise ValueError("com must be >= 0")
+            self._alpha = 1.0 / (com + 1)
+        else:
+            raise ValueError("Must provide one of: alpha, span, halflife, com")
+
+    def _get_weights(self, n: int) -> list:
+        """计算衰减权重 (w_k = (1-alpha)^(n-1-k) for k=0..n-1)。"""
+        weights = []
+        for k in range(n):
+            weights.append((1 - self._alpha) ** (n - 1 - k))
+        return weights
+
+    def mean(self):
+        """指数加权均值。"""
+        values = self._s.values
+        n = len(values)
+        out = [None] * n
+
+        for i in range(n):
+            win = values[:i + 1]
+            non_null = [(k, v) for k, v in enumerate(win) if v is not None]
+            if not non_null:
+                continue
+
+            if self._adjust:
+                # 调整版: sum(w_k * x_k) / sum(w_k)
+                weights = self._get_weights(i + 1)
+                num = sum(weights[k] * v for k, v in non_null)
+                den = sum(weights[k] for k, _ in non_null)
+                out[i] = num / den if den > 0 else None
+            else:
+                # 非调整版: 递推公式
+                out[i] = self._mean_recursive(non_null)
+
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def _mean_recursive(self, non_null):
+        """非调整版 EWM 均值的递推计算。"""
+        result = None
+        alpha = self._alpha
+        for _, v in non_null:
+            if result is None:
+                result = float(v)
+            else:
+                result = alpha * float(v) + (1 - alpha) * result
+        return result
+
+    def std(self):
+        """指数加权标准差 (调整版)。"""
+        values = self._s.values
+        n = len(values)
+        out = [None] * n
+
+        if self._adjust:
+            for i in range(n):
+                win = values[:i + 1]
+                non_null = [(k, v) for k, v in enumerate(win) if v is not None]
+                if len(non_null) < 2:
+                    continue
+
+                weights = self._get_weights(i + 1)
+                w_k = [weights[k] for k, _ in non_null]
+                vals = [v for _, v in non_null]
+                w_sum = sum(w_k)
+
+                mean = sum(w * v for w, v in zip(w_k, vals)) / w_sum
+                # 偏差修正: 除以 w_sum (总体), 或除以 w_sum - sum(w_k^2)/w_sum (样本)
+                var = sum(w * (v - mean) ** 2 for w, v in zip(w_k, vals)) / w_sum
+                out[i] = var ** 0.5
+        else:
+            # 非调整版: 使用递推公式
+            mean = None
+            s2 = None
+            alpha = self._alpha
+            for i in range(n):
+                v = values[i]
+                if v is None:
+                    continue
+
+                if mean is None:
+                    mean = v
+                    s2 = 0.0
+                else:
+                    old_mean = mean
+                    mean = alpha * v + (1 - alpha) * old_mean
+                    s2 = (1 - alpha) * (s2 + alpha * (v - old_mean) ** 2)
+
+                if s2 is not None and s2 >= 0:
+                    out[i] = s2 ** 0.5
+
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def var(self):
+        """指数加权方差 (调整版)。"""
+        values = self._s.values
+        n = len(values)
+        out = [None] * n
+
+        if self._adjust:
+            for i in range(n):
+                win = values[:i + 1]
+                non_null = [(k, v) for k, v in enumerate(win) if v is not None]
+                if len(non_null) < 2:
+                    continue
+
+                weights = self._get_weights(i + 1)
+                w_k = [weights[k] for k, _ in non_null]
+                vals = [v for _, v in non_null]
+                w_sum = sum(w_k)
+
+                mean = sum(w * v for w, v in zip(w_k, vals)) / w_sum
+                var = sum(w * (v - mean) ** 2 for w, v in zip(w_k, vals)) / w_sum
+                out[i] = var
+        else:
+            mean = None
+            s2 = None
+            alpha = self._alpha
+            for i in range(n):
+                v = values[i]
+                if v is None:
+                    continue
+
+                if mean is None:
+                    mean = v
+                    s2 = 0.0
+                else:
+                    old_mean = mean
+                    mean = alpha * v + (1 - alpha) * old_mean
+                    s2 = (1 - alpha) * (s2 + alpha * (v - old_mean) ** 2)
+
+                if s2 is not None:
+                    out[i] = s2
+
         return Series(out, name=self._s.name, index=self._s._index)
 
 

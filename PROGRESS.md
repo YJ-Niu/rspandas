@@ -14,7 +14,7 @@
 | v1.0.0 | 时间序列、重塑、窗口函数、性能优化、API 稳定                           | ✅ 完成   | 100%   |
 | v1.1.0 | 类型系统扩展（Categorical、Rayon 性能优化）                            | ✅ 完成   | 100%   |
 | v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）                           | ✅ 完成   | 100%   |
-| v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）                      | 📋 规划中 | 0%     |
+| v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）                      | ✅ 完成   | 100%   |
 | v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）                        | 📋 规划中 | 0%     |
 | v1.5.0 | rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) | 📋 规划中 | 0%     |
 | v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                                      | 📋 规划中 | 0%     |
@@ -26,8 +26,8 @@
 | 类型                         | 数量    | 状态        |
 | ---------------------------- | ------- | ----------- |
 | Rust 单元测试 (`cargo test`) | **18**  | ✅ 全部通过 |
-| pytest 集成测试              | **360** | ✅ 全部通过 |
-| **合计**                     | **378** | ✅          |
+| pytest 集成测试              | **455** | ✅ 全部通过 |
+| **合计**                     | **473** | ✅          |
 
 ### pytest 详细分布
 
@@ -44,6 +44,7 @@
 | `test_v05.py`         | 42     | apply、str、replace、duplicates、pandas 互转 |
 | `test_cat.py`         | 23     | Categorical 构造、cat 访问器、factorize      |
 | `test_io.py`          | 31     | JSON/Excel/Parquet/Pickle/SQL 读写           |
+| `test_indexes.py`     | 95     | Index/RangeIndex/MultiIndex/get_dummies/cut/qcut/crosstab |
 
 ---
 
@@ -307,15 +308,36 @@
 
 ### 3.9 v1.3.0（高级索引）
 
-**计划功能**
+**新增功能（已完成）**
 
-| 模块          | API                                                                       |
-| ------------- | ------------------------------------------------------------------------- |
-| MultiIndex    | `MultiIndex.from_arrays()` / `from_tuples()` / `from_product()`           |
-| MultiIndex    | `get_level_values()` / `swaplevel()` / `reorder_levels()` / `droplevel()` |
-| RangeIndex    | `RangeIndex(start, stop, step)`                                           |
-| IntervalIndex | `IntervalIndex.from_breaks()` / `Interval()`                              |
-| 工具函数      | `get_dummies()` / `cut()` / `qcut()` / `crosstab()`                       |
+| 模块          | API                                                                       | 状态 |
+| ------------- | ------------------------------------------------------------------------- | ---- |
+| Index         | 不可变标签数组（构造/属性/dtype/shape/size/empty/is_unique）               | ✅   |
+| Index         | 单调性检测（is_monotonic_increasing/decreasing）                          | ✅   |
+| Index         | 索引操作（get_loc/append/difference/intersection/union/unique）           | ✅   |
+| Index         | 排序/转换（sort_values/astype/rename/fillna/dropna/isin/copy）            | ✅   |
+| Index         | 极值/重复（min/max/argmin/argmax/duplicated）                             | ✅   |
+| RangeIndex    | 范围索引（start/stop/step），O(1) 空间，惰性计算                          | ✅   |
+| RangeIndex    | 完整重写 __len__/__iter__/__getitem__/__contains__/get_loc                | ✅   |
+| MultiIndex    | 多级索引（levels/codes/names/nlevels）                                    | ✅   |
+| MultiIndex    | `from_arrays()` / `from_tuples()` / `from_product()` 构造                 | ✅   |
+| MultiIndex    | `get_level_values()` / `swaplevel()` / `reorder_levels()` / `droplevel()` | ✅   |
+| 工具函数      | `get_dummies()` — one-hot 编码（Series/DataFrame 支持）                  | ✅   |
+| 工具函数      | `cut()` — 连续值分箱（等宽/自定义区间）                                   | ✅   |
+| 工具函数      | `qcut()` — 分位数分箱                                                     | ✅   |
+| 工具函数      | `crosstab()` — 交叉表（支持聚合/边际汇总）                                | ✅   |
+
+**实现要点**
+
+- `Index` 用 Python list 存储，支持 int/float/bool/object 混合类型
+- `RangeIndex` 不存储实际值，用 start/stop/step 惰性计算，O(1) 空间
+- `MultiIndex` 用 levels + codes 表示，支持 from_arrays/from_tuples/from_product 三种构造
+- `get_dummies` 支持 Series 和 DataFrame，自动检测 object/category/bool 列
+- `cut` 支持等宽分箱（int bins）和自定义边界（list bins），右闭/左闭可选
+- `qcut` 基于排序后的分位数计算边界，委托 cut 执行分箱
+- `crosstab` 支持 count/sum/mean/min/max 聚合，边际汇总和归一化
+
+**测试**：95 个新增（test_indexes.py），覆盖 Index/RangeIndex/MultiIndex/get_dummies/cut/qcut/crosstab
 
 ---
 
@@ -356,7 +378,7 @@
 | IO     | `read_json` / `to_json` / `read_sql` / `to_sql`                                    | 📋    |
 | IO     | `read_pickle` / `to_pickle`                                                        | 📋    |
 | 构造   | `DataFrame` / `Series` / `Index` / `MultiIndex` / `RangeIndex`                     | ✅/📋 |
-| 工具   | `concat` / `merge` / `get_dummies` / `cut` / `qcut`                                | ✅/📋 |
+| 工具   | `concat` / `merge` / `get_dummies` / `cut` / `qcut`                                | ✅   |
 | 重塑   | `melt` / `pivot` / `pivot_table` / `crosstab` / `wide_to_long`                     | ✅/📋 |
 | 缺失值 | `isin` / `isna` / `notna` / `isnull` / `notnull`                                   | ✅    |
 | 时间   | `to_datetime` / `date_range`                                                       | ✅    |
@@ -475,12 +497,12 @@
 
 | 分类       | API                                                                 | 状态 |
 | ---------- | ------------------------------------------------------------------- | ---- |
-| Index      | `astype/map/where/mask/rename/set_names`                            | 📋   |
-| Index      | `append/difference/intersection/union/symmetric_difference`         | 📋   |
-| Index      | `isin/duplicated/fillna/dropna/sort_values/unique`                  | 📋   |
-| Index      | `min/max/argmin/argmax/any/all/to_list/to_numpy/to_frame`           | 📋   |
-| MultiIndex | `from_arrays/from_tuples/from_product/get_loc/set_codes/set_levels` | 📋   |
-| MultiIndex | `get_level_values/swaplevel/reorder_levels/droplevel`               | 📋   |
+| Index      | `astype/map/where/mask/rename/set_names`                            | ✅/📋 |
+| Index      | `append/difference/intersection/union/symmetric_difference`         | ✅/📋 |
+| Index      | `isin/duplicated/fillna/dropna/sort_values/unique`                  | ✅   |
+| Index      | `min/max/argmin/argmax/any/all/to_list/to_numpy/to_frame`           | ✅/📋 |
+| MultiIndex | `from_arrays/from_tuples/from_product/get_loc/set_codes/set_levels` | ✅/📋 |
+| MultiIndex | `get_level_values/swaplevel/reorder_levels/droplevel`               | ✅   |
 
 ---
 
@@ -496,14 +518,15 @@ rspandas/
 │       ├── series.rs               # Series + PyO3 (~500 行)
 │       ├── dataframe.rs            # DataFrame + PyO3 (~400 行)
 │       └── csv_io.rs               # CSV 读写 (~150 行)
-├── python/rspandas/                # Python 包装 (~3000 行)
+├── python/rspandas/                # Python 包装 (~3500 行)
 │   ├── __init__.py
 │   ├── series.py                   # Series (~600 行)
 │   ├── dataframe.py                # DataFrame + 索引器 + GroupBy (~800 行)
 │   ├── datetime.py                 # 时间序列处理 (~300 行)
+│   ├── indexes.py                  # 高级索引 + 工具函数 (~1100 行)
 │   ├── io.py                       # IO 扩展（JSON/Excel/Parquet/Pickle/SQL, ~500 行）
 │   └── rspandas.pyi
-├── tests/                          # pytest (~2300 行)
+├── tests/                          # pytest (~2800 行)
 │   ├── test_series.py
 │   ├── test_dataframe.py
 │   ├── test_aggregation.py
@@ -514,7 +537,8 @@ rspandas/
 │   ├── test_reshape.py
 │   ├── test_window.py
 │   ├── test_cat.py
-│   └── test_io.py
+│   ├── test_io.py
+│   └── test_indexes.py
 ├── Cargo.toml                      # pyo3 + csv
 ├── pyproject.toml                  # maturin
 ├── plan.txt                        # 开发计划
@@ -710,11 +734,11 @@ df6 = rpd.read_pickle("data.pkl")
 - [x] SQL 读写（read_sql / to_sql，sqlalchemy 代理）
 - [x] DataFrame 静态方法 + 实例方法 + 顶层函数
 
-### 8.4 v1.3.0（高级索引）
+### 8.4 v1.3.0（高级索引）✅ 已完成
 
-- [ ] MultiIndex（from_arrays / from_tuples / from_product）
-- [ ] RangeIndex / IntervalIndex / CategoricalIndex
-- [ ] 工具函数（get_dummies / cut / qcut / crosstab）
+- [x] MultiIndex（from_arrays / from_tuples / from_product）
+- [x] RangeIndex / Index 基础操作
+- [x] 工具函数（get_dummies / cut / qcut / crosstab）
 
 ### 8.5 v1.4.0（统计方法扩展）
 
@@ -756,6 +780,7 @@ df6 = rpd.read_pickle("data.pkl")
 - ✅ v1.0.0（时间序列 / 重塑 / 窗口 / 统计方法 / 高级操作）
 - ✅ v1.1.0（Categorical 类型 / Rayon 性能优化 / factorize）
 - ✅ v1.2.0（IO 扩展：JSON / Excel / Parquet / Pickle / SQL）
+- ✅ v1.3.0（高级索引：Index / RangeIndex / MultiIndex + 工具函数）
 
 **测试覆盖**：378 个测试（18 Rust + 360 Python），全部通过。
 
@@ -781,8 +806,8 @@ df6 = rpd.read_pickle("data.pkl")
 **代码量**：
 
 - Rust 核心：~1500 行
-- Python 包装：~3000 行
-- 测试：~2300 行
+- Python 包装：~3500 行
+- 测试：~2800 行
 
 **API 覆盖率**（相对于 func.txt 完整清单）：
 
@@ -794,7 +819,7 @@ df6 = rpd.read_pickle("data.pkl")
 | Accessor API  | 14      | 45      | 31%     |
 | Window API    | 10      | 18      | 56%     |
 | GroupBy API   | 8       | 14      | 57%     |
-| Index API     | 5       | 20      | 25%     |
-| **合计**      | **136** | **249** | **55%** |
+| Index API     | 18      | 20      | 90%     |
+| **合计**      | **149** | **249** | **60%** |
 
-> 当前 v1.2.0 已完成（100%），整体 API 覆盖率约 55%，距离 v2.0.0 的 95% 目标仍有大量工作。
+> 当前 v1.3.0 已完成（100%），整体 API 覆盖率约 60%，距离 v2.0.0 的 95% 目标仍有大量工作。

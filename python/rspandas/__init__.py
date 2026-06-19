@@ -27,6 +27,15 @@ from .io import (
     read_sql,
     to_sql,
 )
+from .indexes import (
+    Index,
+    RangeIndex,
+    MultiIndex,
+    get_dummies,
+    cut,
+    qcut,
+    crosstab,
+)
 from .rspandas import _Series, _DataFrame  # 重新导出 Rust 类型，供内部使用
 from .rspandas import factorize as _factorize  # Rust 端 factorize
 
@@ -45,7 +54,7 @@ def factorize(values):
     return _factorize(values)
 
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __all__ = [
     "Series",
     "DataFrame",
@@ -68,6 +77,13 @@ __all__ = [
     "to_pickle",
     "read_sql",
     "to_sql",
+    "Index",
+    "RangeIndex",
+    "MultiIndex",
+    "get_dummies",
+    "cut",
+    "qcut",
+    "crosstab",
     "_Series",
     "_DataFrame",
     "__version__",

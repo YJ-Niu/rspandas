@@ -1484,9 +1484,9 @@ class DataFrameGroupBy:
                 elif func == "median":
                     result[c].append(sub.median())
                 elif func == "first":
-                    result[c].append(sub.iloc(0) if len(sub) > 0 else None)
+                    result[c].append(sub.values[0] if len(sub) > 0 else None)
                 elif func == "last":
-                    result[c].append(sub.iloc(-1) if len(sub) > 0 else None)
+                    result[c].append(sub.values[-1] if len(sub) > 0 else None)
                 else:
                     raise ValueError(f"unsupported agg: {func}")
         return DataFrame(result)
@@ -1517,6 +1517,43 @@ class DataFrameGroupBy:
         if isinstance(func, dict):
             return self._agg(func)
         raise TypeError("agg must be str or dict")
+
+    # ---------- 分组取值扩展 (v1.4.0) ----------
+
+    def first(self) -> "DataFrame":
+        """返回每个分组的第一行。"""
+        return self._agg({c: "first" for c in self._df._columns if c not in self._by})
+
+    def last(self) -> "DataFrame":
+        """返回每个分组的最后一行。"""
+        return self._agg({c: "last" for c in self._df._columns if c not in self._by})
+
+    def nth(self, n: int) -> "DataFrame":
+        """返回每个分组的第 n 行。
+
+        :param n: 行索引 (0-based, 支持负数)
+        """
+        result: Dict[str, list] = {c: [] for c in self._by}
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for k, c in zip(key, self._by):
+                result[c].append(k)
+            for c in other_cols:
+                ser = self._df[c]
+                sub_vals = ser.iloc(idxs).values
+                if n < 0:
+                    actual_n = len(sub_vals) + n
+                else:
+                    actual_n = n
+                if 0 <= actual_n < len(sub_vals):
+                    result[c].append(sub_vals[actual_n])
+                else:
+                    result[c].append(None)
+
+        return DataFrame(result)
 
 
 # ---------------------------------------------------------------------------
