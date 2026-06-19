@@ -1959,14 +1959,15 @@ class DataFrame:
         if isinstance(times[0], datetime):
             if mode == "first":
                 start = min(times)
-                end = start + timedelta(**{unit_map[unit]: num})
+                end = start + timedelta(**{unit_map[unit]: num - 1})
+                end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
                 indices = [
                     i for i in range(self._nrows)
                     if isinstance(self._index[i], datetime) and self._index[i] <= end
                 ]
             else:
                 end = max(times)
-                start = end - timedelta(**{unit_map[unit]: num})
+                start = end - timedelta(**{unit_map[unit]: num - 1})
                 indices = [
                     i for i in range(self._nrows)
                     if isinstance(self._index[i], datetime) and self._index[i] >= start
@@ -2384,6 +2385,612 @@ class DataFrame:
         else:
             return self.copy()
 
+    # ---------- v2.0.0: 累计操作 ----------
+
+    def cumsum(self, axis: int = 0, skipna: bool = True) -> "DataFrame":
+        """返回每列的累计和。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                result = []
+                acc = 0
+                for v in vals:
+                    if v is None:
+                        result.append(None if not skipna else acc)
+                    else:
+                        acc = v + (acc if isinstance(v, (int, float)) else 0)
+                        result.append(acc)
+                new_data[c] = result
+            return DataFrame(new_data)
+        else:
+            return self.T.cumsum(axis=0).T
+
+    def cumprod(self, axis: int = 0, skipna: bool = True) -> "DataFrame":
+        """返回每列的累计积。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                result = []
+                acc = 1
+                for v in vals:
+                    if v is None:
+                        result.append(None if not skipna else acc)
+                    else:
+                        acc = v * (acc if isinstance(v, (int, float)) else 1)
+                        result.append(acc)
+                new_data[c] = result
+            return DataFrame(new_data)
+        else:
+            return self.T.cumprod(axis=0).T
+
+    def cummax(self, axis: int = 0, skipna: bool = True) -> "DataFrame":
+        """返回每列的累计最大值。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                result = []
+                acc = None
+                for v in vals:
+                    if v is not None:
+                        acc = v if acc is None else max(acc, v)
+                    result.append(acc)
+                new_data[c] = result
+            return DataFrame(new_data)
+        else:
+            return self.T.cummax(axis=0).T
+
+    def cummin(self, axis: int = 0, skipna: bool = True) -> "DataFrame":
+        """返回每列的累计最小值。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                result = []
+                acc = None
+                for v in vals:
+                    if v is not None:
+                        acc = v if acc is None else min(acc, v)
+                    result.append(acc)
+                new_data[c] = result
+            return DataFrame(new_data)
+        else:
+            return self.T.cummin(axis=0).T
+
+    def cumcount(self, axis: int = 0) -> "Series":
+        """返回每列的累计计数 (跳过 None 值)。
+
+        :param axis: 0=列方向, 1=行方向
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                result = []
+                cnt = 0
+                for v in vals:
+                    if v is not None:
+                        cnt += 1
+                    result.append(cnt)
+                new_data[c] = result
+            return DataFrame(new_data)
+        else:
+            return self.T.cumcount(axis=0)
+
+    # ---------- v2.0.0: 时序操作 ----------
+
+    def shift(self, periods: int = 1, axis: int = 0) -> "DataFrame":
+        """将数据按行/列平移。
+
+        :param periods: 平移的步数 (正数向下/右, 负数向上/左)
+        :param axis: 0=行方向, 1=列方向
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                if periods >= 0:
+                    shifted = ([None] * periods) + vals[:len(vals) - periods]
+                else:
+                    p = -periods
+                    shifted = vals[p:] + ([None] * p)
+                new_data[c] = shifted
+            return DataFrame(new_data)
+        else:
+            return self.T.shift(periods, axis=0).T
+
+    def diff(self, periods: int = 1, axis: int = 0) -> "DataFrame":
+        """计算每列的差分。
+
+        :param periods: 差分步数
+        :param axis: 0=列方向, 1=行方向
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                result = []
+                for i in range(len(vals)):
+                    if i < periods:
+                        result.append(None)
+                    elif vals[i] is None or vals[i - periods] is None:
+                        result.append(None)
+                    else:
+                        result.append(vals[i] - vals[i - periods])
+                new_data[c] = result
+            return DataFrame(new_data)
+        else:
+            return self.T.diff(periods, axis=0).T
+
+    def pct_change(self, periods: int = 1) -> "DataFrame":
+        """计算每列的百分比变化。
+
+        :param periods: 差分步数
+        """
+        new_data = {}
+        for c in self._columns:
+            vals = list(self._inner.get_column(c).values)
+            result = []
+            for i in range(len(vals)):
+                if i < periods or vals[i - periods] is None or vals[i - periods] == 0:
+                    result.append(None)
+                elif vals[i] is None:
+                    result.append(None)
+                else:
+                    result.append((vals[i] - vals[i - periods]) / vals[i - periods])
+            new_data[c] = result
+        return DataFrame(new_data)
+
+    # ---------- v2.0.0: 统计方法 ----------
+
+    def rank(self, axis: int = 0, method: str = "average", ascending: bool = True) -> "DataFrame":
+        """计算每列的排名。
+
+        :param axis: 0=列方向, 1=行方向
+        :param method: 'average'/'min'/'max'/'first'/'dense'
+        :param ascending: 是否升序
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                # 建立 (value, original_index) 对，排除 None
+                indexed = [(v, i) for i, v in enumerate(vals) if v is not None]
+                if not indexed:
+                    new_data[c] = [None] * len(vals)
+                    continue
+                # 排序
+                indexed.sort(key=lambda x: x[0], reverse=not ascending)
+                ranks = [None] * len(vals)
+                if method == "dense":
+                    rank = 0
+                    prev = None
+                    for v, i in indexed:
+                        if prev is None or v != prev:
+                            rank += 1
+                        ranks[i] = rank
+                        prev = v
+                elif method == "min":
+                    rank = 0
+                    for j, (v, i) in enumerate(indexed):
+                        if j == 0 or v != indexed[j - 1][0]:
+                            ranks[i] = j + 1
+                        else:
+                            ranks[i] = ranks[indexed[j - 1][1]]
+                elif method == "max":
+                    # 先计算 min，再按组替换
+                    min_ranks = [None] * len(vals)
+                    for j, (v, i) in enumerate(indexed):
+                        if j == 0 or v != indexed[j - 1][0]:
+                            min_ranks[i] = j + 1
+                        else:
+                            min_ranks[i] = min_ranks[indexed[j - 1][1]]
+                    # 反向遍历替换为 max
+                    for j in range(len(indexed) - 1, -1, -1):
+                        v, i = indexed[j]
+                        if j == len(indexed) - 1 or v != indexed[j + 1][0]:
+                            ranks[i] = j + 1
+                        else:
+                            ranks[i] = ranks[indexed[j + 1][1]]
+                elif method == "first":
+                    for j, (v, i) in enumerate(indexed):
+                        ranks[i] = j + 1
+                else:  # average
+                    group_start = 0
+                    for j in range(1, len(indexed) + 1):
+                        if j == len(indexed) or indexed[j][0] != indexed[group_start][0]:
+                            n = j - group_start
+                            avg_rank = group_start + 1 + (n - 1) / 2.0
+                            for k in range(group_start, j):
+                                ranks[indexed[k][1]] = avg_rank
+                            group_start = j
+                new_data[c] = ranks
+            return DataFrame(new_data)
+        else:
+            return self.T.rank(axis=0, method=method, ascending=ascending).T
+
+    def quantile(self, q=0.5, axis: int = 0) -> "Series":
+        """计算每列的分位数。
+
+        :param q: 分位数 (0-1) 或 list
+        :param axis: 0=列方向, 1=行方向
+        """
+        from .series import Series
+        if axis == 0:
+            q_list = [q] if not isinstance(q, (list, tuple)) else list(q)
+            new_data = {}
+            for c in self._columns:
+                vals = [v for v in self._inner.get_column(c).values if v is not None]
+                if not vals:
+                    new_data[c] = [None] * len(q_list)
+                    continue
+                vals.sort()
+                col_quants = []
+                for qv in q_list:
+                    pos = qv * (len(vals) - 1)
+                    lo = int(pos)
+                    hi = min(lo + 1, len(vals) - 1)
+                    frac = pos - lo
+                    col_quants.append(vals[lo] + (vals[hi] - vals[lo]) * frac)
+                new_data[c] = col_quants
+            if len(q_list) == 1:
+                return Series({c: new_data[c][0] for c in self._columns})
+            return DataFrame(dict((c, new_data[c]) for c in self._columns))
+        else:
+            return self.T.quantile(q, axis=0)
+
+    def mode(self, axis: int = 0, dropna: bool = True) -> "DataFrame":
+        """计算每列的众数。
+
+        :param axis: 0=列方向, 1=行方向
+        :param dropna: 是否忽略 NaN
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                if dropna:
+                    vals = [v for v in vals if v is not None]
+                from collections import Counter
+                cnt = Counter(vals)
+                max_count = max(cnt.values()) if cnt else 0
+                modes = [k for k, v in cnt.items() if v == max_count]
+                new_data[c] = modes if modes else [None]
+            # 对齐长度
+            max_len = max(len(v) for v in new_data.values()) if new_data else 0
+            for c in new_data:
+                if len(new_data[c]) < max_len:
+                    new_data[c].extend([None] * (max_len - len(new_data[c])))
+            return DataFrame(new_data)
+        else:
+            return self.T.mode(axis=0, dropna=dropna)
+
+    def skew(self, axis: int = 0, skipna: bool = True) -> "Series":
+        """计算每列的偏度。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        from .series import Series
+        if axis == 0:
+            result = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                if skipna:
+                    vals = [v for v in vals if v is not None]
+                n = len(vals)
+                if n < 3:
+                    result[c] = None
+                    continue
+                mean = sum(vals) / n
+                m2 = sum((v - mean) ** 2 for v in vals)
+                m3 = sum((v - mean) ** 3 for v in vals)
+                if m2 == 0:
+                    result[c] = None
+                else:
+                    result[c] = (n ** 0.5 * m3) / (m2 ** 1.5)
+            return Series(result)
+        else:
+            return self.T.skew(axis=0, skipna=skipna)
+
+    def kurt(self, axis: int = 0, skipna: bool = True) -> "Series":
+        """计算每列的峰度 (Fisher 定义，正态分布峰度=0)。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        from .series import Series
+        if axis == 0:
+            result = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                if skipna:
+                    vals = [v for v in vals if v is not None]
+                n = len(vals)
+                if n < 4:
+                    result[c] = None
+                    continue
+                mean = sum(vals) / n
+                m2 = sum((v - mean) ** 2 for v in vals)
+                m4 = sum((v - mean) ** 4 for v in vals)
+                if m2 == 0:
+                    result[c] = None
+                else:
+                    result[c] = (n * (n + 1) * m4) / ((n - 1) * (n - 2) * (n - 3) * m2 ** 2) - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
+            return Series(result)
+        else:
+            return self.T.kurt(axis=0, skipna=skipna)
+
+    def mad(self, axis: int = 0, skipna: bool = True) -> "Series":
+        """计算每列的平均绝对偏差 (Mean Absolute Deviation)。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        from .series import Series
+        if axis == 0:
+            result = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                if skipna:
+                    vals = [v for v in vals if v is not None]
+                if not vals:
+                    result[c] = None
+                    continue
+                mean = sum(vals) / len(vals)
+                result[c] = sum(abs(v - mean) for v in vals) / len(vals)
+            return Series(result)
+        else:
+            return self.T.mad(axis=0, skipna=skipna)
+
+    def idxmax(self, axis: int = 0, skipna: bool = True) -> "Series":
+        """返回每列最大值所在的索引。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        from .series import Series
+        if axis == 0:
+            result = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                best_idx = None
+                best_val = None
+                for i, v in enumerate(vals):
+                    if skipna and v is None:
+                        continue
+                    if best_val is None or v > best_val:
+                        best_val = v
+                        best_idx = self._index[i] if self._index and i < len(self._index) else i
+                result[c] = best_idx
+            return Series(result)
+        else:
+            return self.T.idxmax(axis=0, skipna=skipna)
+
+    def idxmin(self, axis: int = 0, skipna: bool = True) -> "Series":
+        """返回每列最小值所在的索引。
+
+        :param axis: 0=列方向, 1=行方向
+        :param skipna: 是否跳过 NaN
+        """
+        from .series import Series
+        if axis == 0:
+            result = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                best_idx = None
+                best_val = None
+                for i, v in enumerate(vals):
+                    if skipna and v is None:
+                        continue
+                    if best_val is None or v < best_val:
+                        best_val = v
+                        best_idx = self._index[i] if self._index and i < len(self._index) else i
+                result[c] = best_idx
+            return Series(result)
+        else:
+            return self.T.idxmin(axis=0, skipna=skipna)
+
+    # ---------- v2.0.0: 排序 ----------
+
+    def sort_index(self, axis: int = 0, ascending: bool = True) -> "DataFrame":
+        """按索引排序。
+
+        :param axis: 0=行方向, 1=列方向
+        :param ascending: 是否升序
+        """
+        if axis == 0:
+            if not self._index:
+                return self.copy()
+            indexed = list(enumerate(self._index))
+            # 排序时 None 放最后
+            indexed.sort(key=lambda x: (x[1] is None, x[1] if x[1] is not None else ""), reverse=not ascending)
+            new_order = [i for i, _ in indexed]
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in new_order]
+                for c in self._columns
+            }
+            df = DataFrame(new_data)
+            df._index = [self._index[i] for i in new_order]
+            return df
+        else:
+            cols = sorted(self._columns, reverse=not ascending)
+            return self[cols]
+
+    def sort_columns(self) -> "DataFrame":
+        """按列名排序。"""
+        return self.sort_index(axis=1)
+
+    # ---------- v2.0.0: 转换 ----------
+
+    def clip(self, lower=None, upper=None, axis: int = 0) -> "DataFrame":
+        """裁剪每列的值到指定范围。
+
+        :param lower: 下界
+        :param upper: 上界
+        :param axis: 0=列方向, 1=行方向
+        """
+        if axis == 0:
+            new_data = {}
+            for c in self._columns:
+                vals = list(self._inner.get_column(c).values)
+                clipped = []
+                for v in vals:
+                    if v is None:
+                        clipped.append(None)
+                    else:
+                        result = v
+                        if lower is not None and result < lower:
+                            result = lower
+                        if upper is not None and result > upper:
+                            result = upper
+                        clipped.append(result)
+                new_data[c] = clipped
+            return DataFrame(new_data)
+        else:
+            return self.T.clip(lower, upper, axis=0).T
+
+    def astype(self, dtype: str) -> "DataFrame":
+        """转换每列的数据类型。
+
+        :param dtype: 目标类型 (如 'int64'/'float64'/'object'/'bool')
+        """
+        if isinstance(dtype, dict):
+            new_data = {}
+            for c in self._columns:
+                target = dtype.get(c, None)
+                if target is None:
+                    new_data[c] = list(self._inner.get_column(c).values)
+                else:
+                    ser = self._get_column_as_series(c)
+                    new_data[c] = list(ser.astype(target).values)
+            return DataFrame(new_data)
+        else:
+            new_data = {}
+            for c in self._columns:
+                ser = self._get_column_as_series(c)
+                new_data[c] = list(ser.astype(dtype).values)
+            return DataFrame(new_data)
+
+    # ---------- v2.0.0: 概览 ----------
+
+    def memory_usage(self, index: bool = True, deep: bool = False) -> "Series":
+        """返回每列的内存使用量 (字节)。
+
+        :param index: 是否包含索引
+        :param deep: 是否深度计算 (字符串等)
+        """
+        import sys
+        from .series import Series
+        result = {}
+        for c in self._columns:
+            total = 0
+            for v in self._inner.get_column(c).values:
+                if deep and isinstance(v, str):
+                    total += sys.getsizeof(v)
+                else:
+                    total += 8  # 指针大小估计
+            result[c] = total
+        if index:
+            result["Index"] = len(self._index) * 8 if self._index else 0
+        return Series(result)
+
+    # ---------- v2.0.0: 数据访问 ----------
+
+    def first_valid_index(self) -> Any:
+        """返回第一个非 NaN 行所在的索引。"""
+        for i in range(self._nrows):
+            row = [self._inner.get_column(c).values[i] for c in self._columns]
+            if any(v is not None for v in row):
+                return self._index[i] if self._index and i < len(self._index) else i
+        return None
+
+    def last_valid_index(self) -> Any:
+        """返回最后一个非 NaN 行所在的索引。"""
+        for i in range(self._nrows - 1, -1, -1):
+            row = [self._inner.get_column(c).values[i] for c in self._columns]
+            if any(v is not None for v in row):
+                return self._index[i] if self._index and i < len(self._index) else i
+        return None
+
+    # ---------- v2.0.0: 其他 ----------
+
+    def rename_axis(self, mapper, axis: int = 0) -> "DataFrame":
+        """重命名轴标签。
+
+        :param mapper: 标量或函数
+        :param axis: 0=行, 1=列
+        """
+        if axis == 0:
+            new_name = mapper(self._index_name()) if callable(mapper) else mapper
+            df = self.copy()
+            df._index_name_val = new_name
+            return df
+        else:
+            new_name = mapper(self._columns_name) if callable(mapper) else mapper
+            df = self.copy()
+            df._columns_name = new_name
+            return df
+
+    def explode(self, column, ignore_index: bool = False) -> "DataFrame":
+        """将列表类列展开为多行。
+
+        :param column: 要展开的列名
+        :param ignore_index: 是否重置索引
+        """
+        if isinstance(column, str):
+            column = [column]
+        col_vals = {}
+        for c in self._columns:
+            col_vals[c] = list(self._inner.get_column(c).values)
+
+        # 对每个展开列，计算展开后的行数
+        new_data = {c: [] for c in self._columns}
+        for i in range(self._nrows):
+            # 计算展开倍数
+            explode_lens = []
+            for ec in column:
+                v = col_vals[ec][i]
+                if isinstance(v, (list, tuple)):
+                    explode_lens.append(len(v))
+                else:
+                    explode_lens.append(1)
+            max_len = max(explode_lens) if explode_lens else 1
+
+            for j in range(max_len):
+                for c in self._columns:
+                    v = col_vals[c][i]
+                    if c in column:
+                        if isinstance(v, (list, tuple)):
+                            new_data[c].append(v[j] if j < len(v) else None)
+                        else:
+                            new_data[c].append(v if j == 0 else None)
+                    else:
+                        new_data[c].append(v)
+
+        df = DataFrame(new_data)
+        if ignore_index:
+            df._index = list(range(len(df)))
+        return df
+
 
 class DataFrameGroupBy:
     """DataFrame 分组结果 (极简版)。"""
@@ -2507,6 +3114,319 @@ class DataFrameGroupBy:
                     result[c].append(sub_vals[actual_n])
                 else:
                     result[c].append(None)
+
+        return DataFrame(result)
+
+    # ---------- v2.0.0: GroupBy 扩展 ----------
+
+    def ngroup(self) -> "Series":
+        """返回每个分组的编号 (0-based)。"""
+        from .series import Series
+        group_ids = {}
+        for i, key in enumerate(self._groups):
+            group_ids[key] = i
+        # 为每行分配组号
+        n = self._df._nrows
+        group_nums = [None] * n
+        for key, idxs in self._groups.items():
+            gid = group_ids[key]
+            for idx in idxs:
+                group_nums[idx] = gid
+        return Series(group_nums)
+
+    def cumcount(self, ascending: bool = True) -> "Series":
+        """返回每个分组内的累计计数 (0-based)。"""
+        from .series import Series
+        n = self._df._nrows
+        result = [None] * n
+        for idxs in self._groups.values():
+            if ascending:
+                for i, idx in enumerate(idxs):
+                    result[idx] = i
+            else:
+                for i, idx in enumerate(reversed(idxs)):
+                    result[idx] = i
+        return Series(result)
+
+    def rank(self, method: str = "average", ascending: bool = True) -> "DataFrame":
+        """返回每个分组内的排名。
+
+        :param method: 'average'/'min'/'max'/'first'/'dense'
+        :param ascending: 是否升序
+        """
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {c: [None] * self._df._nrows for c in other_cols}
+
+        for idxs in self._groups.values():
+            for c in other_cols:
+                ser = self._df[c]
+                sub_vals = [ser.values[i] for i in idxs]
+                # 在每个组内排名
+                indexed = [(v, i) for i, v in enumerate(sub_vals) if v is not None]
+                if not indexed:
+                    for i in idxs:
+                        result[c][i] = None
+                    continue
+                indexed.sort(key=lambda x: x[0], reverse=not ascending)
+                ranks = [None] * len(sub_vals)
+                if method == "dense":
+                    rank = 0
+                    prev = None
+                    for v, i in indexed:
+                        if prev is None or v != prev:
+                            rank += 1
+                        ranks[i] = rank
+                        prev = v
+                elif method == "min":
+                    for j, (v, i) in enumerate(indexed):
+                        if j == 0 or v != indexed[j - 1][0]:
+                            ranks[i] = j + 1
+                        else:
+                            ranks[i] = ranks[indexed[j - 1][1]]
+                elif method == "max":
+                    min_ranks = [None] * len(sub_vals)
+                    for j, (v, i) in enumerate(indexed):
+                        if j == 0 or v != indexed[j - 1][0]:
+                            min_ranks[i] = j + 1
+                        else:
+                            min_ranks[i] = min_ranks[indexed[j - 1][1]]
+                    for j in range(len(indexed) - 1, -1, -1):
+                        v, i = indexed[j]
+                        if j == len(indexed) - 1 or v != indexed[j + 1][0]:
+                            ranks[i] = j + 1
+                        else:
+                            ranks[i] = ranks[indexed[j + 1][1]]
+                elif method == "first":
+                    for j, (v, i) in enumerate(indexed):
+                        ranks[i] = j + 1
+                else:  # average
+                    group_start = 0
+                    for j in range(1, len(indexed) + 1):
+                        if j == len(indexed) or indexed[j][0] != indexed[group_start][0]:
+                            n_g = j - group_start
+                            avg_rank = group_start + 1 + (n_g - 1) / 2.0
+                            for k in range(group_start, j):
+                                ranks[indexed[k][1]] = avg_rank
+                            group_start = j
+                for j, idx in enumerate(idxs):
+                    result[c][idx] = ranks[j]
+
+        return DataFrame(result)
+
+    def quantile(self, q=0.5) -> "DataFrame":
+        """返回每个分组内的分位数。
+
+        :param q: 分位数 (0-1)
+        """
+        result: Dict[str, list] = {c: [] for c in self._by}
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for k, c in zip(key, self._by):
+                result[c].append(k)
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                if not vals:
+                    result[c].append(None)
+                    continue
+                vals.sort()
+                pos = q * (len(vals) - 1)
+                lo = int(pos)
+                hi = min(lo + 1, len(vals) - 1)
+                frac = pos - lo
+                result[c].append(vals[lo] + (vals[hi] - vals[lo]) * frac)
+
+        return DataFrame(result)
+
+    def corr(self, other_col: str) -> "DataFrame":
+        """计算每个分组内两列的相关系数。
+
+        :param other_col: 目标列名
+        """
+        numeric_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {c: [] for c in self._by}
+        for c in numeric_cols:
+            if c != other_col:
+                result[c] = []
+
+        for key, idxs in self._groups.items():
+            for k, c in zip(key, self._by):
+                result[c].append(k)
+            # 获取 other_col 的值
+            other_vals = [self._df._inner.get_column(other_col).values[i] for i in idxs]
+            for c in numeric_cols:
+                if c == other_col:
+                    continue
+                col_vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                pairs = [(a, b) for a, b in zip(col_vals, other_vals) if a is not None and b is not None]
+                if len(pairs) < 2:
+                    result[c].append(None)
+                    continue
+                ma = sum(a for a, b in pairs) / len(pairs)
+                mb = sum(b for a, b in pairs) / len(pairs)
+                num = sum((a - ma) * (b - mb) for a, b in pairs)
+                da = (sum((a - ma) ** 2 for a, b in pairs)) ** 0.5
+                db = (sum((b - mb) ** 2 for a, b in pairs)) ** 0.5
+                if da == 0 or db == 0:
+                    result[c].append(None)
+                else:
+                    result[c].append(num / (da * db))
+
+        return DataFrame(result)
+
+    def cov(self, other_col: str) -> "DataFrame":
+        """计算每个分组内两列的协方差。
+
+        :param other_col: 目标列名
+        """
+        numeric_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {c: [] for c in self._by}
+        for c in numeric_cols:
+            if c != other_col:
+                result[c] = []
+
+        for key, idxs in self._groups.items():
+            for k, c in zip(key, self._by):
+                result[c].append(k)
+            other_vals = [self._df._inner.get_column(other_col).values[i] for i in idxs]
+            for c in numeric_cols:
+                if c == other_col:
+                    continue
+                col_vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                pairs = [(a, b) for a, b in zip(col_vals, other_vals) if a is not None and b is not None]
+                if len(pairs) < 2:
+                    result[c].append(None)
+                    continue
+                ma = sum(a for a, b in pairs) / len(pairs)
+                mb = sum(b for a, b in pairs) / len(pairs)
+                result[c].append(sum((a - ma) * (b - mb) for a, b in pairs) / len(pairs))
+
+        return DataFrame(result)
+
+    def corrwith(self, other: "DataFrame") -> "Series":
+        """计算每个分组内与另一个 DataFrame 的列相关系数。
+
+        :param other: 另一个 DataFrame
+        """
+        from .series import Series
+        result: Dict[str, float] = {}
+        for c in self._df._columns:
+            if c in self._by or c not in other._columns:
+                continue
+            all_pairs = []
+            for idxs in self._groups.values():
+                col_a = [self._df._inner.get_column(c).values[i] for i in idxs]
+                col_b = [other._inner.get_column(c).values[i] for i in idxs]
+                all_pairs.extend([(a, b) for a, b in zip(col_a, col_b) if a is not None and b is not None])
+            if len(all_pairs) < 2:
+                result[c] = None
+                continue
+            ma = sum(a for a, b in all_pairs) / len(all_pairs)
+            mb = sum(b for a, b in all_pairs) / len(all_pairs)
+            num = sum((a - ma) * (b - mb) for a, b in all_pairs)
+            da = (sum((a - ma) ** 2 for a, b in all_pairs)) ** 0.5
+            db = (sum((b - mb) ** 2 for a, b in all_pairs)) ** 0.5
+            result[c] = num / (da * db) if da > 0 and db > 0 else None
+        return Series(result)
+
+    def pct_change(self, periods: int = 1) -> "DataFrame":
+        """返回每个分组内的百分比变化。"""
+        result: Dict[str, list] = {}
+        for c in self._df._columns:
+            result[c] = [None] * self._df._nrows
+
+        for idxs in self._groups.values():
+            for c in self._df._columns:
+                if c in self._by:
+                    continue
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                for j, idx in enumerate(idxs):
+                    if j < periods:
+                        result[c][idx] = None
+                    elif vals[j - periods] is None or vals[j - periods] == 0 or vals[j] is None:
+                        result[c][idx] = None
+                    else:
+                        result[c][idx] = (vals[j] - vals[j - periods]) / vals[j - periods]
+
+        return DataFrame(result)
+
+    def rolling(self, window: int, min_periods=None) -> "DataFrame":
+        """返回每个分组内的滚动窗口聚合结果 (按组应用 rolling)。"""
+        from .series import Rolling
+        if min_periods is None:
+            min_periods = window
+        result: Dict[str, list] = {}
+        for c in self._df._columns:
+            result[c] = [None] * self._df._nrows
+
+        for idxs in self._groups.values():
+            for c in self._df._columns:
+                if c in self._by:
+                    continue
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                r = Rolling(Series(vals), window, min_periods)
+                means = r.mean().values
+                for j, idx in enumerate(idxs):
+                    result[c][idx] = means[j]
+
+        return DataFrame(result)
+
+    def expanding(self, min_periods: int = 1) -> "DataFrame":
+        """返回每个分组内的扩展窗口聚合结果 (按组应用 expanding)。"""
+        from .series import Expanding
+        result: Dict[str, list] = {}
+        for c in self._df._columns:
+            result[c] = [None] * self._df._nrows
+
+        for idxs in self._groups.values():
+            for c in self._df._columns:
+                if c in self._by:
+                    continue
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                e = Expanding(Series(vals), min_periods)
+                means = e.mean().values
+                for j, idx in enumerate(idxs):
+                    result[c][idx] = means[j]
+
+        return DataFrame(result)
+
+    def ewm(self, **kwargs) -> "DataFrame":
+        """返回每个分组内的指数加权移动窗口 (按组应用 ewm)。"""
+        from .series import EWM
+        result: Dict[str, list] = {}
+        for c in self._df._columns:
+            result[c] = [None] * self._df._nrows
+
+        for idxs in self._groups.values():
+            for c in self._df._columns:
+                if c in self._by:
+                    continue
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                ew = EWM(Series(vals), **kwargs)
+                means = ew.mean().values
+                for j, idx in enumerate(idxs):
+                    result[c][idx] = means[j]
+
+        return DataFrame(result)
+
+    def resample(self, freq: str) -> "DataFrame":
+        """返回每个分组内的重采样聚合结果 (按组应用 resample)。"""
+        from .series import Resampler
+        result: Dict[str, list] = {}
+        for c in self._df._columns:
+            result[c] = [None] * self._df._nrows
+
+        for idxs in self._groups.values():
+            for c in self._df._columns:
+                if c in self._by:
+                    continue
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                r = Resampler(Series(vals), freq)
+                sums = r.sum().values
+                for j, idx in enumerate(idxs):
+                    result[c][idx] = sums[j]
 
         return DataFrame(result)
 

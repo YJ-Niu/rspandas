@@ -79,6 +79,19 @@ def _to_python_list(data: Any) -> list:
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
 
 
+def _to_python_list_and_index(data: Any):
+    """将输入标准化为 (values, index)。"""
+    if isinstance(data, _PySeries):
+        return list(data.values), None
+    if isinstance(data, (list, tuple)):
+        return list(data), None
+    if isinstance(data, dict):
+        return list(data.values()), list(data.keys())
+    if data is None:
+        return [], None
+    raise TypeError(f"Cannot convert {type(data).__name__} to Series")
+
+
 def _is_range_index(index) -> bool:
     """判断 index 是否为默认的 RangeIndex (0, 1, 2, ...)。"""
     if not index:
@@ -120,7 +133,10 @@ class Series:
         :param copy: MVP 忽略
         """
         # 标准化数据
-        values = _to_python_list(data)
+        if isinstance(data, dict) and index is None:
+            values, index = _to_python_list_and_index(data)
+        else:
+            values = _to_python_list(data)
 
         # 推断 dtype
         if dtype is None:
@@ -1093,17 +1109,20 @@ class Series:
 
     # ---------- 窗口函数 (v1.0.0) ----------
 
-    def rolling(self, window: int, min_periods: Optional[int] = None) -> "Rolling":
+    def rolling(self, window: int, min_periods: Optional[int] = None, center: bool = False, win_type: Optional[str] = None, closed: Optional[str] = None) -> "Rolling":
         """返回 Rolling 窗口对象。
 
         :param window: 窗口大小
         :param min_periods: 最少非空值数 (默认 = window)
+        :param center: 是否居中窗口
+        :param win_type: 窗口类型 (boxcar/triang/blackman 等)
+        :param closed: 闭合方式 (right/left/both/neither)
         """
         if window < 1:
             raise ValueError("window must be >= 1")
         if min_periods is None:
             min_periods = window
-        return Rolling(self, window, min_periods)
+        return Rolling(self, window, min_periods, center=center, win_type=win_type, closed=closed)
 
     def expanding(self, min_periods: int = 1) -> "Expanding":
         """返回 Expanding 窗口对象。"""
@@ -1208,54 +1227,105 @@ class Rolling:
         [None, None, 2.0, 3.0, 4.0]
     """
 
-    def __init__(self, series: _PySeries, window: int, min_periods: int):
+    def __init__(self, series: _PySeries, window: int, min_periods: int, center: bool = False, win_type: Optional[str] = None, closed: Optional[str] = None):
         self._s = series
         self._window = window
         self._min_periods = min_periods
+        self._center = center
+        self._win_type = win_type
+        self._closed = closed or 'right'
 
     def _apply(self, func) -> _PySeries:
         """应用窗口函数 func(window_values) -> scalar。"""
         values = self._s.values
         n = len(values)
         out = []
+
+        # 计算权重 (如果指定了 win_type)
+        weights = None
+        if self._win_type is not None:
+            if self._win_type == 'boxcar':
+                weights = [1.0] * self._window
+            elif self._win_type == 'triang':
+                w = self._window
+                weights = [(i + 1) / w for i in range(w)]
+            elif self._win_type == 'blackman':
+                import math
+                w = self._window
+                if w == 1:
+                    weights = [1.0]
+                else:
+                    weights = [0.42 - 0.5 * math.cos(2 * math.pi * i / (w - 1)) + 0.08 * math.cos(4 * math.pi * i / (w - 1)) for i in range(w)]
+            else:
+                raise ValueError(f"unsupported window type: {self._win_type}")
+
         for i in range(n):
-            start = max(0, i - self._window + 1)
-            win = values[start:i + 1]
+            if self._center:
+                start = max(0, i - self._window // 2)
+                end = min(n, i + self._window // 2 + 1)
+            else:
+                start = max(0, i - self._window + 1)
+                end = i + 1
+
+            win = values[start:end]
+
+            # 根据 closed 参数调整
+            if self._closed == 'left':
+                if len(win) > 0:
+                    win = win[:-1]
+            elif self._closed == 'neither':
+                if len(win) >= 2:
+                    win = win[1:-1]
+                else:
+                    win = []
+
             non_null = [v for v in win if v is not None]
             if len(non_null) < self._min_periods:
                 out.append(None)
             else:
                 try:
-                    out.append(func(win))
+                    if weights is not None:
+                        # 加权计算
+                        w = weights[:len(win)]
+                        out.append(func(win, w))
+                    else:
+                        out.append(func(win))
                 except Exception:
                     out.append(None)
         return Series(out, name=self._s.name, index=self._s._index)
 
     def sum(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
             return sum(v for v in win if v is not None)
         return self._apply(f)
 
     def mean(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
+            if w is not None:
+                nums = [(v, wt) for v, wt in zip(win, w) if v is not None]
+                if not nums:
+                    return None
+                total = sum(v * wt for v, wt in nums)
+                wt_sum = sum(wt for _, wt in nums)
+                return total / wt_sum if wt_sum > 0 else None
             nums = [v for v in win if v is not None]
             return sum(nums) / len(nums) if nums else None
         return self._apply(f)
 
     def min(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
             nums = [v for v in win if v is not None]
             return min(nums) if nums else None
         return self._apply(f)
 
     def max(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
             nums = [v for v in win if v is not None]
             return max(nums) if nums else None
         return self._apply(f)
 
     def std(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
                 return None
@@ -1265,7 +1335,7 @@ class Rolling:
         return self._apply(f)
 
     def var(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
                 return None
@@ -1274,7 +1344,7 @@ class Rolling:
         return self._apply(f)
 
     def median(self) -> _PySeries:
-        def f(win):
+        def f(win, w=None):
             nums = sorted([v for v in win if v is not None])
             if not nums:
                 return None
@@ -1354,7 +1424,7 @@ class Rolling:
 
     def quantile(self, q: float = 0.5) -> _PySeries:
         """滚动分位数。"""
-        def f(win):
+        def f(win, w=None):
             nums = sorted([float(v) for v in win if v is not None])
             if not nums:
                 return None
@@ -1370,7 +1440,7 @@ class Rolling:
 
     def skew(self) -> _PySeries:
         """滚动偏度。"""
-        def f(win):
+        def f(win, w=None):
             nums = [v for v in win if v is not None]
             n = len(nums)
             if n < 3:
@@ -1385,7 +1455,7 @@ class Rolling:
 
     def kurt(self) -> _PySeries:
         """滚动峰度 (excess kurtosis)。"""
-        def f(win):
+        def f(win, w=None):
             nums = [v for v in win if v is not None]
             n = len(nums)
             if n < 4:
@@ -1396,6 +1466,19 @@ class Rolling:
                 return None
             m4 = sum((x - m) ** 4 for x in nums) / n
             return m4 / (var ** 2) - 3.0
+        return self._apply(f)
+
+    # ---------- v2.0.0: sem ----------
+
+    def sem(self) -> _PySeries:
+        """滚动标准误差 (Standard Error of Mean)。"""
+        def f(win, w=None):
+            nums = [v for v in win if v is not None]
+            if len(nums) < 2:
+                return None
+            m = sum(nums) / len(nums)
+            var = sum((x - m) ** 2 for x in nums) / (len(nums) - 1)
+            return (var / len(nums)) ** 0.5
         return self._apply(f)
 
 
@@ -1664,6 +1747,85 @@ class EWM:
 
                 if s2 is not None:
                     out[i] = s2
+
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    # ---------- v2.0.0: corr / cov ----------
+
+    def corr(self, other):
+        """指数加权相关系数。
+
+        :param other: 另一个 Series
+        """
+        cov = self.cov(other)
+        var_a = self.var()
+        var_b = type(self)(
+            other,
+            alpha=self._alpha,
+            adjust=self._adjust,
+        ).var()
+        out = []
+        for i in range(len(var_a)):
+            if var_a[i] is None or var_b[i] is None or cov[i] is None:
+                out.append(None)
+            elif var_a[i] == 0 or var_b[i] == 0:
+                out.append(None)
+            else:
+                out.append(cov[i] / ((var_a[i] * var_b[i]) ** 0.5))
+        return Series(out, name=self._s.name, index=self._s._index)
+
+    def cov(self, other):
+        """指数加权协方差。
+
+        :param other: 另一个 Series
+        """
+        values_a = self._s.values
+        values_b = other.values
+        if len(values_a) != len(values_b):
+            raise ValueError("lengths must match")
+        n = len(values_a)
+        out = [None] * n
+
+        if self._adjust:
+            for i in range(n):
+                wa = values_a[:i + 1]
+                wb = values_b[:i + 1]
+                pairs = [(k, a, b) for k, (a, b) in enumerate(zip(wa, wb))
+                         if a is not None and b is not None]
+                if len(pairs) < 2:
+                    continue
+                weights = self._get_weights(i + 1)
+                w_k = [weights[k] for k, _, _ in pairs]
+                vals_a = [a for _, a, _ in pairs]
+                vals_b = [b for _, _, b in pairs]
+                w_sum = sum(w_k)
+                ma = sum(w * a for w, a in zip(w_k, vals_a)) / w_sum
+                mb = sum(w * b for w, b in zip(w_k, vals_b)) / w_sum
+                cov_val = sum(w * (a - ma) * (b - mb) for w, a, b in zip(w_k, vals_a, vals_b)) / w_sum
+                out[i] = cov_val
+        else:
+            # 非调整版: 递推公式
+            ma = None
+            mb = None
+            cov_val = None
+            alpha = self._alpha
+            for i in range(n):
+                a = values_a[i]
+                b = values_b[i]
+                if a is None or b is None:
+                    continue
+                if ma is None:
+                    ma = float(a)
+                    mb = float(b)
+                    cov_val = 0.0
+                else:
+                    old_ma = ma
+                    old_mb = mb
+                    ma = alpha * float(a) + (1 - alpha) * old_ma
+                    mb = alpha * float(b) + (1 - alpha) * old_mb
+                    cov_val = (1 - alpha) * (cov_val + alpha * (a - old_ma) * (b - old_mb))
+                if cov_val is not None:
+                    out[i] = cov_val
 
         return Series(out, name=self._s.name, index=self._s._index)
 
@@ -1943,7 +2105,8 @@ class StringAccessor:
                 m = re.search(pat, str(v), flags)
                 if m:
                     if expand and m.groups():
-                        results.append(list(m.groups()))
+                        groups = list(m.groups())
+                        results.append(groups[0] if len(groups) == 1 else groups)
                     else:
                         results.append(m.group(0))
                 else:
@@ -2084,17 +2247,11 @@ class StringAccessor:
                     data[c].append(1 if c in parts else 0)
         return DataFrame(data)
 
-    def encode(self, encoding, errors="strict") -> _PySeries:
-        return self._wrap([
-            str(v).encode(encoding, errors) if v is not None else None
-            for v in self._s.values
-        ])
+    def encode(self, encoding, errors="strict"):
+        return [str(v).encode(encoding, errors) if v is not None else None for v in self._s.values]
 
-    def decode(self, encoding, errors="strict") -> _PySeries:
-        return self._wrap([
-            v.decode(encoding, errors) if isinstance(v, bytes) else (str(v) if v is not None else None)
-            for v in self._s.values
-        ])
+    def decode(self, encoding, errors="strict"):
+        return [v.decode(encoding, errors) if isinstance(v, bytes) else (str(v) if v is not None else None) for v in self._s.values]
 
 
 class CatAccessor:

@@ -160,7 +160,19 @@ class DatetimeAccessor:
         self._s = series
 
     def _wrap_series(self, values: list, name: Optional[str] = None) -> Series:
-        return Series(values, name=name or self._s.name, index=self._s._index)
+        from datetime import datetime, date, time, timedelta
+        # 将 datetime/date/time 对象转换为 ISO 字符串
+        converted = []
+        for v in values:
+            if v is None:
+                converted.append(None)
+            elif isinstance(v, (datetime, date, time)):
+                converted.append(v.isoformat() if hasattr(v, 'isoformat') else str(v))
+            elif isinstance(v, timedelta):
+                converted.append(v.total_seconds())
+            else:
+                converted.append(v)
+        return Series(converted, name=name or self._s.name, index=self._s._index)
 
     @property
     def year(self) -> Series:
@@ -279,6 +291,125 @@ class DatetimeAccessor:
     def to_pydatetime(self) -> list:
         """返回 Python datetime 对象列表。"""
         return list(self._s.values)
+
+    # ---------- v2.0.0: 扩展 dt 访问器 ----------
+
+    @property
+    def tz(self):
+        """返回时区信息 (如果存在)。"""
+        for v in self._s.values:
+            if v is not None and hasattr(v, 'tzinfo') and v.tzinfo is not None:
+                return v.tzinfo
+        return None
+
+    def floor(self, freq: str) -> Series:
+        """将 datetime 向下舍入到指定频率。
+
+        :param freq: 频率字符串 ('D'/'H'/'M'/'S' 等)
+        """
+        freq = freq.strip().upper()
+        if freq not in ("D", "H", "M", "T", "min", "S"):
+            raise ValueError(f"unsupported freq: {freq!r}")
+
+        def _floor(dt):
+            if dt is None:
+                return None
+            if freq == "D":
+                return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif freq == "H":
+                return dt.replace(minute=0, second=0, microsecond=0)
+            elif freq == "M" or freq == "T" or freq == "min":
+                return dt.replace(second=0, microsecond=0)
+            elif freq == "S":
+                return dt.replace(microsecond=0)
+            return dt
+
+        return self._wrap_series([_floor(v) for v in self._s.values])
+
+    def ceil(self, freq: str) -> Series:
+        """将 datetime 向上舍入到指定频率。
+
+        :param freq: 频率字符串 ('D'/'H'/'M'/'S' 等)
+        """
+        from datetime import timedelta
+        freq = freq.strip().upper()
+        if freq not in ("D", "H", "M", "T", "min", "S"):
+            raise ValueError(f"unsupported freq: {freq!r}")
+
+        def _ceil(dt):
+            if dt is None:
+                return None
+            floored = None
+            if freq == "D":
+                floored = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif freq == "H":
+                floored = dt.replace(minute=0, second=0, microsecond=0)
+            elif freq == "M" or freq == "T" or freq == "min":
+                floored = dt.replace(second=0, microsecond=0)
+            elif freq == "S":
+                floored = dt.replace(microsecond=0)
+            if floored == dt:
+                return dt
+            if freq == "D":
+                return floored + timedelta(days=1)
+            elif freq == "H":
+                return floored + timedelta(hours=1)
+            elif freq == "M" or freq == "T" or freq == "min":
+                return floored + timedelta(minutes=1)
+            elif freq == "S":
+                return floored + timedelta(seconds=1)
+            return dt
+
+        return self._wrap_series([_ceil(v) for v in self._s.values])
+
+    def round(self, freq: str) -> Series:
+        """将 datetime 四舍五入到指定频率。
+
+        :param freq: 频率字符串 ('D'/'H'/'M'/'S' 等)
+        """
+        from datetime import timedelta
+        freq = freq.strip().upper()
+        if freq not in ("D", "H", "M", "T", "min", "S"):
+            raise ValueError(f"unsupported freq: {freq!r}")
+
+        def _round(dt):
+            if dt is None:
+                return None
+            floored = None
+            next_tick = None
+            if freq == "D":
+                floored = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                next_tick = floored + timedelta(days=1)
+            elif freq == "H":
+                floored = dt.replace(minute=0, second=0, microsecond=0)
+                next_tick = floored + timedelta(hours=1)
+            elif freq == "M" or freq == "T" or freq == "min":
+                floored = dt.replace(second=0, microsecond=0)
+                next_tick = floored + timedelta(minutes=1)
+            elif freq == "S":
+                floored = dt.replace(microsecond=0)
+                next_tick = floored + timedelta(seconds=1)
+            if dt - floored < next_tick - dt:
+                return floored
+            return next_tick
+
+        return self._wrap_series([_round(v) for v in self._s.values])
+
+    @property
+    def time(self) -> Series:
+        """返回 datetime 的时间部分 (datetime.time 对象)。"""
+        return self._wrap_series([
+            v.time() if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def total_seconds(self) -> Series:
+        """返回 timedelta 的总秒数。"""
+        return self._wrap_series([
+            v.total_seconds() if v is not None and hasattr(v, 'total_seconds') else None
+            for v in self._s.values
+        ])
 
 
 # ---------------------------------------------------------------------------
