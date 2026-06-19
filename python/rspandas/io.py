@@ -233,15 +233,8 @@ def read_parquet(path: str, **kwargs) -> DataFrame:
         table = pq.read_table(path, **kwargs)
         return _arrow_table_to_dataframe(table)
     except ImportError:
-        pass
-
-    try:
-        import pandas as pd
-        pdf = pd.read_parquet(path, **kwargs)
-        return DataFrame.from_pandas(pdf)
-    except ImportError:
         raise ImportError(
-            "read_parquet requires pyarrow or pandas to be installed. "
+            "read_parquet requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
 
@@ -335,18 +328,13 @@ def read_pickle(path: str, **kwargs) -> DataFrame:
     -------
     DataFrame
     """
-    import pandas as pd
-
-    try:
-        pdf = pd.read_pickle(path, **kwargs)
-        return DataFrame.from_pandas(pdf)
-    except Exception:
-        # 尝试直接用 pickle 加载
-        with open(path, "rb") as f:
-            obj = _pickle.load(f)
-        if isinstance(obj, DataFrame):
-            return obj
-        raise TypeError(f"Pickle file contains {type(obj).__name__}, not DataFrame")
+    with open(path, "rb") as f:
+        obj = _pickle.load(f)
+    if isinstance(obj, dict) and "columns" in obj and "data" in obj:
+        return DataFrame(obj["data"], columns=obj["columns"])
+    if isinstance(obj, DataFrame):
+        return obj
+    raise TypeError(f"Pickle file contains {type(obj).__name__}, not DataFrame")
 
 
 def to_pickle(df: DataFrame, path: str, **kwargs) -> None:
@@ -361,16 +349,13 @@ def to_pickle(df: DataFrame, path: str, **kwargs) -> None:
     **kwargs
         传递给 pickle.dump 的其他参数。
     """
-    try:
-        pdf = df.to_pandas()
-        pdf.to_pickle(path, **kwargs)
-        return
-    except ImportError:
-        pass
-
-    # 直接用 pickle 序列化 DataFrame
+    # 序列化为纯 Python dict 以避免 pickle Rust 对象
+    state = {
+        "columns": list(df.columns),
+        "data": df.values,
+    }
     with open(path, "wb") as f:
-        _pickle.dump(df, f, **kwargs)
+        _pickle.dump(state, f, **kwargs)
 
 
 # ============================================================================
@@ -391,29 +376,27 @@ def read_sql(
     conn : sqlalchemy Engine 或 Connection
         数据库连接。
     **kwargs
-        传递给 pandas.read_sql 的其他参数。
+        忽略 (兼容 pandas 签名)。
 
     Returns
     -------
     DataFrame
     """
     try:
-        import sqlalchemy  # noqa: F401
+        import sqlalchemy as sa
     except ImportError:
         raise ImportError(
             "read_sql requires sqlalchemy to be installed. "
             "Install with: pip install sqlalchemy"
         )
 
-    try:
-        import pandas as pd
-        pdf = pd.read_sql(query, conn, **kwargs)
-        return DataFrame.from_pandas(pdf)
-    except ImportError:
-        raise ImportError(
-            "read_sql requires pandas to be installed. "
-            "Install with: pip install pandas"
-        )
+    with conn.connect() as connection:
+        result = connection.execute(sa.text(query))
+        rows = result.fetchall()
+        columns = list(result.keys())
+
+    data = {c: [row[i] for row in rows] for i, c in enumerate(columns)}
+    return DataFrame(data)
 
 
 def to_sql(
@@ -439,22 +422,47 @@ def to_sql(
     index : bool, default False
         是否写入行索引。
     **kwargs
-        传递给 pandas.to_sql 的其他参数。
+        忽略 (兼容 pandas 签名)。
     """
     try:
-        import sqlalchemy  # noqa: F401
+        import sqlalchemy as sa
     except ImportError:
         raise ImportError(
             "to_sql requires sqlalchemy to be installed. "
             "Install with: pip install sqlalchemy"
         )
 
-    try:
-        pdf = df.to_pandas()
-        pdf.to_sql(name, conn, if_exists=if_exists, index=index, **kwargs)
-        return
-    except ImportError:
-        raise ImportError(
-            "to_sql requires pandas to be installed. "
-            "Install with: pip install pandas"
-        )
+    with conn.connect() as connection:
+        meta = sa.MetaData()
+        meta.reflect(bind=connection)
+        if name in meta.tables:
+            if if_exists == "replace":
+                meta.tables[name].drop(connection)
+            elif if_exists == "fail":
+                raise ValueError(f"Table '{name}' already exists")
+            elif if_exists == "append":
+                pass
+            else:
+                raise ValueError(f"Unknown if_exists: {if_exists}")
+
+        if if_exists == "replace" or name not in meta.tables:
+            # Create table from DataFrame schema
+            cols = []
+            for c in df.columns:
+                sample = next((v for v in df[c].values if v is not None), None)
+                if isinstance(sample, bool):
+                    col_type = sa.Boolean
+                elif isinstance(sample, int):
+                    col_type = sa.Integer
+                elif isinstance(sample, float):
+                    col_type = sa.Float
+                else:
+                    col_type = sa.String
+                cols.append(sa.Column(c, col_type))
+            sa.Table(name, meta, *cols)
+            meta.create_all(connection)
+
+        # Insert data
+        rows = [{c: v for c, v in zip(df.columns, row)} for row in df.values]
+        if rows:
+            connection.execute(sa.text(f"INSERT INTO {name} ({', '.join(df.columns)}) VALUES ({', '.join([':' + c for c in df.columns])})"), rows)
