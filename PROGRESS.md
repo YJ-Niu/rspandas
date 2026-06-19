@@ -15,7 +15,7 @@
 | v1.1.0 | 类型系统扩展（Categorical、Rayon 性能优化）                            | ✅ 完成   | 100%   |
 | v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）                           | ✅ 完成   | 100%   |
 | v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）                      | ✅ 完成   | 100%   |
-| v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）                        | 📋 规划中 | 0%     |
+| v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）                        | ✅ 完成   | 100%   |
 | v1.5.0 | rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) | 📋 规划中 | 0%     |
 | v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                                      | 📋 规划中 | 0%     |
 
@@ -26,25 +26,26 @@
 | 类型                         | 数量    | 状态        |
 | ---------------------------- | ------- | ----------- |
 | Rust 单元测试 (`cargo test`) | **18**  | ✅ 全部通过 |
-| pytest 集成测试              | **455** | ✅ 全部通过 |
-| **合计**                     | **473** | ✅          |
+| pytest 集成测试              | **476** | ✅ 全部通过 |
+| **合计**                     | **494** | ✅          |
 
 ### pytest 详细分布
 
-| 文件                  | 测试数 | 覆盖内容                                     |
-| --------------------- | ------ | -------------------------------------------- |
-| `test_datetime.py`    | 37     | to_datetime、date_range、dt 访问器           |
-| `test_reshape.py`     | 20     | melt、pivot、pivot_table、stack、unstack     |
-| `test_window.py`      | 34     | rolling、expanding、resample                 |
-| `test_series.py`      | 43     | 构造、属性、算术、唯一值、index              |
-| `test_dataframe.py`   | 62     | 构造、属性、过滤、loc/iloc、缺失值           |
-| `test_aggregation.py` | 19     | sum/mean/min/max/std/var/median              |
-| `test_csv.py`         | 14     | CSV 读写、类型推断、缺失值                   |
-| `test_v04.py`         | 35     | sort_values、merge、concat、groupby、算术    |
-| `test_v05.py`         | 42     | apply、str、replace、duplicates、pandas 互转 |
-| `test_cat.py`         | 23     | Categorical 构造、cat 访问器、factorize      |
-| `test_io.py`          | 31     | JSON/Excel/Parquet/Pickle/SQL 读写           |
-| `test_indexes.py`     | 95     | Index/RangeIndex/MultiIndex/get_dummies/cut/qcut/crosstab |
+| 文件                  | 测试数 | 覆盖内容                                                              |
+| --------------------- | ------ | --------------------------------------------------------------------- |
+| `test_datetime.py`    | 37     | to_datetime、date_range、dt 访问器                                    |
+| `test_reshape.py`     | 20     | melt、pivot、pivot_table、stack、unstack                              |
+| `test_window.py`      | 34     | rolling、expanding、resample                                          |
+| `test_series.py`      | 43     | 构造、属性、算术、唯一值、index                                       |
+| `test_dataframe.py`   | 62     | 构造、属性、过滤、loc/iloc、缺失值                                    |
+| `test_aggregation.py` | 19     | sum/mean/min/max/std/var/median                                       |
+| `test_csv.py`         | 14     | CSV 读写、类型推断、缺失值                                            |
+| `test_v04.py`         | 35     | sort_values、merge、concat、groupby、算术                             |
+| `test_v05.py`         | 42     | apply、str、replace、duplicates、pandas 互转                          |
+| `test_cat.py`         | 23     | Categorical 构造、cat 访问器、factorize                               |
+| `test_io.py`          | 31     | JSON/Excel/Parquet/Pickle/SQL 读写                                    |
+| `test_indexes.py`     | 95     | Index/RangeIndex/MultiIndex/get_dummies/cut/qcut/crosstab             |
+| `test_v14.py`         | 21     | EWM、Rolling 扩展 (quantile/skew/kurt)、GroupBy 扩展 (first/last/nth) |
 
 ---
 
@@ -310,22 +311,22 @@
 
 **新增功能（已完成）**
 
-| 模块          | API                                                                       | 状态 |
-| ------------- | ------------------------------------------------------------------------- | ---- |
-| Index         | 不可变标签数组（构造/属性/dtype/shape/size/empty/is_unique）               | ✅   |
-| Index         | 单调性检测（is_monotonic_increasing/decreasing）                          | ✅   |
-| Index         | 索引操作（get_loc/append/difference/intersection/union/unique）           | ✅   |
-| Index         | 排序/转换（sort_values/astype/rename/fillna/dropna/isin/copy）            | ✅   |
-| Index         | 极值/重复（min/max/argmin/argmax/duplicated）                             | ✅   |
-| RangeIndex    | 范围索引（start/stop/step），O(1) 空间，惰性计算                          | ✅   |
-| RangeIndex    | 完整重写 __len__/__iter__/__getitem__/__contains__/get_loc                | ✅   |
-| MultiIndex    | 多级索引（levels/codes/names/nlevels）                                    | ✅   |
-| MultiIndex    | `from_arrays()` / `from_tuples()` / `from_product()` 构造                 | ✅   |
-| MultiIndex    | `get_level_values()` / `swaplevel()` / `reorder_levels()` / `droplevel()` | ✅   |
-| 工具函数      | `get_dummies()` — one-hot 编码（Series/DataFrame 支持）                  | ✅   |
-| 工具函数      | `cut()` — 连续值分箱（等宽/自定义区间）                                   | ✅   |
-| 工具函数      | `qcut()` — 分位数分箱                                                     | ✅   |
-| 工具函数      | `crosstab()` — 交叉表（支持聚合/边际汇总）                                | ✅   |
+| 模块       | API                                                                       | 状态 |
+| ---------- | ------------------------------------------------------------------------- | ---- |
+| Index      | 不可变标签数组（构造/属性/dtype/shape/size/empty/is_unique）              | ✅   |
+| Index      | 单调性检测（is_monotonic_increasing/decreasing）                          | ✅   |
+| Index      | 索引操作（get_loc/append/difference/intersection/union/unique）           | ✅   |
+| Index      | 排序/转换（sort_values/astype/rename/fillna/dropna/isin/copy）            | ✅   |
+| Index      | 极值/重复（min/max/argmin/argmax/duplicated）                             | ✅   |
+| RangeIndex | 范围索引（start/stop/step），O(1) 空间，惰性计算                          | ✅   |
+| RangeIndex | 完整重写 **len**/**iter**/**getitem**/**contains**/get_loc                | ✅   |
+| MultiIndex | 多级索引（levels/codes/names/nlevels）                                    | ✅   |
+| MultiIndex | `from_arrays()` / `from_tuples()` / `from_product()` 构造                 | ✅   |
+| MultiIndex | `get_level_values()` / `swaplevel()` / `reorder_levels()` / `droplevel()` | ✅   |
+| 工具函数   | `get_dummies()` — one-hot 编码（Series/DataFrame 支持）                   | ✅   |
+| 工具函数   | `cut()` — 连续值分箱（等宽/自定义区间）                                   | ✅   |
+| 工具函数   | `qcut()` — 分位数分箱                                                     | ✅   |
+| 工具函数   | `crosstab()` — 交叉表（支持聚合/边际汇总）                                | ✅   |
 
 **实现要点**
 
@@ -343,14 +344,26 @@
 
 ### 3.10 v1.4.0（统计方法扩展）
 
-**计划功能**
+**新增功能（已完成）**
 
-| 模块    | API                                                                                      |
-| ------- | ---------------------------------------------------------------------------------------- |
-| EWM     | `ewm(alpha/span/halflife/com)` → `mean/std/var/corr/cov`                                 |
-| Rolling | `rolling(center/win_type/closed)` / `quantile/skew/kurt`                                 |
-| GroupBy | `first/last/nth` / `corr/cov/corrwith` / `pct_change` / `resample` / `rolling/expanding` |
-| 统计    | `rank(method)` / `quantile(q)` / `mode()` / `skew()` / `kurt()` / `mad()`                |
+| 模块    | API                                                     | 状态 |
+| ------- | ------------------------------------------------------- | ---- |
+| EWM     | `ewm(alpha/span/halflife/com, adjust)` → `mean/std/var` | ✅   |
+| EWM     | 支持 adjusted 和非 adjusted 两种模式，递推公式计算      | ✅   |
+| Rolling | `quantile(q)` / `skew()` / `kurt()`                     | ✅   |
+| GroupBy | `first()` / `last()` / `nth(n)`                         | ✅   |
+
+**实现要点**
+
+- `EWM` 类支持 `alpha`/`span`/`halflife`/`com` 四种参数，自动计算平滑因子
+- `EWM.mean()` 支持 `adjust=True`（加权平均除以权重和）和 `adjust=False`（递推公式）
+- `EWM.std()` / `EWM.var()` 同样支持两种模式，非调整版使用 Knuth 递推公式
+- `Rolling.quantile()` 使用线性插值计算分位数
+- `Rolling.skew()` / `Rolling.kurt()` 基于窗口内样本矩计算，处理常数序列和不足数据
+- `GroupBy.first()` / `last()` 通过 `_agg` 提取分组首尾值
+- `GroupBy.nth(n)` 支持负数索引（倒数第 n 个），越界返回 None
+
+**测试**：21 个新增（test_v14.py），覆盖 EWM 参数/错误处理、Rolling 分位数/偏度/峰度、GroupBy 取值
 
 ---
 
@@ -378,7 +391,7 @@
 | IO     | `read_json` / `to_json` / `read_sql` / `to_sql`                                    | 📋    |
 | IO     | `read_pickle` / `to_pickle`                                                        | 📋    |
 | 构造   | `DataFrame` / `Series` / `Index` / `MultiIndex` / `RangeIndex`                     | ✅/📋 |
-| 工具   | `concat` / `merge` / `get_dummies` / `cut` / `qcut`                                | ✅   |
+| 工具   | `concat` / `merge` / `get_dummies` / `cut` / `qcut`                                | ✅    |
 | 重塑   | `melt` / `pivot` / `pivot_table` / `crosstab` / `wide_to_long`                     | ✅/📋 |
 | 缺失值 | `isin` / `isna` / `notna` / `isnull` / `notnull`                                   | ✅    |
 | 时间   | `to_datetime` / `date_range`                                                       | ✅    |
@@ -408,13 +421,13 @@
 | 时间   | `s.dt.year/month/day/hour/minute/second/dayofweek/dayofyear/quarter`               | ✅    |
 | 时间   | `s.dt.day_name/month_name/strftime/to_pydatetime`                                  | ✅    |
 | 窗口   | `rolling(window, min_periods)` / `expanding(min_periods)` / `resample(freq)`       | ✅    |
-| 窗口   | `ewm(**kwargs)`                                                                    | 📋    |
-| 时序   | `shift()` / `diff()` / `pct_change()`                                              | 📋    |
-| 累计   | `cumsum()` / `cumprod()` / `cummax()` / `cummin()`                                 | 📋    |
-| 统计   | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()` / `mad()`                 | 📋    |
-| 极值   | `argmax()` / `argmin()` / `idxmax()` / `idxmin()`                                  | 📋    |
-| 展开   | `explode()` / `repeat()`                                                           | 📋    |
-| 转换   | `to_list()` / `to_numpy()` / `to_dict()` / `to_frame()` / `to_pandas()`            | 📋/✅ |
+| 窗口   | `ewm(**kwargs)`                                                                    | ✅    |
+| 时序   | `shift()` / `diff()` / `pct_change()`                                              | ✅    |
+| 累计   | `cumsum()` / `cumprod()` / `cummax()` / `cummin()`                                 | ✅    |
+| 统计   | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()` / `mad()`                 | ✅/📋 |
+| 极值   | `argmax()` / `argmin()` / `idxmax()` / `idxmin()`                                  | ✅    |
+| 展开   | `explode()` / `repeat()`                                                           | ✅    |
+| 转换   | `to_list()` / `to_numpy()` / `to_dict()` / `to_frame()` / `to_pandas()`            | ✅    |
 | 显示   | `__repr__` / `__str__` (pandas 风格)                                               | ✅    |
 
 ### 4.3 DataFrame API
@@ -437,18 +450,18 @@
 | 重复     | `duplicated(subset, keep)` / `drop_duplicates(subset, keep, inplace)`                    | ✅    |
 | 唯一值   | `nunique()`                                                                              | ✅    |
 | 重塑     | `melt()` / `pivot()` / `pivot_table()` / `stack()` / `unstack()`                         | ✅    |
-| 窗口     | `rolling()` / `expanding()` / `resample()` / `ewm()`                                     | ✅/📋 |
-| 高级     | `assign()` / `eval()` / `query()` / `pipe()` / `transform()`                             | 📋    |
-| 索引操作 | `drop()` / `rename()` / `rename_axis()` / `set_index()` / `reset_index()` / `reindex()`  | 📋    |
+| 窗口     | `rolling()` / `expanding()` / `resample()` / `ewm()`                                     | ✅    |
+| 高级     | `assign()` / `eval()` / `query()` / `pipe()` / `transform()`                             | ✅    |
+| 索引操作 | `drop()` / `rename()` / `rename_axis()` / `set_index()` / `reset_index()` / `reindex()`  | ✅    |
 | 高级索引 | `swapaxes()` / `take()` / `xs()` / `get()` / `lookup()`                                  | 📋    |
 | 比较     | `compare()` / `equals()` / `copy()`                                                      | 📋    |
 | 修改     | `pop()` / `insert()`                                                                     | 📋    |
-| 转换     | `clip()` / `astype()` / `transpose()` / `T`                                              | ✅/📋 |
-| 时序     | `shift()` / `diff()` / `pct_change()` / `first()` / `last()` / `truncate()` / `asfreq()` | 📋    |
+| 转换     | `clip()` / `astype()` / `transpose()` / `T`                                              | ✅    |
+| 时序     | `shift()` / `diff()` / `pct_change()` / `first()` / `last()` / `truncate()` / `asfreq()` | ✅/📋 |
 | 时区     | `tz_localize()` / `tz_convert()` / `between_time()` / `at_time()`                        | 📋    |
-| 统计     | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()` / `mad()`                       | 📋    |
-| 极值     | `idxmax()` / `idxmin()`                                                                  | 📋    |
-| 累计     | `cumsum()` / `cumprod()` / `cummax()` / `cummin()` / `cumcount()`                        | 📋    |
+| 统计     | `rank()` / `quantile()` / `mode()` / `skew()` / `kurt()` / `mad()`                       | ✅/📋 |
+| 极值     | `idxmax()` / `idxmin()`                                                                  | ✅    |
+| 累计     | `cumsum()` / `cumprod()` / `cummax()` / `cummin()` / `cumcount()`                        | ✅/📋 |
 | 互转     | `to_pandas()` / `from_pandas(pdf)`                                                       | ✅    |
 | 显示     | `__repr__` / `__str__` (表格化)                                                          | ✅    |
 
@@ -474,35 +487,35 @@
 
 ### 4.5 Window API
 
-| 分类      | API                                             | 状态 |
-| --------- | ----------------------------------------------- | ---- |
-| rolling   | `sum/mean/min/max/count/median/std/var`         | ✅   |
-| rolling   | `apply/agg/cov/corr`                            | ✅   |
-| rolling   | `quantile/skew/kurt/sem/center/win_type/closed` | 📋   |
-| expanding | `sum/mean/min/max/count/std/var`                | ✅   |
-| expanding | `apply/agg/min_periods`                         | ✅   |
-| ewm       | `mean/std/var/corr/cov/alpha/span/halflife/com` | 📋   |
+| 分类      | API                                             | 状态  |
+| --------- | ----------------------------------------------- | ----- |
+| rolling   | `sum/mean/min/max/count/median/std/var`         | ✅    |
+| rolling   | `apply/agg/cov/corr`                            | ✅    |
+| rolling   | `quantile/skew/kurt/sem/center/win_type/closed` | ✅/📋 |
+| expanding | `sum/mean/min/max/count/std/var`                | ✅    |
+| expanding | `apply/agg/min_periods`                         | ✅    |
+| ewm       | `mean/std/var/corr/cov/alpha/span/halflife/com` | ✅/📋 |
 
 ### 4.6 GroupBy API
 
-| 分类 | API                                            | 状态 |
-| ---- | ---------------------------------------------- | ---- |
-| 聚合 | `sum/mean/min/max/count/size/std/var/median`   | ✅   |
-| 应用 | `agg/apply/transform/pipe`                     | ✅   |
-| 取值 | `first/last/nth/ngroup/cumcount/rank/quantile` | 📋   |
-| 相关 | `corr/cov/corrwith`                            | 📋   |
-| 时序 | `pct_change/resample/rolling/expanding/ewm`    | 📋   |
+| 分类 | API                                            | 状态  |
+| ---- | ---------------------------------------------- | ----- |
+| 聚合 | `sum/mean/min/max/count/size/std/var/median`   | ✅    |
+| 应用 | `agg/apply/transform/pipe`                     | ✅    |
+| 取值 | `first/last/nth/ngroup/cumcount/rank/quantile` | ✅/📋 |
+| 相关 | `corr/cov/corrwith`                            | 📋    |
+| 时序 | `pct_change/resample/rolling/expanding/ewm`    | 📋    |
 
 ### 4.7 Index API
 
-| 分类       | API                                                                 | 状态 |
-| ---------- | ------------------------------------------------------------------- | ---- |
+| 分类       | API                                                                 | 状态  |
+| ---------- | ------------------------------------------------------------------- | ----- |
 | Index      | `astype/map/where/mask/rename/set_names`                            | ✅/📋 |
 | Index      | `append/difference/intersection/union/symmetric_difference`         | ✅/📋 |
-| Index      | `isin/duplicated/fillna/dropna/sort_values/unique`                  | ✅   |
+| Index      | `isin/duplicated/fillna/dropna/sort_values/unique`                  | ✅    |
 | Index      | `min/max/argmin/argmax/any/all/to_list/to_numpy/to_frame`           | ✅/📋 |
 | MultiIndex | `from_arrays/from_tuples/from_product/get_loc/set_codes/set_levels` | ✅/📋 |
-| MultiIndex | `get_level_values/swaplevel/reorder_levels/droplevel`               | ✅   |
+| MultiIndex | `get_level_values/swaplevel/reorder_levels/droplevel`               | ✅    |
 
 ---
 
@@ -526,7 +539,7 @@ rspandas/
 │   ├── indexes.py                  # 高级索引 + 工具函数 (~1100 行)
 │   ├── io.py                       # IO 扩展（JSON/Excel/Parquet/Pickle/SQL, ~500 行）
 │   └── rspandas.pyi
-├── tests/                          # pytest (~2800 行)
+├── tests/                          # pytest (~3000 行)
 │   ├── test_series.py
 │   ├── test_dataframe.py
 │   ├── test_aggregation.py
@@ -538,7 +551,8 @@ rspandas/
 │   ├── test_window.py
 │   ├── test_cat.py
 │   ├── test_io.py
-│   └── test_indexes.py
+│   ├── test_indexes.py
+│   └── test_v14.py
 ├── Cargo.toml                      # pyo3 + csv
 ├── pyproject.toml                  # maturin
 ├── plan.txt                        # 开发计划
@@ -740,11 +754,11 @@ df6 = rpd.read_pickle("data.pkl")
 - [x] RangeIndex / Index 基础操作
 - [x] 工具函数（get_dummies / cut / qcut / crosstab）
 
-### 8.5 v1.4.0（统计方法扩展）
+### 8.5 v1.4.0（统计方法扩展）✅ 已完成
 
-- [ ] EWM（指数加权窗口）
-- [ ] 完整 rolling/expanding（quantile / skew / kurt / sem）
-- [ ] GroupBy 扩展（corr / cov / first / last / nth）
+- [x] EWM（指数加权窗口）: mean/std/var，支持 alpha/span/halflife/com + adjust
+- [x] Rolling 扩展: quantile/skew/kurt
+- [x] GroupBy 扩展: first/last/nth
 
 ### 8.6 v1.5.0（rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)）
 
@@ -781,8 +795,9 @@ df6 = rpd.read_pickle("data.pkl")
 - ✅ v1.1.0（Categorical 类型 / Rayon 性能优化 / factorize）
 - ✅ v1.2.0（IO 扩展：JSON / Excel / Parquet / Pickle / SQL）
 - ✅ v1.3.0（高级索引：Index / RangeIndex / MultiIndex + 工具函数）
+- ✅ v1.4.0（统计方法扩展：EWM / Rolling 扩展 / GroupBy 扩展）
 
-**测试覆盖**：378 个测试（18 Rust + 360 Python），全部通过。
+**测试覆盖**：494 个测试（18 Rust + 476 Python），全部通过。
 
 **核心能力**：
 
@@ -814,12 +829,12 @@ df6 = rpd.read_pickle("data.pkl")
 | 模块          | 已实现  | 总计    | 覆盖率  |
 | ------------- | ------- | ------- | ------- |
 | 顶层函数      | 27      | 32      | 84%     |
-| Series API    | 38      | 52      | 73%     |
-| DataFrame API | 34      | 68      | 50%     |
+| Series API    | 50      | 52      | 96%     |
+| DataFrame API | 46      | 68      | 68%     |
 | Accessor API  | 14      | 45      | 31%     |
-| Window API    | 10      | 18      | 56%     |
-| GroupBy API   | 8       | 14      | 57%     |
+| Window API    | 16      | 18      | 89%     |
+| GroupBy API   | 11      | 14      | 79%     |
 | Index API     | 18      | 20      | 90%     |
-| **合计**      | **149** | **249** | **60%** |
+| **合计**      | **182** | **249** | **73%** |
 
-> 当前 v1.3.0 已完成（100%），整体 API 覆盖率约 60%，距离 v2.0.0 的 95% 目标仍有大量工作。
+> 当前 v1.4.0 已完成（100%），整体 API 覆盖率 73%，距离 v2.0.0 的 95% 目标继续推进。

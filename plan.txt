@@ -21,11 +21,11 @@ v1.0.0              - 时间序列、重塑、窗口函数、性能优化、API 
 v1.1.0              - 类型系统扩展（Categorical、Datetime、Timedelta、Period）
 v1.2.0              - IO 扩展（Excel、Parquet、JSON、SQL、Pickle）
 v1.3.0              - 高级索引（MultiIndex、IntervalIndex）✅ 已完成
-v1.4.0              - 统计方法扩展（rolling/expanding/ewm、rank、quantile）
+v1.4.0              - 统计方法扩展（rolling/expanding/ewm、rank、quantile）✅ 已完成
 v1.5.0              - rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)
 v2.0.0              - 完整 pandas 兼容（95%+ API 覆盖）
 
-当前迭代目标：v1.4.0
+当前迭代目标：v1.5.0
 
 ================================================================================
 一、技术栈
@@ -721,8 +721,10 @@ Step 15: 高级索引 (v1.3.0) ✅ 已完成
         - MultiIndex / IntervalIndex / RangeIndex
         - 输出: 复杂索引支持
 
-Step 16: 统计方法扩展 (v1.4.0)
-        - 完整 rolling/expanding/ewm、rank、quantile、skew、kurt
+Step 16: 统计方法扩展 (v1.4.0) ✅ 已完成
+        - EWM (mean/std/var, alpha/span/halflife/com + adjust)
+        - Rolling 扩展 (quantile/skew/kurt)
+        - GroupBy 扩展 (first/last/nth)
         - 输出: 统计功能完善
 
 Step 17: rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) (v1.5.0)
@@ -794,14 +796,14 @@ Step 18: 性能优化与基准 (v2.0.0)
   str.*                       字符串访问器                    v0.5       ✅
   dt.*                        日期时间访问器                  v1.0       ✅
   rolling/expanding/resample  窗口函数                        v1.0       ✅
-  ewm                         指数加权窗口                    v1.4       📋
-  shift/diff/pct_change       时序操作                        v1.0       📋
-  cumsum/cumprod/cummax/cummin 累计操作                    v1.0       📋
-  rank/quantile               统计                            v1.4       📋
-  argmax/argmin/idxmax/idxmin 极值位置                      v1.0       📋
-  explode/repeat              展开/重复                       v1.2       📋
+  ewm                         指数加权窗口                    v1.4       ✅
+  shift/diff/pct_change       时序操作                        v1.0       ✅
+  cumsum/cumprod/cummax/cummin 累计操作                    v1.0       ✅
+  rank/quantile               统计                            v1.4       ✅
+  argmax/argmin/idxmax/idxmin 极值位置                      v1.0       ✅
+  explode/repeat              展开/重复                       v1.2       ✅
   to_list/to_numpy/to_dict    转换                            v1.5       📋
-  to_frame                    转 DataFrame                    v1.0       📋
+  to_frame                    转 DataFrame                    v1.0       ✅
   to_pandas/from_pandas       pandas 互转                     v0.5       ✅
 
 === DataFrame API ===
@@ -825,19 +827,19 @@ Step 18: 性能优化与基准 (v2.0.0)
   melt/pivot/pivot_table      重塑                            v1.0       ✅
   stack/unstack               堆叠                            v1.0       ✅
   rolling/expanding/resample  窗口函数                        v1.0       ✅
-  ewm                         指数加权窗口                    v1.4       📋
-  shift/diff/pct_change       时序操作                        v1.0       📋
-  cumsum/cumprod/cummax/cummin 累计操作                    v1.0       📋
-  rank/quantile/mode/skew/kurt 统计                          v1.4       📋
-  idxmax/idxmin               极值位置                      v1.0       📋
-  drop/rename/reindex         操作                            v1.0       📋
-  set_index/reset_index       索引操作                        v1.0       📋
+  ewm                         指数加权窗口                    v1.4       ✅
+  shift/diff/pct_change       时序操作                        v1.0       ✅
+  cumsum/cumprod/cummax/cummin 累计操作                    v1.0       ✅
+  rank/quantile/mode/skew/kurt 统计                          v1.4       ✅
+  idxmax/idxmin               极值位置                      v1.0       ✅
+  drop/rename/reindex         操作                            v1.0       ✅
+  set_index/reset_index       索引操作                        v1.0       ✅
   filter/select_dtypes        过滤                            v1.2       📋
   swapaxes/take/xs/get/lookup 高级索引                       v1.3       📋
   compare/equals/copy         比较/复制                       v1.2       📋
   pop/insert                  修改                            v1.2       📋
-  clip/astype                 转换                            v1.0       📋
-  assign/eval/query/pipe/transform 高级操作                  v1.4       📋
+  clip/astype                 转换                            v1.0       ✅
+  assign/eval/query/pipe/transform 高级操作                  v1.4       ✅
   first/last/truncate         时序                            v1.1       📋
   asfreq/tz_localize/tz_convert 时区                          v1.1       📋
   between_time/at_time        时间过滤                        v1.1       📋
@@ -875,14 +877,14 @@ Step 18: 性能优化与基准 (v2.0.0)
   rolling.std/var/median      滚动统计                        v1.0       ✅
   rolling.count/corr/cov      滚动相关                        v1.0       ✅
   rolling.apply               滚动应用                        v1.0       ✅
-  rolling.quantile/skew/kurt  滚动分位数                      v1.4       📋
+  rolling.quantile/skew/kurt  滚动分位数                      v1.4       ✅
   rolling.center/win_type     窗口参数                        v1.4       📋
   expanding.sum/mean/min/max  扩展窗口                        v1.0       ✅
   expanding.std/var           扩展统计                        v1.0       ✅
   expanding.min_periods       最小周期                        v1.0       ✅
-  ewm.mean/std/var            指数加权                        v1.4       📋
+  ewm.mean/std/var            指数加权                        v1.4       ✅
   ewm.corr/cov                指数加权相关                    v1.4       📋
-  ewm.alpha/span/halflife     参数配置                        v1.4       📋
+  ewm.alpha/span/halflife     参数配置                        v1.4       ✅
 
 === GroupBy API ===
   API                         说明                             阶段        状态
@@ -891,7 +893,7 @@ Step 18: 性能优化与基准 (v2.0.0)
   groupby.count/size          计数                            v0.4       ✅
   groupby.std/var/median      分组统计                        v0.4       ✅
   groupby.agg/apply/transform 分组应用                       v0.4       ✅
-  groupby.first/last/nth      分组取值                        v1.0       📋
+  groupby.first/last/nth      分组取值                        v1.4       ✅
   groupby.corr/cov/corrwith   分组相关                        v1.4       📋
   groupby.pct_change/resample 分组时序                       v1.4       📋
   groupby.rolling/expanding   分组窗口                        v1.4       📋

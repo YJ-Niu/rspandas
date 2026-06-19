@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
-
+from .rspandas import _DataFrame as rspandas_DataFrame, _MultiIndex as rspandas_MultiIndex  # type: ignore
 from .series import Series
 
 
@@ -343,9 +343,7 @@ class RangeIndex(Index):
 
     def __eq__(self, other) -> bool:
         if isinstance(other, RangeIndex):
-            return (self._start == other._start and
-                    self._stop == other._stop and
-                    self._step == other._step)
+            return (self._start == other._start and self._stop == other._stop and self._step == other._step)
         return False
 
     # ---------- 方法 ----------
@@ -498,15 +496,13 @@ class MultiIndex(Index):
 
     def __eq__(self, other) -> bool:
         if isinstance(other, MultiIndex):
-            return (self._levels == other._levels and
-                    self._codes == other._codes and
-                    self._names == other._names)
+            return (self._levels == other._levels and self._codes == other._codes and self._names == other._names)
         return False
 
     # ---------- 构造方法 ----------
 
     @staticmethod
-    def from_arrays(arrays, names=None) -> "MultiIndex":
+    def from_arrays(arrays, names=None) -> rspandas_MultiIndex:
         """从数组列表构造 MultiIndex。
 
         Parameters
@@ -539,7 +535,6 @@ class MultiIndex(Index):
     @staticmethod
     def from_tuples(tuples, names=None) -> "MultiIndex":
         """从 tuple 列表构造 MultiIndex。
-
         Parameters
         ----------
         tuples : list[tuple]
@@ -559,9 +554,8 @@ class MultiIndex(Index):
         return MultiIndex.from_arrays(arrays, names=names)
 
     @staticmethod
-    def from_product(iterables, names=None) -> "MultiIndex":
+    def from_product(iterables, names=None) -> rspandas_MultiIndex:
         """从笛卡尔积构造 MultiIndex。
-
         Parameters
         ----------
         iterables : list[list]
@@ -628,7 +622,7 @@ class MultiIndex(Index):
             values.append(self._levels[level_idx][c] if c >= 0 else None)
         return Index(values, name=self._names[level_idx])
 
-    def swaplevel(self, i: int = -2, j: int = -1) -> "MultiIndex":
+    def swaplevel(self, i: int = -2, j: int = -1) -> rspandas_MultiIndex:
         """交换两个 level。
 
         Parameters
@@ -653,7 +647,7 @@ class MultiIndex(Index):
 
         return MultiIndex(new_levels, new_codes, names=new_names)
 
-    def reorder_levels(self, order: List[int]) -> "MultiIndex":
+    def reorder_levels(self, order: List[int]) -> rspandas_MultiIndex:
         """重新排列 level 顺序。
 
         Parameters
@@ -707,17 +701,13 @@ class MultiIndex(Index):
         except ValueError:
             raise KeyError(f"level name '{level}' not found")
 
-    def _slice_by_indices(self, indices) -> "MultiIndex":
+    def _slice_by_indices(self, indices) -> rspandas_MultiIndex:
         """按索引列表切片。"""
         new_codes = [[c[i] for i in indices] for c in self._codes]
-        return MultiIndex(self._levels, new_codes, names=self._names)
+        return rspandas_MultiIndex(self._levels, new_codes, names=self._names)
 
-    def copy(self) -> "MultiIndex":
-        return MultiIndex(
-            [list(l) for l in self._levels],
-            [list(c) for c in self._codes],
-            names=list(self._names),
-        )
+    def copy(self) -> rspandas_MultiIndex:
+        return rspandas_MultiIndex([list(level) for level in self._levels], [list(c) for c in self._codes], names=list(self._names))
 
 
 # ============================================================================
@@ -729,7 +719,7 @@ def get_dummies(
     prefix: Optional[Union[str, List[str]]] = None,
     prefix_sep: str = "_",
     columns: Optional[List[str]] = None,
-) -> "DataFrame":
+) -> rspandas_DataFrame:
     """将分类变量转换为哑变量（one-hot 编码）。
 
     Parameters
@@ -771,7 +761,7 @@ def get_dummies(
     raise TypeError(f"get_dummies expected Series or DataFrame, got {type(data).__name__}")
 
 
-def _get_dummies_series(values: list, prefix: str, sep: str) -> "DataFrame":
+def _get_dummies_series(values: list, prefix: str, sep: str) -> rspandas_DataFrame:
     """对单个 Series 做 one-hot 编码。"""
     from .dataframe import DataFrame as _DataFrame
 
@@ -791,7 +781,7 @@ def _get_dummies_series(values: list, prefix: str, sep: str) -> "DataFrame":
     return _DataFrame(result_data)
 
 
-def _concat_frames(frames: list) -> "DataFrame":
+def _concat_frames(frames: list) -> rspandas_DataFrame:
     """横向拼接 DataFrame，去掉重复列。"""
     from .dataframe import DataFrame as _DataFrame
 
@@ -965,7 +955,7 @@ def crosstab(
     colnames=None,
     margins: bool = False,
     normalize: Union[bool, str] = False,
-) -> "DataFrame":
+) -> rspandas_DataFrame:
     """计算交叉表。
 
     Parameters
