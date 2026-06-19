@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use calamine::Reader;
 use crate::core::series::{PySeries, Series};
 
@@ -126,32 +127,26 @@ fn read_xlsx_raw(
     Ok((final_cols, cols))
 }
 
-/// 推断字符串列的类型并转换为对应的 Series
+/// 推断字符串列的类型并转换为对应的 Series (并行化)
 fn strings_to_series(name: &str, values: &[Option<String>]) -> PySeries {
-    // 推断类型
-    let mut all_int = true;
-    let mut all_float = true;
-    let mut all_bool = true;
-    let mut any_non_null = false;
-
-    for v in values {
+    // 并行推断类型
+    let (all_int, all_float, all_bool, any_non_null) = values.par_iter().map(|v| {
         match v {
             Some(s) => {
-                any_non_null = true;
-                if s.parse::<i64>().is_err() {
-                    all_int = false;
-                }
-                if s.parse::<f64>().is_err() {
-                    all_float = false;
-                }
+                let int_ok = s.parse::<i64>().is_ok();
+                let float_ok = s.parse::<f64>().is_ok();
                 let sl = s.to_lowercase();
-                if !(sl == "true" || sl == "false" || sl == "0" || sl == "1") {
-                    all_bool = false;
-                }
+                let bool_ok = sl == "true" || sl == "false" || sl == "0" || sl == "1";
+                (int_ok, float_ok, bool_ok, true)
             }
-            None => {}
+            None => (true, true, true, false),
         }
-    }
+    }).reduce(
+        || (true, true, true, false),
+        |(a_int, a_float, a_bool, a_any), (b_int, b_float, b_bool, b_any)| {
+            (a_int && b_int, a_float && b_float, a_bool && b_bool, a_any || b_any)
+        }
+    );
 
     if !any_non_null {
         return PySeries {
@@ -161,7 +156,7 @@ fn strings_to_series(name: &str, values: &[Option<String>]) -> PySeries {
 
     if all_bool {
         let bools: Vec<Option<bool>> = values
-            .iter()
+            .par_iter()
             .map(|v| {
                 v.as_ref().map(|s| {
                     let sl = s.to_lowercase();
@@ -174,7 +169,7 @@ fn strings_to_series(name: &str, values: &[Option<String>]) -> PySeries {
         }
     } else if all_int {
         let ints: Vec<Option<i64>> = values
-            .iter()
+            .par_iter()
             .map(|v| v.as_ref().and_then(|s| s.parse::<i64>().ok()))
             .collect();
         PySeries {
@@ -182,7 +177,7 @@ fn strings_to_series(name: &str, values: &[Option<String>]) -> PySeries {
         }
     } else if all_float {
         let floats: Vec<Option<f64>> = values
-            .iter()
+            .par_iter()
             .map(|v| v.as_ref().and_then(|s| s.parse::<f64>().ok()))
             .collect();
         PySeries {
@@ -205,10 +200,11 @@ pub fn read_xlsx(
 ) -> PyResult<(Vec<String>, Vec<PySeries>)> {
     let (col_names, cols) = read_xlsx_raw(path, sheet_name, sheet_index, header_row)?;
 
-    let mut series_list = Vec::new();
-    for (name, values) in col_names.iter().zip(cols.iter()) {
-        series_list.push(strings_to_series(name, values));
-    }
+    let series_list: Vec<PySeries> = col_names
+        .par_iter()
+        .zip(cols.par_iter())
+        .map(|(name, values)| strings_to_series(name, values))
+        .collect();
 
     Ok((col_names, series_list))
 }

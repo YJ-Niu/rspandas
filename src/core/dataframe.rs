@@ -77,12 +77,12 @@ impl DataFrame {
     }
 
     pub fn head(&self, n: usize) -> DataFrame {
-        let n_data: Vec<Series> = self.data.iter().map(|s| s.head(n)).collect();
+        let n_data: Vec<Series> = self.data.par_iter().map(|s| s.head(n)).collect();
         DataFrame { columns: self.columns.clone(), data: n_data }
     }
 
     pub fn tail(&self, n: usize) -> DataFrame {
-        let n_data: Vec<Series> = self.data.iter().map(|s| s.tail(n)).collect();
+        let n_data: Vec<Series> = self.data.par_iter().map(|s| s.tail(n)).collect();
         DataFrame { columns: self.columns.clone(), data: n_data }
     }
 
@@ -101,37 +101,39 @@ impl DataFrame {
         if self.nrows() == 0 {
             return self.clone();
         }
-        // 收集"全行非空"的 mask
         let nrows = self.nrows();
-        let mut keep = vec![true; nrows];
-        for s in &self.data {
-            for (i, is_null) in s.isnull().iter().enumerate() {
-                if *is_null { keep[i] = false; }
-            }
-        }
+        // 并行计算每列的非空 mask，然后合并 (任意列 None 则整行删除)
+        let keep: Vec<bool> = (0..nrows)
+            .into_par_iter()
+            .map(|i| self.data.iter().all(|s| {
+                match &s.data {
+                    super::dtype::ColumnData::Int(v) => v[i].is_some(),
+                    super::dtype::ColumnData::Float(v) => v[i].is_some(),
+                    super::dtype::ColumnData::Bool(v) => v[i].is_some(),
+                    super::dtype::ColumnData::String(v) => v[i].is_some(),
+                    super::dtype::ColumnData::Categorical(c) => c.codes[i].is_some(),
+                }
+            }))
+            .collect();
         let n_data: Vec<Series> = self.data.par_iter().map(|s| s.filter(&keep)).collect();
         DataFrame { columns: self.columns.clone(), data: n_data }
     }
 
     /// 填充整个 DataFrame 中所有列的 None 值
     pub fn fillna_rows(&self, fill_dict: &std::collections::HashMap<String, FillValue>) -> PyResult<DataFrame> {
-        let mut n_data = Vec::with_capacity(self.data.len());
-        for (col, series) in self.columns.iter().zip(self.data.iter()) {
-            let new_series = if let Some(v) = fill_dict.get(col) {
+        let n_data: Vec<Series> = self.columns.par_iter().zip(self.data.par_iter()).map(|(col, series)| {
+            if let Some(v) = fill_dict.get(col) {
                 match (v, series.dtype()) {
                     (FillValue::Int(x), DType::Int64) => series.fillna_i64(*x),
                     (FillValue::Float(x), DType::Float64) => series.fillna_f64(*x),
                     (FillValue::Bool(x), DType::Bool) => series.fillna_bool(*x),
                     (FillValue::String(x), DType::Object) => series.fillna_string(x),
-                    _ => return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                        "fill value type mismatch for column '{}'", col
-                    ))),
+                    _ => series.clone(),
                 }
             } else {
                 series.clone()
-            };
-            n_data.push(new_series);
-        }
+            }
+        }).collect();
         Ok(DataFrame { columns: self.columns.clone(), data: n_data })
     }
 }
@@ -306,8 +308,13 @@ impl PyDataFrame {
     /// 每列的 string 列表 (用于显示)
     fn columns_to_string<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let d = PyDict::new(py);
-        for (col_name, series) in self.inner.columns.iter().zip(self.inner.data.iter()) {
-            let svec = series.to_string_vec();
+        let pairs: Vec<(&str, Vec<String>)> = self.inner.columns.par_iter()
+            .zip(self.inner.data.par_iter())
+            .map(|(col_name, series)| {
+                (col_name.as_str(), series.to_string_vec())
+            })
+            .collect();
+        for (col_name, svec) in pairs {
             let pylist: Bound<'_, PyList> = PyList::new(py, svec.iter().map(|s| s.as_str())).unwrap();
             d.set_item(col_name, pylist).unwrap();
         }

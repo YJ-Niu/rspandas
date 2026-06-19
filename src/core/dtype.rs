@@ -359,12 +359,11 @@ impl ColumnData {
                 ColumnData::Int(out)
             }
             ColumnData::Float(v) => {
-                let mut seen: Vec<f64> = Vec::new();
+                let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
                 let mut out: Vec<Option<f64>> = Vec::new();
                 for x in v {
                     if let Some(val) = x {
-                        if !seen.iter().any(|y| y == val) {
-                            seen.push(*val);
+                        if seen.insert(val.to_bits()) {
                             out.push(Some(*val));
                         }
                     }

@@ -4,6 +4,7 @@
 //! - 写入: 顺序写出列
 
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
 use crate::core::dtype::DType;
@@ -70,31 +71,25 @@ fn parse_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, V
     Ok((headers, cols))
 }
 
-/// 推断字符串列的类型
+/// 推断字符串列的类型 (并行化)
 fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Option<String>>) {
-    // 不含 None 且全部能解析为 i64 -> Int64
-    let mut all_int = true;
-    let mut all_float = true;
-    let mut all_bool = true;
-    let mut any_non_null = false;
-    for v in values {
+    let (all_int, all_float, all_bool, any_non_null) = values.par_iter().map(|v| {
         match v {
             Some(s) => {
-                any_non_null = true;
-                if s.parse::<i64>().is_err() {
-                    all_int = false;
-                }
-                if s.parse::<f64>().is_err() {
-                    all_float = false;
-                }
+                let int_ok = s.parse::<i64>().is_ok();
+                let float_ok = s.parse::<f64>().is_ok();
                 let sl = s.to_lowercase();
-                if !(sl == "true" || sl == "false" || sl == "0" || sl == "1") {
-                    all_bool = false;
-                }
+                let bool_ok = sl == "true" || sl == "false" || sl == "0" || sl == "1";
+                (int_ok, float_ok, bool_ok, true)
             }
-            None => {}
+            None => (true, true, true, false),
         }
-    }
+    }).reduce(
+        || (true, true, true, false),
+        |(a_int, a_float, a_bool, a_any), (b_int, b_float, b_bool, b_any)| {
+            (a_int && b_int, a_float && b_float, a_bool && b_bool, a_any || b_any)
+        }
+    );
     let dtype = if !any_non_null {
         DType::Object
     } else if all_bool {
@@ -109,9 +104,9 @@ fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Op
     (dtype, values.to_vec())
 }
 
-/// 将 string 列转换为目标 dtype 的 string 表示
+/// 将 string 列转换为目标 dtype 的 string 表示 (并行化)
 fn cast_strings(values: &[Option<String>], target: crate::core::dtype::DType) -> Vec<Option<String>> {
-    values.iter().map(|opt| {
+    values.par_iter().map(|opt| {
         match opt {
             None => None,
             Some(s) => match target {
@@ -149,30 +144,28 @@ fn cast_strings(values: &[Option<String>], target: crate::core::dtype::DType) ->
 #[pyfunction]
 pub fn read_csv_string<'py>(content: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
     let (headers, cols) = parse_csv_string(content, has_header)?;
-    let mut series_list = Vec::new();
-    for (h, col) in headers.iter().zip(cols.iter()) {
+    let series_list: Vec<PySeries> = headers.par_iter().zip(cols.par_iter()).map(|(h, col)| {
         // 空列: 强制为 object dtype (0 长度)
         if col.is_empty() {
-            series_list.push(PySeries { inner: Series::from_options_string(h.clone(), &[]) });
-            continue;
+            return PySeries { inner: Series::from_options_string(h.clone(), &[]) };
         }
         let (dtype, _strings) = infer_column(col);
         let casted = cast_strings(col, dtype);
         let series = match dtype {
             crate::core::dtype::DType::Int64 => {
-                let ints: Vec<Option<i64>> = casted.iter().map(|v| {
+                let ints: Vec<Option<i64>> = casted.par_iter().map(|v| {
                     v.as_ref().and_then(|s| s.parse::<i64>().ok())
                 }).collect();
                 Series::from_options_i64(h.clone(), &ints)
             }
             crate::core::dtype::DType::Float64 => {
-                let floats: Vec<Option<f64>> = casted.iter().map(|v| {
+                let floats: Vec<Option<f64>> = casted.par_iter().map(|v| {
                     v.as_ref().and_then(|s| s.parse::<f64>().ok())
                 }).collect();
                 Series::from_options_f64(h.clone(), &floats)
             }
             crate::core::dtype::DType::Bool => {
-                let bools: Vec<Option<bool>> = casted.iter().map(|v| {
+                let bools: Vec<Option<bool>> = casted.par_iter().map(|v| {
                     v.as_ref().map(|s| {
                         let sl = s.to_lowercase();
                         sl == "true" || sl == "1"
@@ -187,8 +180,8 @@ pub fn read_csv_string<'py>(content: &str, has_header: bool) -> PyResult<(Vec<St
                 Series::from_options_string(h.clone(), col)
             }
         };
-        series_list.push(PySeries { inner: series });
-    }
+        PySeries { inner: series }
+    }).collect();
     Ok((headers, series_list))
 }
 
@@ -221,13 +214,20 @@ pub fn write_csv_string<'py>(
     }
 
     let nrows = series_list[0].inner.len();
-    for i in 0..nrows {
-        let mut record: Vec<String> = Vec::with_capacity(series_list.len());
-        for s in &series_list {
-            let v = s.inner.get_str_at(i);
-            record.push(csv_escape(&v));
-        }
-        buf.push_str(&record.join(&sep.to_string()));
+    // 并行生成每行的 CSV 字符串
+    let row_strings: Vec<String> = (0..nrows)
+        .into_par_iter()
+        .map(|i| {
+            let mut record: Vec<String> = Vec::with_capacity(series_list.len());
+            for s in &series_list {
+                let v = s.inner.get_str_at(i);
+                record.push(csv_escape(&v));
+            }
+            record.join(&sep.to_string())
+        })
+        .collect();
+    for row_str in &row_strings {
+        buf.push_str(row_str);
         buf.push('\n');
     }
     Ok(buf)

@@ -96,13 +96,13 @@ impl Series {
             ColumnData::Float(v) => v.len() * std::mem::size_of::<Option<f64>>(),
             ColumnData::Bool(v) => v.len() * std::mem::size_of::<Option<bool>>(),
             ColumnData::String(v) => v
-                .iter()
+                .par_iter()
                 .map(|s| s.as_ref().map(|x| x.len()).unwrap_or(0))
                 .sum::<usize>()
                 + v.len() * std::mem::size_of::<Option<String>>(),
             ColumnData::Categorical(c) => {
                 c.codes.len() * std::mem::size_of::<Option<i32>>()
-                    + c.categories.iter().map(|s| s.len()).sum::<usize>()
+                    + c.categories.par_iter().map(|s| s.len()).sum::<usize>()
                     + c.categories.len() * std::mem::size_of::<String>()
             }
         }
@@ -299,20 +299,12 @@ impl Series {
 
     pub fn any(&self) -> Option<bool> {
         if let ColumnData::Bool(v) = &self.data {
-            Some(v.iter().any(|x| matches!(x, Some(true))))
+            Some(v.par_iter().any(|x| matches!(x, Some(true))))
         } else { None }
     }
     pub fn all(&self) -> Option<bool> {
         if let ColumnData::Bool(v) = &self.data {
-            let mut saw_true = false;
-            for x in v {
-                match x {
-                    Some(true) => saw_true = true,
-                    Some(false) => return Some(false),
-                    None => {}
-                }
-            }
-            Some(saw_true)
+            Some(v.par_iter().all(|x| matches!(x, Some(true))))
         } else { None }
     }
 
@@ -349,19 +341,66 @@ impl Series {
 
     pub fn nunique(&self) -> usize {
         match &self.data {
-            ColumnData::Int(v) => v.iter().filter_map(|x| *x).collect::<std::collections::HashSet<_>>().len(),
-            ColumnData::Float(v) => {
-                let mut seen: Vec<f64> = Vec::new();
-                for x in v.iter().filter_map(|x| *x) {
-                    if !seen.iter().any(|y| y == &x) {
-                        seen.push(x);
-                    }
-                }
-                seen.len()
+            ColumnData::Int(v) => {
+                v.par_iter()
+                    .filter_map(|x| *x)
+                    .fold(
+                        || std::collections::HashSet::new(),
+                        |mut set, val| { set.insert(val); set }
+                    )
+                    .reduce(
+                        || std::collections::HashSet::new(),
+                        |mut a, b| { a.extend(b); a }
+                    )
+                    .len()
             }
-            ColumnData::Bool(v) => v.iter().filter_map(|x| *x).collect::<std::collections::HashSet<_>>().len(),
-            ColumnData::String(v) => v.iter().filter_map(|x| x.clone()).collect::<std::collections::HashSet<_>>().len(),
-            ColumnData::Categorical(c) => c.codes.iter().filter_map(|x| *x).collect::<std::collections::HashSet<_>>().len(),
+            ColumnData::Float(v) => {
+                // 使用 OrderedFloat 风格的 HashSet 来并行化浮点去重
+                v.par_iter()
+                    .filter_map(|x| *x)
+                    .fold(
+                        || std::collections::HashSet::new(),
+                        |mut set, val| {
+                            // 使用 u64 位表示来避免浮点 NaN 问题
+                            set.insert(val.to_bits());
+                            set
+                        }
+                    )
+                    .reduce(
+                        || std::collections::HashSet::new(),
+                        |mut a, b| { a.extend(b); a }
+                    )
+                    .len()
+            }
+            ColumnData::Bool(v) => {
+                v.par_iter().filter_map(|x| *x).collect::<std::collections::HashSet<_>>().len()
+            }
+            ColumnData::String(v) => {
+                v.par_iter()
+                    .filter_map(|x| x.clone())
+                    .fold(
+                        || std::collections::HashSet::new(),
+                        |mut set, val| { set.insert(val); set }
+                    )
+                    .reduce(
+                        || std::collections::HashSet::new(),
+                        |mut a, b| { a.extend(b); a }
+                    )
+                    .len()
+            }
+            ColumnData::Categorical(c) => {
+                c.codes.par_iter()
+                    .filter_map(|x| *x)
+                    .fold(
+                        || std::collections::HashSet::new(),
+                        |mut set, val| { set.insert(val); set }
+                    )
+                    .reduce(
+                        || std::collections::HashSet::new(),
+                        |mut a, b| { a.extend(b); a }
+                    )
+                    .len()
+            }
         }
     }
 
@@ -482,26 +521,27 @@ impl Series {
     }
 
     /// 转换为字符串列表 (None -> "NaN") - 给 DataFrame 显示用
+    /// 使用 rayon 并行化字符串转换，大数据量下有显著提升
     pub fn to_string_vec(&self) -> Vec<String> {
         match &self.data {
             ColumnData::Int(v) => v
-                .iter()
+                .par_iter()
                 .map(|x| match x { Some(n) => n.to_string(), None => "NaN".to_string() })
                 .collect(),
             ColumnData::Float(v) => v
-                .iter()
+                .par_iter()
                 .map(|x| match x { Some(n) => n.to_string(), None => "NaN".to_string() })
                 .collect(),
             ColumnData::Bool(v) => v
-                .iter()
+                .par_iter()
                 .map(|x| match x { Some(b) => b.to_string(), None => "NaN".to_string() })
                 .collect(),
             ColumnData::String(v) => v
-                .iter()
+                .par_iter()
                 .map(|x| match x { Some(s) => s.clone(), None => "NaN".to_string() })
                 .collect(),
             ColumnData::Categorical(c) => c.codes
-                .iter()
+                .par_iter()
                 .map(|code| match code {
                     Some(idx) => c.categories.get(*idx as usize).cloned().unwrap_or_else(|| "NaN".to_string()),
                     None => "NaN".to_string(),
