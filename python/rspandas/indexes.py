@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
-from .rspandas import _DataFrame as rspandas_DataFrame, _MultiIndex as rspandas_MultiIndex  # type: ignore
+from .rspandas import _DataFrame as rspandas_DataFrame  # type: ignore
 from .series import Series
 
 
@@ -502,7 +502,7 @@ class MultiIndex(Index):
     # ---------- 构造方法 ----------
 
     @staticmethod
-    def from_arrays(arrays, names=None) -> rspandas_MultiIndex:
+    def from_arrays(arrays, names=None) -> MultiIndex:
         """从数组列表构造 MultiIndex。
 
         Parameters
@@ -554,7 +554,7 @@ class MultiIndex(Index):
         return MultiIndex.from_arrays(arrays, names=names)
 
     @staticmethod
-    def from_product(iterables, names=None) -> rspandas_MultiIndex:
+    def from_product(iterables, names=None) -> MultiIndex:
         """从笛卡尔积构造 MultiIndex。
         Parameters
         ----------
@@ -622,7 +622,7 @@ class MultiIndex(Index):
             values.append(self._levels[level_idx][c] if c >= 0 else None)
         return Index(values, name=self._names[level_idx])
 
-    def swaplevel(self, i: int = -2, j: int = -1) -> rspandas_MultiIndex:
+    def swaplevel(self, i: int = -2, j: int = -1) -> MultiIndex:
         """交换两个 level。
 
         Parameters
@@ -647,7 +647,7 @@ class MultiIndex(Index):
 
         return MultiIndex(new_levels, new_codes, names=new_names)
 
-    def reorder_levels(self, order: List[int]) -> rspandas_MultiIndex:
+    def reorder_levels(self, order: List[int]) -> MultiIndex:
         """重新排列 level 顺序。
 
         Parameters
@@ -701,13 +701,13 @@ class MultiIndex(Index):
         except ValueError:
             raise KeyError(f"level name '{level}' not found")
 
-    def _slice_by_indices(self, indices) -> rspandas_MultiIndex:
+    def _slice_by_indices(self, indices) -> MultiIndex:
         """按索引列表切片。"""
         new_codes = [[c[i] for i in indices] for c in self._codes]
-        return rspandas_MultiIndex(self._levels, new_codes, names=self._names)
+        return MultiIndex(self._levels, new_codes, names=self._names)
 
-    def copy(self) -> rspandas_MultiIndex:
-        return rspandas_MultiIndex([list(level) for level in self._levels], [list(c) for c in self._codes], names=list(self._names))
+    def copy(self) -> MultiIndex:
+        return MultiIndex([list(level) for level in self._levels], [list(c) for c in self._codes], names=list(self._names))
 
 
 # ============================================================================

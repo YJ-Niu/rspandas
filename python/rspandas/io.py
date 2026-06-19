@@ -142,7 +142,7 @@ def to_json(
 
 
 # ============================================================================
-# Excel
+# Excel (使用 Rust 后端 calamine + rust_xlsxwriter，无需 openpyxl)
 # ============================================================================
 
 def read_excel(
@@ -151,90 +151,31 @@ def read_excel(
     header: int = 0,
     **kwargs,
 ) -> DataFrame:
-    """从 Excel 文件读取 DataFrame。
+    """从 Excel 文件读取 DataFrame (使用 Rust calamine 后端)。
 
     Parameters
     ----------
     path : str
-        Excel 文件路径 (.xlsx / .xls)。
+        Excel 文件路径 (.xlsx / .xls / .ods)。
     sheet_name : str or int, default 0
         工作表名称或索引。
     header : int, default 0
         用作列名的行号。
     **kwargs
-        传递给 openpyxl/pandas 的其他参数。
+        忽略 (兼容 pandas 签名)。
 
     Returns
     -------
     DataFrame
     """
-    try:
-        import openpyxl  # noqa: F401
-        return _read_excel_openpyxl(path, sheet_name, header)
-    except ImportError:
-        pass
-
-    try:
-        import pandas as pd
-        pdf = pd.read_excel(path, sheet_name=sheet_name, header=header, **kwargs)
-        return DataFrame.from_pandas(pdf)
-    except ImportError:
-        raise ImportError(
-            "read_excel requires openpyxl or pandas to be installed. "
-            "Install with: pip install openpyxl"
-        )
-
-
-def _read_excel_openpyxl(
-    path: str,
-    sheet_name: Union[str, int] = 0,
-    header: int = 0,
-) -> DataFrame:
-    """使用 openpyxl 读取 Excel。"""
-    from openpyxl import load_workbook
-
-    wb = load_workbook(path, read_only=True, data_only=True)
+    from .rspandas import read_xlsx as _read_xlsx, _DataFrame
 
     if isinstance(sheet_name, int):
-        ws = wb.worksheets[sheet_name]
+        cols, series_list = _read_xlsx(path, None, sheet_name, header)
     else:
-        ws = wb[sheet_name]
+        cols, series_list = _read_xlsx(path, sheet_name, None, header)
 
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
-
-    if not rows:
-        return DataFrame()
-
-    # 确定列名
-    if header < len(rows):
-        col_names = [
-            str(c) if c is not None else f"col{i}"
-            for i, c in enumerate(rows[header])
-        ]
-        data_rows = rows[header + 1:]
-    else:
-        col_names = [f"col{i}" for i in range(len(rows[0]))]
-        data_rows = rows
-
-    # 去重列名
-    seen: Dict[str, int] = {}
-    final_cols = []
-    for c in col_names:
-        if c in seen:
-            seen[c] += 1
-            final_cols.append(f"{c}.{seen[c]}")
-        else:
-            seen[c] = 0
-            final_cols.append(c)
-
-    # 构建数据
-    data: Dict[str, list] = {c: [] for c in final_cols}
-    for row in data_rows:
-        for i, c in enumerate(final_cols):
-            data[c].append(row[i] if i < len(row) else None)
-
-    return DataFrame(data)
+    return DataFrame._from_inner(_DataFrame(cols, series_list))
 
 
 def to_excel(
@@ -245,7 +186,7 @@ def to_excel(
     header: bool = True,
     **kwargs,
 ) -> None:
-    """将 DataFrame 写入 Excel 文件。
+    """将 DataFrame 写入 Excel 文件 (使用 Rust rust_xlsxwriter 后端)。
 
     Parameters
     ----------
@@ -260,60 +201,13 @@ def to_excel(
     header : bool, default True
         是否写入列名。
     **kwargs
-        传递给 openpyxl/pandas 的其他参数。
+        忽略 (兼容 pandas 签名)。
     """
-    try:
-        import openpyxl  # noqa: F401
-        _to_excel_openpyxl(df, path, sheet_name, index, header)
-        return
-    except ImportError:
-        pass
+    from .rspandas import write_xlsx as _write_xlsx
 
-    try:
-        pdf = df.to_pandas()
-        pdf.to_excel(path, sheet_name=sheet_name, index=index, header=header, **kwargs)
-        return
-    except ImportError:
-        raise ImportError(
-            "to_excel requires openpyxl or pandas to be installed. "
-            "Install with: pip install openpyxl"
-        )
-
-
-def _to_excel_openpyxl(
-    df: DataFrame,
-    path: str,
-    sheet_name: str = "Sheet1",
-    index: bool = False,
-    header: bool = True,
-) -> None:
-    """使用 openpyxl 写入 Excel。"""
-    from openpyxl import Workbook
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_name
-
-    # 写入表头
-    if header:
-        col_offset = 1 if index else 0
-        for j, col_name in enumerate(df.columns):
-            ws.cell(row=1, column=j + col_offset + 1, value=col_name)
-
-    # 写入数据
-    values = df.values
-    row_start = 2 if header else 1
-    for i, row in enumerate(values):
-        for j, val in enumerate(row):
-            col_offset = 1 if index else 0
-            ws.cell(row=i + row_start, column=j + col_offset + 1, value=val)
-
-    # 写入索引
-    if index:
-        for i in range(len(values)):
-            ws.cell(row=i + row_start, column=1, value=i)
-
-    wb.save(path)
+    cols = list(df.columns)
+    series_list = [df._inner.get_column(c) for c in cols]
+    _write_xlsx(path, cols, series_list, sheet_name, header, index)
 
 
 # ============================================================================
