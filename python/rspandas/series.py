@@ -126,7 +126,7 @@ class Series:
     ):
         """构造 Series。
 
-        :param data: list / tuple / scalar
+        :param data: list / tuple / scalar / list of _PySeries
         :param name: 列名
         :param dtype: 可选类型 ('int64' / 'float64' / 'bool' / 'object')
         :param index: MVP 忽略，使用 RangeIndex
@@ -135,6 +135,9 @@ class Series:
         # 标准化数据
         if isinstance(data, dict) and index is None:
             values, index = _to_python_list_and_index(data)
+        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], _PySeries):
+            # 列表中的元素是 _PySeries (来自 apply 等操作)
+            values = data
         else:
             values = _to_python_list(data)
 
@@ -464,7 +467,7 @@ class Series:
 
     def to_frame(self, name=None) -> _PyDataFrame:
         """转换为 DataFrame。"""
-        return _PyDataFrame({name or self.name: self.values})
+        return _PyDataFrame([name or self.name], [self._inner])
 
     # ---------- 展开方法 (v1.0.0) ----------
     def explode(self) -> _PySeries:

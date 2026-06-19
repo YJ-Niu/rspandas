@@ -488,13 +488,21 @@ class DataFrame:
             results = []
             for c in self._columns:
                 ser = self[c]
-                results.append(func(ser))
+                res = func(ser)
+                if isinstance(res, Series):
+                    results.append(res._inner)
+                else:
+                    results.append(res)
             return Series(results, index=list(self._columns))
         else:  # axis == 1
             results = []
             for i in range(self._nrows):
                 row = {c: self._inner.get_column(c).values[i] for c in self._columns}
-                results.append(func(row))
+                res = func(row)
+                if isinstance(res, Series):
+                    results.append(res._inner)
+                else:
+                    results.append(res)
             return Series(results, index=list(range(self._nrows)))
 
     def applymap(self, func) -> "DataFrame":
