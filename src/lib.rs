@@ -12,5 +12,6 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::core::csv_io::write_csv_string, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::csv_io::read_csv_path, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::csv_io::write_csv_path, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::core::series::factorize, m)?)?;
     Ok(())
 }

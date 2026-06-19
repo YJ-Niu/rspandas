@@ -4,9 +4,9 @@
 //! - 写入: 顺序写出列
 
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyString};
 use std::fs::File;
 use std::io::{Read, Write};
+use crate::core::dtype::DType;
 
 use crate::core::series::{PySeries, Series};
 
@@ -72,7 +72,6 @@ fn parse_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, V
 
 /// 推断字符串列的类型
 fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Option<String>>) {
-    use crate::core::dtype::DType;
     // 不含 None 且全部能解析为 i64 -> Int64
     let mut all_int = true;
     let mut all_float = true;
@@ -112,7 +111,6 @@ fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Op
 
 /// 将 string 列转换为目标 dtype 的 string 表示
 fn cast_strings(values: &[Option<String>], target: crate::core::dtype::DType) -> Vec<Option<String>> {
-    use crate::core::dtype::DType;
     values.iter().map(|opt| {
         match opt {
             None => None,
@@ -142,6 +140,7 @@ fn cast_strings(values: &[Option<String>], target: crate::core::dtype::DType) ->
                     }
                 }
                 DType::Object => Some(s.clone()),
+                DType::Categorical => Some(s.clone()),
             }
         }
     }).collect()
@@ -182,6 +181,9 @@ pub fn read_csv_string<'py>(content: &str, has_header: bool) -> PyResult<(Vec<St
                 Series::from_options_bool(h.clone(), &bools)
             }
             crate::core::dtype::DType::Object => {
+                Series::from_options_string(h.clone(), col)
+            }
+            crate::core::dtype::DType::Categorical => {
                 Series::from_options_string(h.clone(), col)
             }
         };

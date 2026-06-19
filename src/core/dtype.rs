@@ -5,6 +5,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use rayon::prelude::*;
 
 /// 逻辑类型，对应 pandas 的 dtype 名称
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,6 +14,7 @@ pub enum DType {
     Float64,
     Bool,
     Object,
+    Categorical,
 }
 
 impl DType {
@@ -23,6 +25,7 @@ impl DType {
             DType::Float64 => "float64",
             DType::Bool => "bool",
             DType::Object => "object",
+            DType::Categorical => "category",
         }
     }
 
@@ -32,18 +35,28 @@ impl DType {
             "float64" | "float" | "f64" => Some(DType::Float64),
             "bool" | "boolean" => Some(DType::Bool),
             "object" | "str" | "string" => Some(DType::Object),
+            "category" | "categorical" => Some(DType::Categorical),
             _ => None,
         }
     }
 }
 
-/// 单列数据，支持 4 种基础类型 + 缺失值 (None)
+/// 分类数据：用整数 codes 引用 categories 列表
+#[derive(Debug, Clone)]
+pub struct CategoricalData {
+    pub categories: Vec<String>,
+    pub codes: Vec<Option<i32>>,
+    pub ordered: bool,
+}
+
+/// 单列数据，支持 4 种基础类型 + 缺失值 (None) + Categorical
 #[derive(Debug, Clone)]
 pub enum ColumnData {
     Int(Vec<Option<i64>>),
     Float(Vec<Option<f64>>),
     Bool(Vec<Option<bool>>),
     String(Vec<Option<String>>),
+    Categorical(CategoricalData),
 }
 
 impl ColumnData {
@@ -54,6 +67,7 @@ impl ColumnData {
             ColumnData::Float(v) => v.len(),
             ColumnData::Bool(v) => v.len(),
             ColumnData::String(v) => v.len(),
+            ColumnData::Categorical(c) => c.codes.len(),
         }
     }
 
@@ -68,6 +82,7 @@ impl ColumnData {
             ColumnData::Float(_) => DType::Float64,
             ColumnData::Bool(_) => DType::Bool,
             ColumnData::String(_) => DType::Object,
+            ColumnData::Categorical(_) => DType::Categorical,
         }
     }
 
@@ -84,6 +99,11 @@ impl ColumnData {
             ColumnData::Float(v) => ColumnData::Float(v[start..end].to_vec()),
             ColumnData::Bool(v) => ColumnData::Bool(v[start..end].to_vec()),
             ColumnData::String(v) => ColumnData::String(v[start..end].to_vec()),
+            ColumnData::Categorical(c) => ColumnData::Categorical(CategoricalData {
+                categories: c.categories.clone(),
+                codes: c.codes[start..end].to_vec(),
+                ordered: c.ordered,
+            }),
         }
     }
 
@@ -101,10 +121,11 @@ impl ColumnData {
     /// 非缺失值数量
     pub fn count_non_null(&self) -> usize {
         match self {
-            ColumnData::Int(v) => v.iter().filter(|x| x.is_some()).count(),
-            ColumnData::Float(v) => v.iter().filter(|x| x.is_some()).count(),
-            ColumnData::Bool(v) => v.iter().filter(|x| x.is_some()).count(),
-            ColumnData::String(v) => v.iter().filter(|x| x.is_some()).count(),
+            ColumnData::Int(v) => v.par_iter().filter(|x| x.is_some()).count(),
+            ColumnData::Float(v) => v.par_iter().filter(|x| x.is_some()).count(),
+            ColumnData::Bool(v) => v.par_iter().filter(|x| x.is_some()).count(),
+            ColumnData::String(v) => v.par_iter().filter(|x| x.is_some()).count(),
+            ColumnData::Categorical(c) => c.codes.par_iter().filter(|x| x.is_some()).count(),
         }
     }
 
@@ -113,35 +134,47 @@ impl ColumnData {
         match self {
             ColumnData::Int(v) => {
                 let r: Vec<Option<i64>> = v
-                    .iter()
-                    .zip(mask.iter())
+                    .par_iter()
+                    .zip(mask.par_iter())
                     .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
                     .collect();
                 ColumnData::Int(r)
             }
             ColumnData::Float(v) => {
                 let r: Vec<Option<f64>> = v
-                    .iter()
-                    .zip(mask.iter())
+                    .par_iter()
+                    .zip(mask.par_iter())
                     .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
                     .collect();
                 ColumnData::Float(r)
             }
             ColumnData::Bool(v) => {
                 let r: Vec<Option<bool>> = v
-                    .iter()
-                    .zip(mask.iter())
+                    .par_iter()
+                    .zip(mask.par_iter())
                     .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
                     .collect();
                 ColumnData::Bool(r)
             }
             ColumnData::String(v) => {
                 let r: Vec<Option<String>> = v
-                    .iter()
-                    .zip(mask.iter())
+                    .par_iter()
+                    .zip(mask.par_iter())
                     .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
                     .collect();
                 ColumnData::String(r)
+            }
+            ColumnData::Categorical(c) => {
+                let r: Vec<Option<i32>> = c.codes
+                    .par_iter()
+                    .zip(mask.par_iter())
+                    .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
+                    .collect();
+                ColumnData::Categorical(CategoricalData {
+                    categories: c.categories.clone(),
+                    codes: r,
+                    ordered: c.ordered,
+                })
             }
         }
     }
@@ -189,48 +222,97 @@ impl ColumnData {
                 }
                 list
             }
+            ColumnData::Categorical(c) => {
+                let list = PyList::empty(py);
+                for code in &c.codes {
+                    match code {
+                        Some(code_idx) => {
+                            let cat_str = c.categories.get(*code_idx as usize)
+                                .cloned()
+                                .unwrap_or_else(|| "NaN".to_string());
+                            list.append(cat_str).unwrap();
+                        }
+                        None => list.append(py.None()).unwrap(),
+                    }
+                }
+                list
+            }
         }
     }
 
     /// 返回 bool 列: True 表示该位置是 None
     pub fn isnull(&self) -> Vec<bool> {
         match self {
-            ColumnData::Int(v) => v.iter().map(|x| x.is_none()).collect(),
-            ColumnData::Float(v) => v.iter().map(|x| x.is_none()).collect(),
-            ColumnData::Bool(v) => v.iter().map(|x| x.is_none()).collect(),
-            ColumnData::String(v) => v.iter().map(|x| x.is_none()).collect(),
+            ColumnData::Int(v) => v.par_iter().map(|x| x.is_none()).collect(),
+            ColumnData::Float(v) => v.par_iter().map(|x| x.is_none()).collect(),
+            ColumnData::Bool(v) => v.par_iter().map(|x| x.is_none()).collect(),
+            ColumnData::String(v) => v.par_iter().map(|x| x.is_none()).collect(),
+            ColumnData::Categorical(c) => c.codes.par_iter().map(|x| x.is_none()).collect(),
         }
     }
 
     /// 返回 bool 列: True 表示该位置不是 None
     pub fn notnull(&self) -> Vec<bool> {
         match self {
-            ColumnData::Int(v) => v.iter().map(|x| x.is_some()).collect(),
-            ColumnData::Float(v) => v.iter().map(|x| x.is_some()).collect(),
-            ColumnData::Bool(v) => v.iter().map(|x| x.is_some()).collect(),
-            ColumnData::String(v) => v.iter().map(|x| x.is_some()).collect(),
+            ColumnData::Int(v) => v.par_iter().map(|x| x.is_some()).collect(),
+            ColumnData::Float(v) => v.par_iter().map(|x| x.is_some()).collect(),
+            ColumnData::Bool(v) => v.par_iter().map(|x| x.is_some()).collect(),
+            ColumnData::String(v) => v.par_iter().map(|x| x.is_some()).collect(),
+            ColumnData::Categorical(c) => c.codes.par_iter().map(|x| x.is_some()).collect(),
         }
     }
 
     /// 用给定的值填充 None (类型必须匹配)
     pub fn fillna_i64(&self, v: i64) -> ColumnData {
         if let ColumnData::Int(col) = self {
-            ColumnData::Int(col.iter().map(|x| Some(x.unwrap_or(v))).collect())
+            ColumnData::Int(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
         } else { self.clone() }
     }
     pub fn fillna_f64(&self, v: f64) -> ColumnData {
         if let ColumnData::Float(col) = self {
-            ColumnData::Float(col.iter().map(|x| Some(x.unwrap_or(v))).collect())
+            ColumnData::Float(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
         } else { self.clone() }
     }
     pub fn fillna_bool(&self, v: bool) -> ColumnData {
         if let ColumnData::Bool(col) = self {
-            ColumnData::Bool(col.iter().map(|x| Some(x.unwrap_or(v))).collect())
+            ColumnData::Bool(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
         } else { self.clone() }
     }
     pub fn fillna_string(&self, v: &str) -> ColumnData {
         if let ColumnData::String(col) = self {
-            ColumnData::String(col.iter().map(|x| Some(x.clone().unwrap_or_else(|| v.to_string()))).collect())
+            let v_clone = v.to_string();
+            ColumnData::String(col.par_iter().map(|x| Some(x.clone().unwrap_or_else(|| v_clone.clone()))).collect())
+        } else { self.clone() }
+    }
+    pub fn fillna_categorical(&self, v: &str) -> ColumnData {
+        if let ColumnData::Categorical(c) = self {
+            let v_clone = v.to_string();
+            // 找到或添加 fill value 的 code
+            let fill_code = c.categories.iter().position(|cat| cat == &v_clone)
+                .map(|i| i as i32)
+                .unwrap_or_else(|| c.categories.len() as i32);
+            let mut new_categories = c.categories.clone();
+            let new_codes: Vec<Option<i32>> = c.codes.par_iter().map(|code| {
+                match code {
+                    Some(c) => Some(*c),
+                    None => {
+                        if fill_code as usize >= new_categories.len() {
+                            Some(fill_code) // 需要外部同步添加
+                        } else {
+                            Some(fill_code)
+                        }
+                    }
+                }
+            }).collect();
+            // 如果 fill_code 对应的 category 不在列表中，添加它
+            if fill_code as usize >= new_categories.len() {
+                new_categories.push(v_clone);
+            }
+            ColumnData::Categorical(CategoricalData {
+                categories: new_categories,
+                codes: new_codes,
+                ordered: c.ordered,
+            })
         } else { self.clone() }
     }
 
@@ -238,16 +320,25 @@ impl ColumnData {
     pub fn dropna(&self) -> ColumnData {
         match self {
             ColumnData::Int(v) => {
-                ColumnData::Int(v.iter().filter_map(|x| *x).map(Some).collect())
+                ColumnData::Int(v.par_iter().filter_map(|x| *x).map(Some).collect())
             }
             ColumnData::Float(v) => {
-                ColumnData::Float(v.iter().filter_map(|x| *x).map(Some).collect())
+                ColumnData::Float(v.par_iter().filter_map(|x| *x).map(Some).collect())
             }
             ColumnData::Bool(v) => {
-                ColumnData::Bool(v.iter().filter_map(|x| *x).map(Some).collect())
+                ColumnData::Bool(v.par_iter().filter_map(|x| *x).map(Some).collect())
             }
             ColumnData::String(v) => {
-                ColumnData::String(v.iter().filter_map(|x| x.clone()).map(Some).collect())
+                ColumnData::String(v.par_iter().filter_map(|x| x.clone()).map(Some).collect())
+            }
+            ColumnData::Categorical(c) => {
+                let codes: Vec<Option<i32>> = c.codes.par_iter()
+                    .filter_map(|x| *x).map(Some).collect();
+                ColumnData::Categorical(CategoricalData {
+                    categories: c.categories.clone(),
+                    codes,
+                    ordered: c.ordered,
+                })
             }
         }
     }
@@ -303,6 +394,28 @@ impl ColumnData {
                     }
                 }
                 ColumnData::String(out)
+            }
+            ColumnData::Categorical(c) => {
+                let mut seen = std::collections::HashSet::new();
+                let mut out_codes: Vec<Option<i32>> = Vec::new();
+                let mut out_categories: Vec<String> = Vec::new();
+                for code in &c.codes {
+                    if let Some(code_idx) = code {
+                        if seen.insert(*code_idx) {
+                            let cat_str = c.categories.get(*code_idx as usize)
+                                .cloned()
+                                .unwrap_or_default();
+                            let new_code = out_categories.len() as i32;
+                            out_categories.push(cat_str);
+                            out_codes.push(Some(new_code));
+                        }
+                    }
+                }
+                ColumnData::Categorical(CategoricalData {
+                    categories: out_categories,
+                    codes: out_codes,
+                    ordered: c.ordered,
+                })
             }
         }
     }

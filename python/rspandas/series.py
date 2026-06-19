@@ -126,8 +126,8 @@ class Series:
         if dtype is None:
             dtype = _infer_dtype(values)
 
-        # 构造 Rust 端 Series
-        self._inner = _PySeries(values, name)
+        # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
+        self._inner = _PySeries(values, name, dtype=dtype)
 
         # 缓存 dtype
         self._dtype_str: str = self._inner.dtype
@@ -216,11 +216,12 @@ class Series:
             return self._filter_mask(key)
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
 
-    def _filter_mask(self, mask: list) -> _PySeries:
+    def _filter_mask(self, mask: list, preserve_dtype: bool = False) -> _PySeries:
         if len(mask) != len(self):
             raise ValueError(f"mask length {len(mask)} != series length {len(self)}")
         rust_mask = [bool(x) for x in mask]
-        return Series(_PySeries_filter(self._inner, rust_mask), name=self.name)
+        dtype = self._dtype_str if preserve_dtype else None
+        return Series(_PySeries_filter(self._inner, rust_mask), name=self.name, dtype=dtype)
 
     def __eq__(self, other) -> _PySeries:
         mask = self._inner.eq_scalar(other)
@@ -352,6 +353,11 @@ class Series:
         """字符串访问器。"""
         return StringAccessor(self)
 
+    @property
+    def cat(self):
+        """Categorical 访问器。"""
+        return CatAccessor(self)
+
     def isin(self, other) -> _PySeries:
         """判断每个元素是否在 other 中。"""
         s = set(other)
@@ -459,10 +465,10 @@ class Series:
     # ---------- 子集 ----------
 
     def head(self, n: int = 5) -> _PySeries:
-        return Series(self._inner.head(n), name=self.name)
+        return Series(self._inner.head(n), name=self.name, dtype=self._dtype_str)
 
     def tail(self, n: int = 5) -> _PySeries:
-        return Series(self._inner.tail(n), name=self.name)
+        return Series(self._inner.tail(n), name=self.name, dtype=self._dtype_str)
 
     def iloc(self, key) -> _PySeries:
         """按位置索引。key: int / list[int] / slice / bool mask。"""
@@ -657,6 +663,12 @@ class Series:
             vals = [None if v is None else bool(v) for v in self.values]
         elif target == "object":
             vals = [None if v is None else str(v) for v in self.values]
+        elif target == "category":
+            # 转换为 Categorical
+            from .rspandas import factorize as _factorize
+            codes, categories = _factorize(self.values)
+            s = Series(self.values, name=self.name, dtype="category")
+            return s
         else:
             raise TypeError(f"unsupported dtype: {dtype}")
         return Series(vals, name=self.name, dtype=target)
@@ -763,17 +775,17 @@ class Series:
 
     def dropna(self) -> _PySeries:
         """删除缺失值所在行。"""
-        return Series(self._inner.dropna(), name=self.name)
+        return Series(self._inner.dropna(), name=self.name, dtype=self._dtype_str)
 
     def fillna(self, value) -> _PySeries:
         """用 value 填充缺失值。"""
-        return Series(self._inner.fillna(value), name=self.name)
+        return Series(self._inner.fillna(value), name=self.name, dtype=self._dtype_str)
 
     # ---------- 唯一值 ----------
 
     def unique(self) -> _PySeries:
         """返回去重后的 Series (保持首次出现顺序)。"""
-        return Series(self._inner.unique(), name=self.name)
+        return Series(self._inner.unique(), name=self.name, dtype=self._dtype_str)
 
     def nunique(self) -> int:
         """返回不同值的数量 (None 不计入)。"""
@@ -906,7 +918,7 @@ class Series:
     # ---------- 过滤 ----------
 
     def filter(self, mask: list) -> _PySeries:
-        return self._filter_mask(mask)
+        return self._filter_mask(mask, preserve_dtype=True)
 
     # ---------- 时序操作 (v1.0.0) ----------
 
@@ -1569,3 +1581,107 @@ class StringAccessor:
 
     def cat(self, sep: str = "") -> str:
         return sep.join(str(v) for v in self._s.values if v is not None)
+
+
+class CatAccessor:
+    """Series.cat Categorical 访问器 (对齐 pandas 的 .cat 访问器)。"""
+
+    def __init__(self, series: Series):
+        self._s = series
+
+    def _wrap_cat(self, inner_result) -> Series:
+        """将 Rust 端返回的 PySeries 包装为 Series，保持 category dtype。"""
+        s = Series.__new__(Series)
+        s._inner = inner_result
+        s._dtype_str = "category"
+        s._index = list(range(inner_result.size))
+        return s
+
+    @property
+    def categories(self) -> list:
+        """返回 categories 列表。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_categories"):
+            cats = inner.cat_categories()
+            if cats is not None:
+                return list(cats)
+        return sorted(set(v for v in self._s.values if v is not None))
+
+    @property
+    def codes(self) -> list:
+        """返回 codes 列表。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_codes"):
+            codes = inner.cat_codes()
+            if codes is not None:
+                return [c if c is not None else -1 for c in codes]
+        return []
+
+    @property
+    def ordered(self) -> bool:
+        """是否有序。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_ordered"):
+            return inner.cat_ordered() or False
+        return False
+
+    def add_categories(self, new_categories: list) -> Series:
+        """添加新的 categories。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_add_categories"):
+            result = inner.cat_add_categories(list(new_categories))
+            if result is not None:
+                return self._wrap_cat(result)
+        return self._s
+
+    def remove_unused_categories(self) -> Series:
+        """移除未使用的 categories。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_remove_unused_categories"):
+            result = inner.cat_remove_unused_categories()
+            if result is not None:
+                return self._wrap_cat(result)
+        return self._s
+
+    def rename_categories(self, new_categories: list) -> Series:
+        """重命名 categories。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_rename_categories"):
+            result = inner.cat_rename_categories(list(new_categories))
+            if result is not None:
+                return self._wrap_cat(result)
+        return self._s
+
+    def as_ordered(self) -> Series:
+        """设置为 ordered。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_as_ordered"):
+            result = inner.cat_as_ordered()
+            if result is not None:
+                return self._wrap_cat(result)
+        return self._s
+
+    def as_unordered(self) -> Series:
+        """设置为 unordered。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        inner = self._s._inner
+        if hasattr(inner, "cat_as_unordered"):
+            result = inner.cat_as_unordered()
+            if result is not None:
+                return self._wrap_cat(result)
+        return self._s

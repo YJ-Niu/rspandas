@@ -646,6 +646,67 @@ class DataFrame:
                 for c in pdf.columns}
         return cls(data)
 
+    @staticmethod
+    def read_json(
+        path: str,
+        orient: str = "records",
+        lines: bool = False,
+        encoding: str = "utf-8",
+    ) -> "DataFrame":
+        """从 JSON 文件读取 DataFrame (v1.2.0)。
+
+        :param path: JSON 文件路径
+        :param orient: JSON 格式方向
+        :param lines: 是否按行读取 JSON
+        :param encoding: 文件编码
+        """
+        from .io import read_json as _read_json
+        return _read_json(path, orient=orient, lines=lines, encoding=encoding)
+
+    @staticmethod
+    def read_excel(
+        path: str,
+        sheet_name=0,
+        header: int = 0,
+        **kwargs,
+    ) -> "DataFrame":
+        """从 Excel 文件读取 DataFrame (v1.2.0)。
+
+        :param path: Excel 文件路径
+        :param sheet_name: 工作表名称或索引
+        :param header: 用作列名的行号
+        """
+        from .io import read_excel as _read_excel
+        return _read_excel(path, sheet_name=sheet_name, header=header, **kwargs)
+
+    @staticmethod
+    def read_parquet(path: str, **kwargs) -> "DataFrame":
+        """从 Parquet 文件读取 DataFrame (v1.2.0)。
+
+        :param path: Parquet 文件路径
+        """
+        from .io import read_parquet as _read_parquet
+        return _read_parquet(path, **kwargs)
+
+    @staticmethod
+    def read_pickle(path: str, **kwargs) -> "DataFrame":
+        """从 Pickle 文件读取 DataFrame (v1.2.0)。
+
+        :param path: Pickle 文件路径
+        """
+        from .io import read_pickle as _read_pickle
+        return _read_pickle(path, **kwargs)
+
+    @staticmethod
+    def read_sql(query: str, conn, **kwargs) -> "DataFrame":
+        """从 SQL 数据库读取 DataFrame (v1.2.0)。
+
+        :param query: SQL 查询语句
+        :param conn: 数据库连接
+        """
+        from .io import read_sql as _read_sql
+        return _read_sql(query, conn, **kwargs)
+
     @classmethod
     def _from_inner(cls, inner) -> "DataFrame":
         """从 Rust DataFrame 直接构造 Python DataFrame。"""
@@ -812,6 +873,69 @@ class DataFrame:
             include_header,
         )
         return None
+
+    # ---------- IO 扩展 (v1.2.0) ----------
+
+    def to_json(
+        self,
+        path: Optional[str] = None,
+        orient: str = "records",
+        lines: bool = False,
+        force_ascii: bool = False,
+        indent: Optional[int] = None,
+    ) -> Optional[str]:
+        """将 DataFrame 写入 JSON 文件或返回 JSON 字符串。
+
+        :param path: 文件路径；为 None 时返回字符串
+        :param orient: JSON 格式方向 ('records' / 'columns' / 'index' / 'split' / 'values')
+        :param lines: 是否按行输出 JSON
+        :param force_ascii: 是否强制 ASCII 编码
+        :param indent: 缩进空格数
+        :return: 如果 path 为 None，返回 JSON 字符串
+        """
+        from .io import to_json as _to_json
+        return _to_json(self, path, orient=orient, lines=lines,
+                        force_ascii=force_ascii, indent=indent)
+
+    def to_excel(
+        self,
+        path: str,
+        sheet_name: str = "Sheet1",
+        index: bool = False,
+        header: bool = True,
+        **kwargs,
+    ) -> None:
+        """将 DataFrame 写入 Excel 文件。
+
+        :param path: 输出文件路径
+        :param sheet_name: 工作表名称
+        :param index: 是否写入行索引
+        :param header: 是否写入列名
+        """
+        from .io import to_excel as _to_excel
+        _to_excel(self, path, sheet_name=sheet_name, index=index, header=header, **kwargs)
+
+    def to_parquet(
+        self,
+        path: str,
+        compression: Optional[str] = "snappy",
+        **kwargs,
+    ) -> None:
+        """将 DataFrame 写入 Parquet 文件。
+
+        :param path: 输出文件路径
+        :param compression: 压缩算法 (snappy, gzip, brotli, zstd, none)
+        """
+        from .io import to_parquet as _to_parquet
+        _to_parquet(self, path, compression=compression, **kwargs)
+
+    def to_pickle(self, path: str, **kwargs) -> None:
+        """将 DataFrame 写入 Pickle 文件。
+
+        :param path: 输出文件路径
+        """
+        from .io import to_pickle as _to_pickle
+        _to_pickle(self, path, **kwargs)
 
     # ---------- 索引器辅助 ----------
 

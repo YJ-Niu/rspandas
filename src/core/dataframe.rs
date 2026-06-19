@@ -2,6 +2,9 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use rayon::prelude::*;
+use pyo3::types::PyAnyMethods;
+use pyo3::IntoPyObject;
 
 use super::series::{PySeries, Series};
 use super::dtype::DType;
@@ -89,7 +92,7 @@ impl DataFrame {
                 "mask length {} != nrows {}", mask.len(), self.nrows()
             )));
         }
-        let n_data: Vec<Series> = self.data.iter().map(|s| s.filter(mask)).collect();
+        let n_data: Vec<Series> = self.data.par_iter().map(|s| s.filter(mask)).collect();
         Ok(DataFrame { columns: self.columns.clone(), data: n_data })
     }
 
@@ -106,7 +109,7 @@ impl DataFrame {
                 if *is_null { keep[i] = false; }
             }
         }
-        let n_data: Vec<Series> = self.data.iter().map(|s| s.filter(&keep)).collect();
+        let n_data: Vec<Series> = self.data.par_iter().map(|s| s.filter(&keep)).collect();
         DataFrame { columns: self.columns.clone(), data: n_data }
     }
 
@@ -236,7 +239,6 @@ impl PyDataFrame {
 
     /// fillna: 接受 dict {col_name: value}，只填充指定列
     fn fillna(&self, fill_dict: &Bound<'_, PyDict>) -> PyResult<Self> {
-        use pyo3::types::PyAnyMethods;
         let mut converted = std::collections::HashMap::new();
         for (key, val) in fill_dict.iter() {
             let col: String = key.extract()?;
@@ -262,8 +264,6 @@ impl PyDataFrame {
 
     /// 逐行构造 dict 列表 (用于 Python 端显示)
     fn to_rows<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
-        use pyo3::IntoPyObject;
-        use pyo3::types::PyAnyMethods;
         let rows = PyList::empty(py);
         let nrows = self.inner.nrows();
         for i in 0..nrows {
@@ -284,6 +284,15 @@ impl PyDataFrame {
                     },
                     super::dtype::ColumnData::String(v) => match v.get(i) {
                         Some(Some(s)) => s.clone().into_pyobject(py).unwrap().into_any().unbind(),
+                        _ => py.None(),
+                    },
+                    super::dtype::ColumnData::Categorical(c) => match c.codes.get(i) {
+                        Some(Some(code_idx)) => {
+                            let cat_str = c.categories.get(*code_idx as usize)
+                                .cloned()
+                                .unwrap_or_else(|| "NaN".to_string());
+                            cat_str.into_pyobject(py).unwrap().into_any().unbind()
+                        }
                         _ => py.None(),
                     },
                 };
