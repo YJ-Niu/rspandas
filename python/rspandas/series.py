@@ -1869,6 +1869,233 @@ class StringAccessor:
     def cat(self, sep: str = "") -> str:
         return sep.join(str(v) for v in self._s.values if v is not None)
 
+    def find(self, sub, start=0, end=None) -> _PySeries:
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(None)
+            else:
+                idx = str(v).find(sub, start, end)
+                out.append(idx if idx != -1 else -1)
+        return self._wrap(out)
+
+    def rfind(self, sub, start=0, end=None) -> _PySeries:
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(None)
+            else:
+                idx = str(v).rfind(sub, start, end)
+                out.append(idx if idx != -1 else -1)
+        return self._wrap(out)
+
+    def index(self, sub, start=0, end=None) -> _PySeries:
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(None)
+            else:
+                try:
+                    out.append(str(v).index(sub, start, end))
+                except ValueError:
+                    out.append(-1)
+        return self._wrap(out)
+
+    def rindex(self, sub, start=0, end=None) -> _PySeries:
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(None)
+            else:
+                try:
+                    out.append(str(v).rindex(sub, start, end))
+                except ValueError:
+                    out.append(-1)
+        return self._wrap(out)
+
+    def match(self, pat, case=True, flags=0, na=None) -> _PySeries:
+        import re
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(na)
+            else:
+                out.append(bool(re.match(pat, str(v), flags=flags if case else flags | re.IGNORECASE)))
+        return self._wrap(out)
+
+    def fullmatch(self, pat, case=True, flags=0, na=None) -> _PySeries:
+        import re
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(na)
+            else:
+                out.append(bool(re.fullmatch(pat, str(v), flags=flags if case else flags | re.IGNORECASE)))
+        return self._wrap(out)
+
+    def extract(self, pat, flags=0, expand=True):
+        import re
+        results = []
+        for v in self._s.values:
+            if v is None:
+                results.append(None)
+            else:
+                m = re.search(pat, str(v), flags)
+                if m:
+                    if expand and m.groups():
+                        results.append(list(m.groups()))
+                    else:
+                        results.append(m.group(0))
+                else:
+                    results.append(None)
+        return results
+
+    def extractall(self, pat, flags=0):
+        import re
+        results = []
+        for v in self._s.values:
+            if v is None:
+                results.append([])
+            else:
+                matches = re.findall(pat, str(v), flags)
+                results.append(matches)
+        return results
+
+    def count(self, pat, flags=0) -> _PySeries:
+        import re
+        return self._wrap([
+            len(re.findall(pat, str(v), flags)) if v is not None else None
+            for v in self._s.values
+        ])
+
+    def swapcase(self) -> _PySeries:
+        return self._wrap([self._ensure_str(v).swapcase() if v is not None else None for v in self._s.values])
+
+    def casefold(self) -> _PySeries:
+        return self._wrap([self._ensure_str(v).casefold() if v is not None else None for v in self._s.values])
+
+    def isalnum(self) -> _PySeries:
+        return self._wrap([str(v).isalnum() if v is not None else None for v in self._s.values])
+
+    def isalpha(self) -> _PySeries:
+        return self._wrap([str(v).isalpha() if v is not None else None for v in self._s.values])
+
+    def isdigit(self) -> _PySeries:
+        return self._wrap([str(v).isdigit() if v is not None else None for v in self._s.values])
+
+    def isspace(self) -> _PySeries:
+        return self._wrap([str(v).isspace() if v is not None else None for v in self._s.values])
+
+    def islower(self) -> _PySeries:
+        return self._wrap([str(v).islower() if v is not None else None for v in self._s.values])
+
+    def isupper(self) -> _PySeries:
+        return self._wrap([str(v).isupper() if v is not None else None for v in self._s.values])
+
+    def istitle(self) -> _PySeries:
+        return self._wrap([str(v).istitle() if v is not None else None for v in self._s.values])
+
+    def zfill(self, width) -> _PySeries:
+        return self._wrap([str(v).zfill(width) if v is not None else None for v in self._s.values])
+
+    def wrap(self, width, **kwargs) -> _PySeries:
+        import textwrap
+        return self._wrap([textwrap.fill(str(v), width, **kwargs) if v is not None else None for v in self._s.values])
+
+    def pad(self, width, side="left", fillchar=" ") -> _PySeries:
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(None)
+            elif side == "left":
+                out.append(str(v).rjust(width, fillchar))
+            elif side == "right":
+                out.append(str(v).ljust(width, fillchar))
+            elif side == "both":
+                out.append(str(v).center(width, fillchar))
+            else:
+                raise ValueError(f"side must be 'left', 'right', or 'both', got {side!r}")
+        return self._wrap(out)
+
+    def center(self, width, fillchar=" ") -> _PySeries:
+        return self._wrap([str(v).center(width, fillchar) if v is not None else None for v in self._s.values])
+
+    def ljust(self, width, fillchar=" ") -> _PySeries:
+        return self._wrap([str(v).ljust(width, fillchar) if v is not None else None for v in self._s.values])
+
+    def rjust(self, width, fillchar=" ") -> _PySeries:
+        return self._wrap([str(v).rjust(width, fillchar) if v is not None else None for v in self._s.values])
+
+    def partition(self, sep=" ") -> list:
+        return [
+            list(str(v).partition(sep)) if v is not None else None
+            for v in self._s.values
+        ]
+
+    def rpartition(self, sep=" ") -> list:
+        return [
+            list(str(v).rpartition(sep)) if v is not None else None
+            for v in self._s.values
+        ]
+
+    def rsplit(self, pat=None, n=-1) -> list:
+        return [
+            str(v).rsplit(pat, n) if v is not None else None
+            for v in self._s.values
+        ]
+
+    def slice_replace(self, start=None, stop=None, repl=None) -> _PySeries:
+        out = []
+        for v in self._s.values:
+            if v is None:
+                out.append(None)
+            else:
+                s = str(v)
+                if repl is None:
+                    repl = ""
+                result = s[:start] + repl + s[stop:]
+                out.append(result)
+        return self._wrap(out)
+
+    def get(self, i) -> _PySeries:
+        return self._wrap([
+            str(v)[i] if v is not None and 0 <= i < len(str(v)) else None
+            for v in self._s.values
+        ])
+
+    def get_dummies(self, sep="|"):
+        """返回 one-hot 编码的 DataFrame。"""
+        from .dataframe import DataFrame
+        # 收集所有唯一值
+        all_values = set()
+        for v in self._s.values:
+            if v is not None:
+                for part in str(v).split(sep):
+                    all_values.add(part)
+        cols = sorted(all_values)
+        data = {c: [] for c in cols}
+        for v in self._s.values:
+            if v is None:
+                for c in cols:
+                    data[c].append(0)
+            else:
+                parts = set(str(v).split(sep))
+                for c in cols:
+                    data[c].append(1 if c in parts else 0)
+        return DataFrame(data)
+
+    def encode(self, encoding, errors="strict") -> _PySeries:
+        return self._wrap([
+            str(v).encode(encoding, errors) if v is not None else None
+            for v in self._s.values
+        ])
+
+    def decode(self, encoding, errors="strict") -> _PySeries:
+        return self._wrap([
+            v.decode(encoding, errors) if isinstance(v, bytes) else (str(v) if v is not None else None)
+            for v in self._s.values
+        ])
+
 
 class CatAccessor:
     """Series.cat Categorical 访问器 (对齐 pandas 的 .cat 访问器)。"""

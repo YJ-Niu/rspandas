@@ -2056,6 +2056,334 @@ class DataFrame:
             new_data = {c: list(self._inner.get_column(c).values) for c in cols}
             return DataFrame(new_data)
 
+    # ---------- v2.0.0: asfreq / tz_localize / tz_convert / between_time / at_time ----------
+
+    def asfreq(self, freq, method=None, normalize: bool = False) -> "DataFrame":
+        """将时间序列转换为指定频率。
+
+        :param freq: 频率字符串 ('D'/'H'/'M'/'W'/'Y' 等)
+        :param method: 填充方法 ('ffill'/'bfill'/None)
+        :param normalize: 是否将时间归一化到午夜
+        :return: DataFrame
+        """
+        from datetime import datetime, timedelta
+
+        # 解析 freq
+        freq = freq.strip().upper()
+        unit_map = {
+            "D": ("days", 1), "H": ("hours", 1), "h": ("hours", 1),
+            "M": ("minutes", 0), "T": ("minutes", 1), "min": ("minutes", 1),
+            "S": ("seconds", 1), "W": ("weeks", 1),
+        }
+
+        if freq not in unit_map:
+            raise ValueError(f"unsupported freq: {freq!r}")
+
+        unit_name, _ = unit_map[freq]
+
+        # 尝试解析 index 为 datetime
+        idx_vals = self._index
+        times = []
+        for v in idx_vals:
+            if isinstance(v, datetime):
+                times.append(v)
+            elif isinstance(v, str):
+                try:
+                    times.append(datetime.fromisoformat(v))
+                except (ValueError, TypeError):
+                    raise TypeError(f"asfreq requires a DatetimeIndex, got {type(v).__name__}")
+            else:
+                raise TypeError(f"asfreq requires a DatetimeIndex, got {type(v).__name__}")
+
+        if not times:
+            return DataFrame({})
+
+        # 生成目标频率的时间范围
+        start = min(times)
+        end = max(times)
+
+        if normalize:
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # 生成目标索引
+        target_idx = []
+        current = start
+        while current <= end:
+            target_idx.append(current)
+            if unit_name == "days":
+                current = current + timedelta(days=1)
+            elif unit_name == "weeks":
+                current = current + timedelta(weeks=1)
+            elif unit_name == "hours":
+                current = current + timedelta(hours=1)
+            elif unit_name == "minutes":
+                current = current + timedelta(minutes=1)
+            elif unit_name == "seconds":
+                current = current + timedelta(seconds=1)
+            else:
+                current = current + timedelta(days=1)
+
+        # 对每一列，按目标索引重采样
+        new_data: Dict[str, list] = {}
+        for c in self._columns:
+            col_vals = list(self._inner.get_column(c).values)
+            col_data = []
+            for t_target in target_idx:
+                # 找到最接近的时间点
+                matched_val = None
+                for i, t_orig in enumerate(times):
+                    if t_orig == t_target:
+                        matched_val = col_vals[i]
+                        break
+                    elif t_orig <= t_target:
+                        if method == "ffill":
+                            matched_val = col_vals[i]
+                        elif method is None:
+                            matched_val = col_vals[i]
+                    elif t_orig > t_target and method == "bfill":
+                        if matched_val is None:
+                            matched_val = col_vals[i]
+                        break
+
+                if matched_val is None and method is None:
+                    matched_val = None
+
+                col_data.append(matched_val)
+
+            new_data[c] = col_data
+
+        df = DataFrame(new_data)
+        df._index = target_idx
+        return df
+
+    def tz_localize(self, tz, axis: int = 0, level=None, copy: bool = True) -> "DataFrame":
+        """将 tz-naive 的 datetime 索引本地化为时区感知。
+
+        :param tz: 时区字符串 (如 'Asia/Shanghai', 'UTC', 'US/Eastern')
+        :param axis: 0=行索引, 1=列索引
+        :param level: 多级索引层级
+        :param copy: 是否返回副本
+        :return: DataFrame
+        """
+        from datetime import datetime
+
+        if axis == 0:
+            # 尝试解析时区
+            tzinfo = self._parse_timezone(tz)
+
+            # 检查索引是否已经是时区感知的
+            if self._index and any(isinstance(v, datetime) and v.tzinfo is not None for v in self._index):
+                raise TypeError("Index is already tz-aware. Use tz_convert instead.")
+
+            # 本地化 index
+            new_index = []
+            for v in self._index:
+                if isinstance(v, datetime):
+                    new_index.append(v.replace(tzinfo=tzinfo))
+                elif isinstance(v, str):
+                    try:
+                        dt = datetime.fromisoformat(v)
+                        new_index.append(dt.replace(tzinfo=tzinfo))
+                    except (ValueError, TypeError):
+                        new_index.append(v)
+                else:
+                    new_index.append(v)
+
+            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            df = DataFrame(new_data)
+            df._index = new_index
+            return df
+        else:
+            # axis == 1: 列索引 (不常用)
+            return self.copy() if copy else self
+
+    def tz_convert(self, tz, axis: int = 0, level=None, copy: bool = True) -> "DataFrame":
+        """将 tz-aware 的 datetime 索引转换为另一个时区。
+
+        :param tz: 目标时区字符串 (如 'Asia/Shanghai', 'UTC', 'US/Eastern')
+        :param axis: 0=行索引, 1=列索引
+        :param level: 多级索引层级
+        :param copy: 是否返回副本
+        :return: DataFrame
+        """
+        from datetime import datetime
+
+        if axis == 0:
+            # 检查索引是否是时区感知的
+            has_tz = any(isinstance(v, datetime) and v.tzinfo is not None for v in self._index)
+            if not has_tz:
+                raise TypeError("Index is not tz-aware. Use tz_localize first.")
+
+            tzinfo = self._parse_timezone(tz)
+
+            # 转换时区
+            new_index = []
+            for v in self._index:
+                if isinstance(v, datetime) and v.tzinfo is not None:
+                    new_index.append(v.astimezone(tzinfo))
+                else:
+                    new_index.append(v)
+
+            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            df = DataFrame(new_data)
+            df._index = new_index
+            return df
+        else:
+            return self.copy() if copy else self
+
+    @staticmethod
+    def _parse_timezone(tz: str):
+        """解析时区字符串为 tzinfo 对象。"""
+        from datetime import timezone, timedelta as td
+
+        if tz is None:
+            return None
+
+        # 尝试固定偏移量格式: +08:00, -05:00, UTC+8 等
+        tz = str(tz).strip()
+
+        if tz.upper() == "UTC":
+            return timezone.utc
+
+        # 尝试 UTC+X 或 UTC-X 格式
+        if tz.upper().startswith("UTC"):
+            offset_str = tz[3:].strip()
+            try:
+                hours = float(offset_str)
+                return timezone(td(hours=hours))
+            except ValueError:
+                pass
+
+        # 尝试 +HH:MM 或 -HH:MM 格式
+        if tz.startswith("+") or tz.startswith("-"):
+            try:
+                # Parse +08:00 format
+                sign = 1 if tz.startswith("+") else -1
+                parts = tz[1:].split(":")
+                hours = int(parts[0])
+                minutes = int(parts[1]) if len(parts) > 1 else 0
+                return timezone(td(hours=sign * hours, minutes=sign * minutes))
+            except (ValueError, IndexError):
+                pass
+
+        # 尝试使用 pytz (如果可用)
+        try:
+            import pytz
+            return pytz.timezone(tz)
+        except ImportError:
+            pass
+
+        # 尝试使用 zoneinfo (Python 3.9+)
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(tz)
+        except (ImportError, Exception):
+            pass
+
+        raise ValueError(f"Unable to parse timezone: {tz!r}")
+
+    def between_time(
+        self,
+        start_time,
+        end_time,
+        include_start: bool = True,
+        include_end: bool = True,
+        axis: int = 0,
+    ) -> "DataFrame":
+        """选择一天中特定时间段内的值。
+
+        :param start_time: 起始时间 (datetime.time 或 str 如 '09:00:00')
+        :param end_time: 结束时间
+        :param include_start: 是否包含起始时间
+        :param include_end: 是否包含结束时间
+        :param axis: 0=行, 1=列
+        :return: DataFrame
+        """
+        from datetime import datetime, time
+
+        # 解析 start_time / end_time
+        if isinstance(start_time, str):
+            start_time = time.fromisoformat(start_time)
+        if isinstance(end_time, str):
+            end_time = time.fromisoformat(end_time)
+
+        if axis == 0:
+            indices = []
+            for i in range(self._nrows):
+                idx_val = self._index[i]
+
+                # 提取时间部分
+                if isinstance(idx_val, datetime):
+                    t = idx_val.time()
+                elif isinstance(idx_val, str):
+                    try:
+                        t = datetime.fromisoformat(idx_val).time()
+                    except (ValueError, TypeError):
+                        continue
+                else:
+                    continue
+
+                # 判断是否在时间范围内
+                if include_start and include_end:
+                    in_range = start_time <= t <= end_time
+                elif include_start:
+                    in_range = start_time <= t < end_time
+                elif include_end:
+                    in_range = start_time < t <= end_time
+                else:
+                    in_range = start_time < t < end_time
+
+                if in_range:
+                    indices.append(i)
+
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in indices]
+                for c in self._columns
+            }
+            return DataFrame(new_data)
+        else:
+            # axis == 1: 不常用
+            return self.copy()
+
+    def at_time(self, time, axis: int = 0) -> "DataFrame":
+        """选择一天中特定时间点的值。
+
+        :param time: 目标时间 (datetime.time 或 str 如 '09:00:00')
+        :param axis: 0=行, 1=列
+        :return: DataFrame
+        """
+        from datetime import datetime, time as dt_time
+
+        if isinstance(time, str):
+            time = dt_time.fromisoformat(time)
+
+        if axis == 0:
+            indices = []
+            for i in range(self._nrows):
+                idx_val = self._index[i]
+
+                if isinstance(idx_val, datetime):
+                    t = idx_val.time()
+                elif isinstance(idx_val, str):
+                    try:
+                        t = datetime.fromisoformat(idx_val).time()
+                    except (ValueError, TypeError):
+                        continue
+                else:
+                    continue
+
+                if t == time:
+                    indices.append(i)
+
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in indices]
+                for c in self._columns
+            }
+            return DataFrame(new_data)
+        else:
+            return self.copy()
+
 
 class DataFrameGroupBy:
     """DataFrame 分组结果 (极简版)。"""

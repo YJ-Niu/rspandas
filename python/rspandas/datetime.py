@@ -216,6 +216,70 @@ class DatetimeAccessor:
         """格式化为字符串。"""
         return self._wrap_series([v.strftime(fmt) if v is not None else None for v in self._s.values])
 
+    @property
+    def microsecond(self) -> Series:
+        return self._wrap_series([v.microsecond if v is not None else None for v in self._s.values])
+
+    @property
+    def dayofyear(self) -> Series:
+        return self._wrap_series([
+            v.timetuple().tm_yday if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def quarter(self) -> Series:
+        return self._wrap_series([
+            (v.month - 1) // 3 + 1 if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def is_month_start(self) -> Series:
+        return self._wrap_series([v.day == 1 if v is not None else None for v in self._s.values])
+
+    @property
+    def is_month_end(self) -> Series:
+        import calendar
+        return self._wrap_series([
+            v.day == calendar.monthrange(v.year, v.month)[1] if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def is_year_start(self) -> Series:
+        return self._wrap_series([
+            (v.month == 1 and v.day == 1) if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def is_year_end(self) -> Series:
+        return self._wrap_series([
+            (v.month == 12 and v.day == 31) if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def is_leap_year(self) -> Series:
+        import calendar
+        return self._wrap_series([
+            calendar.isleap(v.year) if v is not None else None
+            for v in self._s.values
+        ])
+
+    @property
+    def days_in_month(self) -> Series:
+        import calendar
+        return self._wrap_series([
+            calendar.monthrange(v.year, v.month)[1] if v is not None else None
+            for v in self._s.values
+        ])
+
+    def to_pydatetime(self) -> list:
+        """返回 Python datetime 对象列表。"""
+        return list(self._s.values)
+
 
 # ---------------------------------------------------------------------------
 # 公共 API
