@@ -646,6 +646,100 @@ class DataFrame:
                 for c in pdf.columns}
         return cls(data)
 
+    def to_numpy(self):
+        """转换为 numpy 二维数组。"""
+        try:
+            import numpy as np  # type: ignore
+        except ImportError:
+            raise ImportError("numpy is required for to_numpy()")
+        cols = list(self._columns)
+        data = [[self._inner.get_column(c).values[i] for c in cols] for i in range(self._nrows)]
+        return np.array(data)
+
+    @classmethod
+    def from_numpy(cls, arr, columns=None, index=None, dtype=None) -> "DataFrame":
+        """从 numpy 二维数组构造 DataFrame。
+
+        Parameters
+        ----------
+        arr : numpy.ndarray
+            二维输入数组。
+        columns : list[str], optional
+            列名。
+        index : list, optional
+            行索引。
+        dtype : str, optional
+            目标类型。
+
+        Returns
+        -------
+        DataFrame
+        """
+        try:
+            import numpy as np  # type: ignore
+        except ImportError:
+            raise ImportError("numpy is required for from_numpy()")
+        if not isinstance(arr, np.ndarray):
+            raise TypeError("expected numpy.ndarray")
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        data = arr.tolist()
+        if columns is None:
+            columns = [f"col{i}" for i in range(arr.shape[1])]
+        return cls(data, columns=columns, index=index, dtype=dtype)
+
+    def to_arrow(self):
+        """转换为 PyArrow Table。
+
+        Returns
+        -------
+        pyarrow.Table
+        """
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise ImportError("pyarrow is required for to_arrow()")
+        arrays = []
+        for c in self._columns:
+            col_data = list(self._inner.get_column(c).values)
+            non_null = [v for v in col_data if v is not None]
+            if not non_null:
+                arrays.append(pa.array(col_data, type=pa.string()))
+            elif all(isinstance(v, bool) for v in non_null):
+                arrays.append(pa.array(col_data, type=pa.bool_()))
+            elif all(isinstance(v, int) for v in non_null):
+                arrays.append(pa.array(col_data, type=pa.int64()))
+            elif all(isinstance(v, float) for v in non_null):
+                arrays.append(pa.array(col_data, type=pa.float64()))
+            else:
+                arrays.append(pa.array([str(v) if v is not None else None for v in col_data]))
+        return pa.table(dict(zip(self._columns, arrays)))
+
+    @classmethod
+    def from_arrow(cls, table) -> "DataFrame":
+        """从 PyArrow Table 构造 DataFrame。
+
+        Parameters
+        ----------
+        table : pyarrow.Table
+            PyArrow 表。
+
+        Returns
+        -------
+        DataFrame
+        """
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise ImportError("pyarrow is required for from_arrow()")
+        if not isinstance(table, pa.Table):
+            raise TypeError("expected pyarrow.Table")
+        data = {}
+        for col_name in table.column_names:
+            col = table.column(col_name)
+            data[col_name] = col.to_pylist()
+        return cls(data)
+
     @staticmethod
     def read_json(
         path: str,
@@ -687,6 +781,15 @@ class DataFrame:
         """
         from .io import read_parquet as _read_parquet
         return _read_parquet(path, **kwargs)
+
+    @staticmethod
+    def read_feather(path: str, **kwargs) -> "DataFrame":
+        """从 Feather 文件读取 DataFrame (v1.5.0)。
+
+        :param path: Feather 文件路径
+        """
+        from .io import read_feather as _read_feather
+        return _read_feather(path, **kwargs)
 
     @staticmethod
     def read_pickle(path: str, **kwargs) -> "DataFrame":
@@ -928,6 +1031,20 @@ class DataFrame:
         """
         from .io import to_parquet as _to_parquet
         _to_parquet(self, path, compression=compression, **kwargs)
+
+    def to_feather(
+        self,
+        path: str,
+        compression: Optional[str] = "lz4",
+        **kwargs,
+    ) -> None:
+        """将 DataFrame 写入 Feather 文件 (v1.5.0)。
+
+        :param path: 输出文件路径
+        :param compression: 压缩算法 (lz4, zstd, uncompressed)
+        """
+        from .io import to_feather as _to_feather
+        _to_feather(self, path, compression=compression, **kwargs)
 
     def to_pickle(self, path: str, **kwargs) -> None:
         """将 DataFrame 写入 Pickle 文件。
@@ -1428,6 +1545,516 @@ class DataFrame:
                     values="value",
                 )
         raise NotImplementedError("unstack requires 'variable' and 'value' columns")
+
+    # ---------- v2.0.0: compare / equals / copy ----------
+
+    def compare(
+        self,
+        other: "DataFrame",
+        align_axis: int = 1,
+        keep_shape: bool = False,
+        keep_equal: bool = False,
+        result_names: tuple = ("self", "other"),
+    ) -> "DataFrame":
+        """与另一个 DataFrame 逐元素比较，返回差异。
+
+        :param other: 要比较的 DataFrame
+        :param align_axis: 1=列对齐, 0=行对齐
+        :param keep_shape: 是否保持原始形状（用 None 填充相同位置）
+        :param keep_equal: 是否保留相同值
+        :param result_names: 差异列的多级列名
+        :return: 差异 DataFrame
+        """
+        if self.shape != other.shape:
+            raise ValueError(
+                f"Can only compare identically-labeled DataFrame objects, "
+                f"shapes: {self.shape} vs {other.shape}"
+            )
+
+        left_name, right_name = result_names
+        n = self._nrows
+        cols = self._columns
+        other_cols = other._columns
+
+        if cols != other_cols:
+            raise ValueError(
+                "Can only compare identically-labeled DataFrame objects"
+            )
+
+        diff_data: Dict[str, list] = {}
+        for c in cols:
+            self_vals = list(self._inner.get_column(c).values)
+            other_vals = list(other._inner.get_column(c).values)
+            for i in range(n):
+                sv = self_vals[i]
+                ov = other_vals[i]
+                if keep_equal or sv != ov:
+                    diff_data.setdefault((c, left_name), []).append(sv)
+                    diff_data.setdefault((c, right_name), []).append(ov)
+                elif keep_shape:
+                    diff_data.setdefault((c, left_name), []).append(sv)
+                    diff_data.setdefault((c, right_name), []).append(ov)
+
+        if not diff_data:
+            return DataFrame({})
+
+        df = DataFrame({str(k): v for k, v in diff_data.items()})
+        return df
+
+    def equals(self, other: "DataFrame") -> bool:
+        """检查两个 DataFrame 是否完全相等。
+
+        :param other: 另一个 DataFrame
+        :return: bool
+        """
+        if not isinstance(other, DataFrame):
+            return False
+        if self.shape != other.shape:
+            return False
+        if self._columns != other._columns:
+            return False
+        for c in self._columns:
+            self_vals = list(self._inner.get_column(c).values)
+            other_vals = list(other._inner.get_column(c).values)
+            if self_vals != other_vals:
+                return False
+        return True
+
+    def copy(self, deep: bool = True) -> "DataFrame":
+        """创建 DataFrame 的副本。
+
+        :param deep: 是否深拷贝 (默认 True)
+        :return: DataFrame
+        """
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        return DataFrame(new_data)
+
+    # ---------- v2.0.0: pop / insert ----------
+
+    def pop(self, item: str) -> "Series":
+        """删除一列并返回它。
+
+        :param item: 列名
+        :return: Series
+        """
+        if item not in self._columns:
+            raise KeyError(f"column not found: {item}")
+        ser = self._get_column_as_series(item)
+        new_cols = [c for c in self._columns if c != item]
+        new_data = {c: list(self._inner.get_column(c).values) for c in new_cols}
+        self._reload(new_data)
+        self._columns = new_cols
+        return ser
+
+    def insert(self, loc: int, column: str, value) -> None:
+        """在指定位置插入一列。
+
+        :param loc: 插入位置 (0-based)
+        :param column: 列名
+        :param value: 列数据 (list / Series / 标量)
+        """
+        if column in self._columns:
+            raise ValueError(f"cannot insert {column}, already exists")
+
+        if isinstance(value, Series):
+            vals = list(value.values)
+        elif isinstance(value, _PySeries):
+            vals = list(value.values)
+        else:
+            try:
+                vals = list(value)
+            except TypeError:
+                vals = [value] * self._nrows
+
+        if len(vals) != self._nrows:
+            raise ValueError(
+                f"length of values {len(vals)} != length of DataFrame {self._nrows}"
+            )
+
+        new_cols = list(self._columns)
+        new_cols.insert(loc, column)
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        new_data[column] = vals
+        self._reload(new_data)
+        self._columns = new_cols
+
+    # ---------- v2.0.0: filter / select_dtypes ----------
+
+    def filter(
+        self,
+        items=None,
+        like: Optional[str] = None,
+        regex: Optional[str] = None,
+        axis: int = 1,
+    ) -> "DataFrame":
+        """根据列名过滤 DataFrame。
+
+        :param items: 要保留的列名列表
+        :param like: 保留包含此字符串的列
+        :param regex: 保留匹配正则表达式的列
+        :param axis: 1=列, 0=行
+        :return: DataFrame
+        """
+        import re
+
+        if axis == 0:
+            # 按行索引过滤
+            if items is not None:
+                indices = [i for i, idx in enumerate(self._index) if idx in items]
+            elif like is not None:
+                indices = [i for i, idx in enumerate(self._index) if like in str(idx)]
+            elif regex is not None:
+                pat = re.compile(regex)
+                indices = [i for i, idx in enumerate(self._index) if pat.search(str(idx))]
+            else:
+                return self.copy()
+            new_data = {c: [self._inner.get_column(c).values[i] for i in indices] for c in self._columns}
+            return DataFrame(new_data)
+        else:
+            if items is not None:
+                cols = [c for c in self._columns if c in items]
+            elif like is not None:
+                cols = [c for c in self._columns if like in c]
+            elif regex is not None:
+                pat = re.compile(regex)
+                cols = [c for c in self._columns if pat.search(c)]
+            else:
+                return self.copy()
+            new_data = {c: list(self._inner.get_column(c).values) for c in cols}
+            return DataFrame(new_data)
+
+    def select_dtypes(self, include=None, exclude=None) -> "DataFrame":
+        """根据 dtype 选择列。
+
+        :param include: 要包含的类型 (str / list[str] / type)
+        :param exclude: 要排除的类型 (str / list[str] / type)
+        :return: DataFrame
+        """
+        # 类型映射
+        type_map = {
+            "int": "int64",
+            "int64": "int64",
+            "float": "float64",
+            "float64": "float64",
+            "bool": "bool",
+            "object": "object",
+            "string": "object",
+            "str": "object",
+            "number": ("int64", "float64"),
+        }
+
+        def _to_dtype_set(types):
+            if types is None:
+                return set()
+            if isinstance(types, str):
+                types = [types]
+            result = set()
+            for t in types:
+                if isinstance(t, type):
+                    if t in (int,):
+                        result.add("int64")
+                    elif t in (float,):
+                        result.add("float64")
+                    elif t in (bool,):
+                        result.add("bool")
+                    elif t in (str,):
+                        result.add("object")
+                elif t in type_map:
+                    mapped = type_map[t]
+                    if isinstance(mapped, tuple):
+                        result.update(mapped)
+                    else:
+                        result.add(mapped)
+                else:
+                    result.add(t)
+            return result
+
+        include_set = _to_dtype_set(include)
+        exclude_set = _to_dtype_set(exclude)
+
+        cols = []
+        for c in self._columns:
+            dt = self._inner.get_column(c).dtype
+            if include_set and dt not in include_set:
+                continue
+            if exclude_set and dt in exclude_set:
+                continue
+            cols.append(c)
+
+        new_data = {c: list(self._inner.get_column(c).values) for c in cols}
+        return DataFrame(new_data)
+
+    # ---------- v2.0.0: swapaxes / take / xs / get / lookup ----------
+
+    def swapaxes(self, axis1, axis2, copy: bool = True) -> "DataFrame":
+        """交换两个轴。
+
+        :param axis1: 第一个轴 (0 或 1)
+        :param axis2: 第二个轴 (0 或 1)
+        :param copy: 是否返回副本
+        :return: DataFrame
+        """
+        if {axis1, axis2} != {0, 1}:
+            raise ValueError("axis must be 0 and 1")
+        return self.transpose() if copy else self
+
+    def transpose(self) -> "DataFrame":
+        """转置 DataFrame (v0.2.0)。"""
+        n = self._nrows
+        new_data: Dict[str, list] = {}
+        # 每行变成一列
+        for i in range(n):
+            new_data[str(i)] = [
+                self._inner.get_column(c).values[i]
+                for c in self._columns
+            ]
+        return DataFrame(new_data)
+
+    @property
+    def T(self) -> "DataFrame":
+        return self.transpose()
+
+    def take(self, indices, axis: int = 0) -> "DataFrame":
+        """返回指定索引位置的元素。
+
+        :param indices: 索引列表
+        :param axis: 0=行, 1=列
+        :return: DataFrame
+        """
+        if axis == 0:
+            if isinstance(indices, int):
+                indices = [indices]
+            self._validate_indices(indices)
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in indices]
+                for c in self._columns
+            }
+            return DataFrame(new_data)
+        else:
+            if isinstance(indices, int):
+                indices = [indices]
+            cols = [self._columns[i] for i in indices]
+            new_data = {c: list(self._inner.get_column(c).values) for c in cols}
+            return DataFrame(new_data)
+
+    def _validate_indices(self, indices):
+        n = self._nrows
+        for i in indices:
+            if i < 0:
+                i += n
+            if i < 0 or i >= n:
+                raise IndexError(f"index {i} out of range for axis 0 with size {n}")
+
+    def xs(self, key, axis: int = 0, level=None, drop_level: bool = True) -> "Series":
+        """返回跨截面 (cross-section)。
+
+        :param key: 标签
+        :param axis: 0=行, 1=列
+        :param level: 多级索引层级
+        :param drop_level: 是否删除层级
+        :return: Series 或 DataFrame
+        """
+        if axis == 0:
+            if isinstance(key, int):
+                if key < 0:
+                    key += self._nrows
+                row = {c: self._inner.get_column(c).values[key] for c in self._columns}
+                return Series(row, name=str(key))
+            else:
+                # 按标签查找
+                try:
+                    idx = self._index.index(key)
+                except ValueError:
+                    raise KeyError(f"label {key!r} not found in index")
+                row = {c: self._inner.get_column(c).values[idx] for c in self._columns}
+                return Series(row, name=str(key))
+        else:
+            # axis == 1: 按列名取
+            if key in self._columns:
+                return self._get_column_as_series(key)
+            raise KeyError(f"column {key!r} not found")
+
+    def get(self, key, default=None):
+        """获取列，如果不存在则返回默认值。
+
+        :param key: 列名
+        :param default: 默认值
+        :return: Series 或 default
+        """
+        if key in self._columns:
+            return self._get_column_as_series(key)
+        return default
+
+    def lookup(self, row_labels, col_labels) -> list:
+        """基于标签的查找 (已弃用于 pandas 2.1+)。
+
+        :param row_labels: 行标签列表
+        :param col_labels: 列标签列表
+        :return: 值列表
+        """
+        result = []
+        for rl, cl in zip(row_labels, col_labels):
+            try:
+                idx = self._index.index(rl)
+            except ValueError:
+                raise KeyError(f"row label {rl!r} not found")
+            if cl not in self._columns:
+                raise KeyError(f"column {cl!r} not found")
+            result.append(self._inner.get_column(cl).values[idx])
+        return result
+
+    # ---------- v2.0.0: first / last / truncate ----------
+
+    def first(self, offset) -> "DataFrame":
+        """根据日期偏移选择前几段时间的数据。
+
+        :param offset: 日期偏移字符串 (如 '5D')
+        :return: DataFrame
+        """
+        return self._time_slice(offset, mode="first")
+
+    def last(self, offset) -> "DataFrame":
+        """根据日期偏移选择最后几段时间的数据。
+
+        :param offset: 日期偏移字符串 (如 '5D')
+        :return: DataFrame
+        """
+        return self._time_slice(offset, mode="last")
+
+    def _time_slice(self, offset: str, mode: str) -> "DataFrame":
+        """时间切片辅助方法。"""
+        from datetime import datetime, timedelta
+
+        # 解析 offset
+        offset = offset.strip().upper()
+        num = int(offset[:-1])
+        unit = offset[-1]
+        unit_map = {
+            "D": "days", "H": "hours", "M": "minutes", "S": "seconds",
+            "W": "weeks",
+        }
+
+        if unit not in unit_map:
+            raise ValueError(f"unsupported offset: {offset}")
+
+        # 尝试找到第一个日期时间索引
+        idx_vals = self._index
+        times = []
+        for v in idx_vals:
+            if isinstance(v, (datetime, str)):
+                try:
+                    if isinstance(v, str):
+                        v = datetime.fromisoformat(v)
+                    times.append(v)
+                except (ValueError, TypeError):
+                    continue
+            elif isinstance(v, (int, float)):
+                times.append(v)
+            else:
+                continue
+
+        if not times:
+            raise TypeError("first/last requires a datetime-like index")
+
+        if isinstance(times[0], datetime):
+            if mode == "first":
+                start = min(times)
+                end = start + timedelta(**{unit_map[unit]: num})
+                indices = [
+                    i for i in range(self._nrows)
+                    if isinstance(self._index[i], datetime) and self._index[i] <= end
+                ]
+            else:
+                end = max(times)
+                start = end - timedelta(**{unit_map[unit]: num})
+                indices = [
+                    i for i in range(self._nrows)
+                    if isinstance(self._index[i], datetime) and self._index[i] >= start
+                ]
+        else:
+            # 数值索引
+            if mode == "first":
+                start = min(times)
+                end = start + num
+                indices = [
+                    i for i in range(self._nrows)
+                    if isinstance(self._index[i], (int, float)) and self._index[i] <= end
+                ]
+            else:
+                end = max(times)
+                start = end - num
+                indices = [
+                    i for i in range(self._nrows)
+                    if isinstance(self._index[i], (int, float)) and self._index[i] >= start
+                ]
+
+        new_data = {
+            c: [self._inner.get_column(c).values[i] for i in indices]
+            for c in self._columns
+        }
+        return DataFrame(new_data)
+
+    def truncate(self, before=None, after=None, axis: int = 0) -> "DataFrame":
+        """截断 DataFrame 在某个索引值之前或之后。
+
+        :param before: 截断此日期/值之前的数据
+        :param after: 截断此日期/值之后的数据
+        :param axis: 0=行, 1=列
+        :return: DataFrame
+        """
+        if axis == 0:
+            indices = list(range(self._nrows))
+            if before is not None:
+                from datetime import datetime
+                if isinstance(before, str):
+                    try:
+                        before = datetime.fromisoformat(before)
+                    except ValueError:
+                        pass
+                # 过滤掉 before 之前的行
+                indices = [
+                    i for i in indices
+                    if not (
+                        isinstance(self._index[i], type(before))
+                        and self._index[i] < before
+                    )
+                ]
+            if after is not None:
+                from datetime import datetime
+                if isinstance(after, str):
+                    try:
+                        after = datetime.fromisoformat(after)
+                    except ValueError:
+                        pass
+                indices = [
+                    i for i in indices
+                    if not (
+                        isinstance(self._index[i], type(after))
+                        and self._index[i] > after
+                    )
+                ]
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in indices]
+                for c in self._columns
+            }
+            return DataFrame(new_data)
+        else:
+            # axis == 1: 截断列
+            cols = list(self._columns)
+            if before is not None:
+                try:
+                    idx = cols.index(before)
+                    cols = cols[idx:]
+                except ValueError:
+                    pass
+            if after is not None:
+                try:
+                    idx = cols.index(after)
+                    cols = cols[:idx + 1]
+                except ValueError:
+                    pass
+            new_data = {c: list(self._inner.get_column(c).values) for c in cols}
+            return DataFrame(new_data)
 
 
 class DataFrameGroupBy:

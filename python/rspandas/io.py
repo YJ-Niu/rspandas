@@ -311,6 +311,65 @@ def _dataframe_to_arrow_table(df: DataFrame):
 
 
 # ============================================================================
+# Feather (Arrow IPC)
+# ============================================================================
+
+def read_feather(path: str, **kwargs) -> DataFrame:
+    """从 Feather 文件读取 DataFrame。
+
+    Parameters
+    ----------
+    path : str
+        Feather 文件路径。
+    **kwargs
+        传递给 pyarrow.feather.read_table 的其他参数。
+
+    Returns
+    -------
+    DataFrame
+    """
+    try:
+        import pyarrow.feather as pf
+        table = pf.read_table(path, **kwargs)
+        return _arrow_table_to_dataframe(table)
+    except ImportError:
+        raise ImportError(
+            "read_feather requires pyarrow to be installed. "
+            "Install with: pip install pyarrow"
+        )
+
+
+def to_feather(
+    df: DataFrame,
+    path: str,
+    compression: Optional[str] = "lz4",
+    **kwargs,
+) -> None:
+    """将 DataFrame 写入 Feather 文件。
+
+    Parameters
+    ----------
+    df : DataFrame
+        要写入的 DataFrame。
+    path : str
+        输出文件路径。
+    compression : str, optional, default 'lz4'
+        压缩算法 (lz4, zstd, uncompressed)。
+    **kwargs
+        传递给 pyarrow.feather.write_feather 的其他参数。
+    """
+    try:
+        import pyarrow.feather as pf
+        table = _dataframe_to_arrow_table(df)
+        pf.write_feather(table, path, compression=compression, **kwargs)
+    except ImportError:
+        raise ImportError(
+            "to_feather requires pyarrow to be installed. "
+            "Install with: pip install pyarrow"
+        )
+
+
+# ============================================================================
 # Pickle
 # ============================================================================
 

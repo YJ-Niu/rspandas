@@ -22,6 +22,8 @@ from .io import (
     to_excel,
     read_parquet,
     to_parquet,
+    read_feather,
+    to_feather,
     read_pickle,
     to_pickle,
     read_sql,
@@ -54,7 +56,7 @@ def factorize(values):
     return _factorize(values)
 
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __all__ = [
     "Series",
     "DataFrame",
@@ -73,6 +75,8 @@ __all__ = [
     "to_excel",
     "read_parquet",
     "to_parquet",
+    "read_feather",
+    "to_feather",
     "read_pickle",
     "to_pickle",
     "read_sql",

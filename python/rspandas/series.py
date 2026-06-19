@@ -415,6 +415,32 @@ class Series:
             raise ImportError("numpy is required for to_numpy()")
         return np.array(self.values)
 
+    @classmethod
+    def from_numpy(cls, arr, name=None, index=None) -> "Series":
+        """从 numpy array 构造 Series。
+
+        Parameters
+        ----------
+        arr : numpy.ndarray
+            输入数组。
+        name : str, optional
+            Series 名称。
+        index : list, optional
+            索引。
+
+        Returns
+        -------
+        Series
+        """
+        try:
+            import numpy as np  # type: ignore
+        except ImportError:
+            raise ImportError("numpy is required for from_numpy()")
+        if not isinstance(arr, np.ndarray):
+            raise TypeError("expected numpy.ndarray")
+        vals = arr.tolist()
+        return cls(vals, name=name, index=index)
+
     def to_dict(self) -> dict:
         """转换为 dict (index -> value)。"""
         return {self._index[i] if self._index else i: v

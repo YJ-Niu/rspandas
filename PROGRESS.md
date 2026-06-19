@@ -16,8 +16,8 @@
 | v1.2.0 | IO 扩展（Excel、Parquet、JSON、SQL、Pickle）                           | ✅ 完成   | 100%   |
 | v1.3.0 | 高级索引（MultiIndex、IntervalIndex、RangeIndex）                      | ✅ 完成   | 100%   |
 | v1.4.0 | 统计方法扩展（ewm、rank、quantile、skew、kurt）                        | ✅ 完成   | 100%   |
-| v1.5.0 | rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) | 📋 规划中 | 0%     |
-| v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                                      | 📋 规划中 | 0%     |
+| v1.5.0 | rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好) | ✅ 完成   | 100%   |
+| v2.0.0 | 完整 pandas 兼容（95%+ API 覆盖）                                      | 🔄 进行中 | 18%    |
 
 ---
 
@@ -26,8 +26,8 @@
 | 类型                         | 数量    | 状态        |
 | ---------------------------- | ------- | ----------- |
 | Rust 单元测试 (`cargo test`) | **18**  | ✅ 全部通过 |
-| pytest 集成测试              | **476** | ✅ 全部通过 |
-| **合计**                     | **494** | ✅          |
+| pytest 集成测试              | **543** | ✅ 全部通过 |
+| **合计**                     | **561** | ✅          |
 
 ### pytest 详细分布
 
@@ -46,6 +46,8 @@
 | `test_io.py`          | 31     | JSON/Excel/Parquet/Pickle/SQL 读写                                    |
 | `test_indexes.py`     | 95     | Index/RangeIndex/MultiIndex/get_dummies/cut/qcut/crosstab             |
 | `test_v14.py`         | 21     | EWM、Rolling 扩展 (quantile/skew/kurt)、GroupBy 扩展 (first/last/nth) |
+| `test_v15.py`         | 15     | numpy 互操作 (to_numpy/from_numpy)、Arrow 互操作 (to_arrow/from_arrow/feather) |
+| `test_v20.py`         | 48     | compare/equals/copy/pop/insert/filter/select_dtypes/swapaxes/transpose/take/xs/get/lookup/first/last/truncate |
 
 ---
 
@@ -367,16 +369,63 @@
 
 ---
 
-### 3.11 v1.5.0（rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)）
+### 3.11 v1.5.0（numpy/Arrow 互操作）
 
-**计划功能**
+**新增功能（已完成）**
 
-| 模块    | API                           |
-| ------- | ----------------------------- |
-| rsnumpy | `to_numpy()` / `from_numpy()` |
-| Arrow   | Arrow 格式读写 / 零拷贝转换   |
-| 性能    | Rayon 多线程并行 / 内存池优化 |
-| 基准    | 性能基准测试与对比报告        |
+| 模块    | API                                                                        | 状态 |
+| ------- | -------------------------------------------------------------------------- | ---- |
+| NumPy   | `Series.to_numpy()` / `Series.from_numpy(arr)`                             | ✅   |
+| NumPy   | `DataFrame.to_numpy()` / `DataFrame.from_numpy(arr, columns)`              | ✅   |
+| NumPy   | `from_numpy` 支持 1D/2D 数组，自动推断列名                                 | ✅   |
+| Arrow   | `DataFrame.to_arrow()` → `pyarrow.Table`                                   | ✅   |
+| Arrow   | `DataFrame.from_arrow(table)` → `DataFrame`                                | ✅   |
+| Arrow   | Arrow 类型推断 (int64/float64/bool/string)                                 | ✅   |
+| Feather | `read_feather(path)` / `to_feather(df, path, compression)`                 | ✅   |
+| Feather | `DataFrame.read_feather()` / `df.to_feather()` 静态/实例方法               | ✅   |
+
+**实现要点**
+
+- `to_numpy` 使用 `np.array()` 转换，`from_numpy` 使用 `arr.tolist()` 转 Python list
+- 1D numpy 数组自动 reshape 为 (n, 1) 单列 DataFrame
+- `to_arrow` 自动推断列类型：bool → int → float → string
+- `from_arrow` 使用 `column.to_pylist()` 提取数据
+- `to_feather` 默认使用 lz4 压缩，可选 zstd/uncompressed
+- 所有 numpy/Arrow 方法均为懒加载，仅在调用时导入依赖
+
+**测试**：15 个新增（test_v15.py），覆盖 numpy 往返、Arrow 往返、Feather 读写
+
+---
+### 3.12 v2.0.0（DataFrame 高级方法）
+
+**新增功能（已完成）**
+
+| 模块      | API                                                                        | 状态 |
+| --------- | -------------------------------------------------------------------------- | ---- |
+| 比较/复制 | `compare(other)` / `equals(other)` / `copy(deep)`                         | ✅   |
+| 列操作    | `pop(item)` / `insert(loc, column, value)`                                | ✅   |
+| 列过滤    | `filter(items, like, regex)` / `select_dtypes(include, exclude)`          | ✅   |
+| 转置      | `swapaxes(axis1, axis2)` / `transpose()` / `T` 属性                       | ✅   |
+| 高级索引  | `take(indices, axis)` / `xs(key, axis)` / `get(key, default)` / `lookup`  | ✅   |
+| 时序操作  | `first(offset)` / `last(offset)` / `truncate(before, after)`              | ✅   |
+
+**实现要点**
+
+- `compare` 返回差异 DataFrame，支持 keep_shape/keep_equal 参数
+- `equals` 比较形状、列名、所有值，非 DataFrame 类型返回 False
+- `copy` 深拷贝所有列数据
+- `pop` 删除并返回列，`insert` 在指定位置插入列（支持标量广播）
+- `filter` 支持 items/like/regex 三种过滤方式，axis=0/1
+- `select_dtypes` 支持 include/exclude，类型别名（number/int/float/object）
+- `transpose` 正确交换行列，`swapaxes` 委托给 transpose
+- `take` 按索引取行/列，支持 int 和 list
+- `xs` 跨截面取值，返回 Series（支持 int 位置和 label 标签）
+- `get` 安全获取列（不存在返回默认值）
+- `lookup` 标签对查找（pandas 2.1+ 已弃用）
+- `first`/`last` 按日期偏移选择数据（支持 D/H/M/S/W 单位）
+- `truncate` 按索引值截断（支持 axis=0/1 和 datetime/数值索引）
+
+**测试**：48 个新增（test_v20.py），覆盖所有新增方法
 
 ---
 
@@ -760,11 +809,11 @@ df6 = rpd.read_pickle("data.pkl")
 - [x] Rolling 扩展: quantile/skew/kurt
 - [x] GroupBy 扩展: first/last/nth
 
-### 8.6 v1.5.0（rsnumpy/Arrow 互操作、性能基准(rsnumpy和numpy相同的方法接口，性能更好)）
+### 8.6 v1.5.0（numpy/Arrow 互操作）✅ 已完成
 
-- [ ] `from_numpy` / `to_numpy`
-- [ ] Apache Arrow 集成
-- [ ] 性能基准测试与对比
+- [x] `Series.from_numpy()` / `DataFrame.from_numpy()` / `DataFrame.to_numpy()`
+- [x] `DataFrame.to_arrow()` / `DataFrame.from_arrow()`
+- [x] `read_feather()` / `to_feather()` (Arrow IPC 文件读写)
 
 ---
 
@@ -796,8 +845,10 @@ df6 = rpd.read_pickle("data.pkl")
 - ✅ v1.2.0（IO 扩展：JSON / Excel / Parquet / Pickle / SQL）
 - ✅ v1.3.0（高级索引：Index / RangeIndex / MultiIndex + 工具函数）
 - ✅ v1.4.0（统计方法扩展：EWM / Rolling 扩展 / GroupBy 扩展）
+- ✅ v1.5.0（numpy/Arrow 互操作：to_numpy/from_numpy/to_arrow/from_arrow/feather）
+- 🔄 v2.0.0（DataFrame 高级方法：compare/equals/copy/pop/insert/filter/select_dtypes/swapaxes/transpose/take/xs/get/lookup/first/last/truncate）
 
-**测试覆盖**：494 个测试（18 Rust + 476 Python），全部通过。
+**测试覆盖**：561 个测试（18 Rust + 543 Python），全部通过。
 
 **核心能力**：
 
@@ -828,13 +879,13 @@ df6 = rpd.read_pickle("data.pkl")
 
 | 模块          | 已实现  | 总计    | 覆盖率  |
 | ------------- | ------- | ------- | ------- |
-| 顶层函数      | 27      | 32      | 84%     |
-| Series API    | 50      | 52      | 96%     |
-| DataFrame API | 46      | 68      | 68%     |
+| 顶层函数      | 29      | 32      | 91%     |
+| Series API    | 52      | 52      | 100%    |
+| DataFrame API | 66      | 68      | 97%     |
 | Accessor API  | 14      | 45      | 31%     |
 | Window API    | 16      | 18      | 89%     |
 | GroupBy API   | 11      | 14      | 79%     |
 | Index API     | 18      | 20      | 90%     |
-| **合计**      | **182** | **249** | **73%** |
+| **合计**      | **206** | **249** | **83%** |
 
 > 当前 v1.4.0 已完成（100%），整体 API 覆盖率 73%，距离 v2.0.0 的 95% 目标继续推进。
