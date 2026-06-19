@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import json as _json
 import pickle as _pickle
-from typing import Any, Dict, List, Optional, Union
-
+from typing import Any, Dict, Optional, Union
 from .dataframe import DataFrame
-from .series import Series
+# from .series import Series
 
 
 # ============================================================================
@@ -271,7 +270,6 @@ def to_excel(
         pass
 
     try:
-        import pandas as pd
         pdf = df.to_pandas()
         pdf.to_excel(path, sheet_name=sheet_name, index=index, header=header, **kwargs)
         return
@@ -383,7 +381,6 @@ def to_parquet(
         传递给 pyarrow/pandas 的其他参数。
     """
     try:
-        import pyarrow as pa
         import pyarrow.parquet as pq
 
         table = _dataframe_to_arrow_table(df)
@@ -393,7 +390,6 @@ def to_parquet(
         pass
 
     try:
-        import pandas as pd
         pdf = df.to_pandas()
         pdf.to_parquet(path, compression=compression, **kwargs)
         return
@@ -472,7 +468,6 @@ def to_pickle(df: DataFrame, path: str, **kwargs) -> None:
         传递给 pickle.dump 的其他参数。
     """
     try:
-        import pandas as pd
         pdf = df.to_pandas()
         pdf.to_pickle(path, **kwargs)
         return
@@ -561,7 +556,6 @@ def to_sql(
         )
 
     try:
-        import pandas as pd
         pdf = df.to_pandas()
         pdf.to_sql(name, conn, if_exists=if_exists, index=index, **kwargs)
         return
