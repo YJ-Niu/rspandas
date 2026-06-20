@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import json as _json
 import pickle as _pickle
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 from .dataframe import DataFrame
-from .series import Series
 
 
 # ============================================================================

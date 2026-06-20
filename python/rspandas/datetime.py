@@ -1,8 +1,9 @@
 """datetime 工具函数。"""
 
 from __future__ import annotations
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time
 from typing import Optional, Union
+import calendar
 
 from .series import Series
 
@@ -160,7 +161,6 @@ class DatetimeAccessor:
         self._s = series
 
     def _wrap_series(self, values: list, name: Optional[str] = None) -> Series:
-        from datetime import datetime, date, time, timedelta
         # 将 datetime/date/time 对象转换为 ISO 字符串
         converted = []
         for v in values:
@@ -252,7 +252,6 @@ class DatetimeAccessor:
 
     @property
     def is_month_end(self) -> Series:
-        import calendar
         return self._wrap_series([
             v.day == calendar.monthrange(v.year, v.month)[1] if v is not None else None
             for v in self._s.values
@@ -274,7 +273,6 @@ class DatetimeAccessor:
 
     @property
     def is_leap_year(self) -> Series:
-        import calendar
         return self._wrap_series([
             calendar.isleap(v.year) if v is not None else None
             for v in self._s.values
@@ -282,7 +280,6 @@ class DatetimeAccessor:
 
     @property
     def days_in_month(self) -> Series:
-        import calendar
         return self._wrap_series([
             calendar.monthrange(v.year, v.month)[1] if v is not None else None
             for v in self._s.values
@@ -331,7 +328,6 @@ class DatetimeAccessor:
 
         :param freq: 频率字符串 ('D'/'H'/'M'/'S' 等)
         """
-        from datetime import timedelta
         freq = freq.strip().upper()
         if freq not in ("D", "H", "M", "T", "min", "S"):
             raise ValueError(f"unsupported freq: {freq!r}")
@@ -367,7 +363,6 @@ class DatetimeAccessor:
 
         :param freq: 频率字符串 ('D'/'H'/'M'/'S' 等)
         """
-        from datetime import timedelta
         freq = freq.strip().upper()
         if freq not in ("D", "H", "M", "T", "min", "S"):
             raise ValueError(f"unsupported freq: {freq!r}")
@@ -551,31 +546,30 @@ def date_range(
 
 def to_timedelta(arg, unit=None):
     """将输入转换为 timedelta。"""
-    from datetime import timedelta as td
-    if isinstance(arg, td):
+    if isinstance(arg, timedelta):
         return arg
     if isinstance(arg, (int, float)):
         if unit is None:
-            return td(seconds=float(arg))
+            return timedelta(seconds=float(arg))
         unit = unit.lower()
         if unit in ("s", "sec", "seconds"):
-            return td(seconds=float(arg))
+            return timedelta(seconds=float(arg))
         elif unit in ("ms", "milli", "milliseconds"):
-            return td(milliseconds=float(arg))
+            return timedelta(milliseconds=float(arg))
         elif unit in ("us", "micro", "microseconds"):
-            return td(microseconds=float(arg))
+            return timedelta(microseconds=float(arg))
         elif unit in ("ns", "nano", "nanoseconds"):
-            return td(microseconds=float(arg) / 1000)
+            return timedelta(microseconds=float(arg) / 1000)
         elif unit in ("m", "min", "minutes"):
-            return td(minutes=float(arg))
+            return timedelta(minutes=float(arg))
         elif unit in ("h", "hour", "hours"):
-            return td(hours=float(arg))
+            return timedelta(hours=float(arg))
         elif unit in ("d", "day", "days"):
-            return td(days=float(arg))
+            return timedelta(days=float(arg))
         else:
             raise ValueError(f"unsupported unit: {unit}")
     if isinstance(arg, str):
-        return td(seconds=float(arg))
+        return timedelta(seconds=float(arg))
     if isinstance(arg, (list, tuple)):
         return [to_timedelta(x, unit) for x in arg]
     raise TypeError(f"cannot convert {type(arg).__name__} to timedelta")
@@ -583,9 +577,8 @@ def to_timedelta(arg, unit=None):
 
 def timedelta_range(start=None, end=None, periods=None, freq="D"):
     """生成 timedelta 范围。"""
-    from datetime import timedelta as td
     if start is None:
-        start = td(0)
+        start = timedelta(0)
     elif isinstance(start, (int, float)):
         start = to_timedelta(start)
     elif isinstance(start, str):

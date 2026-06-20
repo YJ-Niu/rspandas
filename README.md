@@ -1,6 +1,20 @@
-# rspandas
+<p align="center">
+  <h1 align="center">rspandas</h1>
+  <p align="center">
+    <strong>pandas-compatible API, Rust-powered performance</strong>
+  </p>
+</p>
 
-A pandas-like library built on Rust — familiar pandas API, Rust-powered performance.
+<p align="center">
+  <img src="https://img.shields.io/pypi/v/rspandas?label=PyPI" alt="PyPI">
+  <img src="https://img.shields.io/pypi/pyversions/rspandas" alt="Python">
+  <img src="https://img.shields.io/github/actions/workflow/status/USERNAME/rspandas/publish.yml?label=CI" alt="CI">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
+</p>
+
+---
+
+**rspandas** is a drop-in pandas replacement with a Rust backend. Write the same pandas code you know—filtering, grouping, window functions, reshaping—but get near-native performance thanks to columnar storage, vectorized operations, and multi-threaded parallelism via [Rayon](https://github.com/rayon-rs/rayon).
 
 ```python
 import rspandas as rpd
@@ -10,26 +24,28 @@ print(df.describe())
 print(df.groupby("a").sum())
 ```
 
-## Features
+## Highlights
 
-- **95%+ pandas API compatibility** — drop-in replacement for most use cases
-- **Rust backend** — columnar storage, vectorized operations, near-native performance
-- **Zero runtime dependencies** — pure Python + compiled Rust extension
-- **Rich I/O** — CSV, Excel, Parquet, JSON, SQL, Pickle, Feather
+- **95%+ pandas API coverage** — Series, DataFrame, GroupBy, window functions, reshaping, time series
+- **Rust core** — columnar storage, vectorized computation, Rayon parallel iterators
+- **Multi-platform wheels** — pre-built binaries for Linux (x86_64 / arm64), macOS (Intel / Apple Silicon), Windows (x64 / x86)
+- **Zero required Python dependencies** — one compiled extension, no NumPy/PyArrow required at runtime
+- **Rich I/O** — CSV, Excel (native Rust), JSON, Parquet, SQL, Pickle, Feather
 - **Full type system** — int64, float64, bool, string, category, datetime, timedelta, period
-- **Comprehensive test suite** — 950+ tests covering all major APIs
+- **950+ tests** — comprehensive pytest suite validating pandas compatibility
 
 ## Installation
 
-Requires Python >= 3.9.
+Requires **Python >= 3.9**.
 
 ```bash
-pip install -e .
+pip install rspandas
 ```
 
 Or build from source:
 
 ```bash
+pip install maturin
 maturin build --release
 pip install target/wheels/rspandas-*.whl
 ```
@@ -41,69 +57,50 @@ pip install target/wheels/rspandas-*.whl
 ```python
 import rspandas as rpd
 
-# Create
 s = rpd.Series([1, 2, 3, 4, 5], name="values")
-
-# Basic ops
-s.head(3)          # first 3 rows
-s.sum()            # 15
-s.mean()           # 3.0
-s.std()            # ~1.58
-s.describe()       # summary stats
+s.head(3)           # first 3 rows
+s.sum()             # 15
+s.mean()            # 3.0
+s.std()             # ~1.58
+s.describe()        # summary stats
 
 # Missing values
 s2 = rpd.Series([1, None, 3])
-s2.fillna(0)       # replace None with 0
-s2.dropna()        # remove None rows
+s2.fillna(0)        # replace None → 0
+s2.dropna()         # remove None rows
 
 # String operations
 s3 = rpd.Series(["hello", "world"])
-s3.str.upper()     # ["HELLO", "WORLD"]
+s3.str.upper()      # ["HELLO", "WORLD"]
 s3.str.contains("ell")  # [True, False]
 ```
 
 ### DataFrame
 
 ```python
-import rspandas as rpd
-
-# Create
 df = rpd.DataFrame({
     "name": ["Alice", "Bob", "Charlie"],
-    "age": [25, 30, 35],
+    "age":  [25, 30, 35],
     "score": [88.5, 92.0, 79.3],
 })
 
-# Properties
-df.shape           # (3, 3)
-df.columns         # ["name", "age", "score"]
-df.dtypes          # {"name": "object", "age": "int64", "score": "float64"}
-
-# Subsetting
-df.head(2)         # first 2 rows
-df["age"]          # Series
-df[["name", "score"]]  # DataFrame with selected columns
-
-# Filtering
-df[df["age"] > 26]  # rows where age > 26
-
-# Sorting
+df.shape            # (3, 3)
+df.dtypes           # {"name": "object", "age": "int64", "score": "float64"}
+df.head(2)
+df["age"]           # Series
+df[df["age"] > 26]  # filter rows
 df.sort_values("score", ascending=False)
 ```
 
 ### GroupBy
 
 ```python
-df = rpd.DataFrame({
-    "team": ["A", "A", "B", "B", "C"],
-    "score": [10, 20, 30, 40, 50],
-})
+df = rpd.DataFrame({"team": ["A", "A", "B", "B", "C"], "score": [10, 20, 30, 40, 50]})
 
-df.groupby("team").sum()      # sum by group
-df.groupby("team").mean()     # mean by group
-df.groupby("team").agg("std") # std by group
-df.groupby("team").cumcount() # cumulative count
-df.groupby("team").rank()     # rank within group
+df.groupby("team").sum()       # sum by group
+df.groupby("team").mean()      # mean by group
+df.groupby("team").agg("std")  # std by group
+df.groupby("team").rank()      # rank within group
 ```
 
 ### Window Functions
@@ -111,99 +108,71 @@ df.groupby("team").rank()     # rank within group
 ```python
 s = rpd.Series([1, 2, 3, 4, 5])
 
-s.rolling(3).mean()    # [None, None, 2.0, 3.0, 4.0]
-s.rolling(3).sum()     # [None, None, 6.0, 9.0, 12.0]
-s.rolling(3).std()     # rolling std
-
-s.expanding().mean()   # expanding window
+s.rolling(3).mean()    # [NaN, NaN, 2.0, 3.0, 4.0]
+s.rolling(3).sum()     # [NaN, NaN, 6.0, 9.0, 12.0]
 s.expanding().sum()    # [1.0, 3.0, 6.0, 10.0, 15.0]
-
 s.ewm(span=3).mean()   # exponentially weighted
 ```
 
 ### Time Series
 
 ```python
-import rspandas as rpd
-
 dates = rpd.date_range("2024-01-01", periods=5, freq="D")
 ts = rpd.Series([1, 2, 3, 4, 5], index=dates)
 
-ts.shift(1)            # lag
-ts.diff()              # difference
-ts.pct_change()        # percent change
-ts.cumsum()            # [1, 3, 6, 10, 15]
+ts.shift(1)       # lag
+ts.diff()         # difference
+ts.pct_change()   # percent change
+ts.cumsum()       # [1, 3, 6, 10, 15]
 
 # DatetimeSeries
 ds = rpd.to_datetime(["2024-01-15", "2024-06-15"])
-ds.dt.year             # [2024, 2024]
-ds.dt.month            # [1, 6]
-ds.dt.dayofweek        # [0, 5]  (Monday=0)
-ds.dt.month_name       # ["January", "June"]
-```
-
-### Reshape
-
-```python
-# Melt (wide to long)
-df = rpd.DataFrame({"a": [1, 2], "b": [3, 4]})
-df.melt(id_vars=["a"])
-
-# Pivot (long to wide)
-df = rpd.DataFrame({
-    "x": ["a", "a", "b"],
-    "y": ["p", "q", "p"],
-    "v": [1, 2, 3],
-})
-df.pivot(index="x", columns="y", values="v")
-
-# Stack / Unstack
-df.stack()
-df.transpose()  # or df.T
+ds.dt.year        # [2024, 2024]
+ds.dt.month_name  # ["January", "June"]
 ```
 
 ### I/O
 
 ```python
-import rspandas as rpd
-
-# CSV
+# CSV (native Rust)
 df = rpd.read_csv("data.csv")
 df.to_csv("output.csv")
 
-# Excel
+# Excel (native Rust via calamine + rust_xlsxwriter)
 df = rpd.read_excel("data.xlsx")
 df.to_excel("output.xlsx")
-
-# Parquet
-df = rpd.read_parquet("data.parquet")
-df.to_parquet("output.parquet")
 
 # JSON
 df = rpd.read_json("data.json")
 df.to_json("output.json")
 
-# SQL
-df = rpd.read_sql("sqlite:///db.sqlite", "SELECT * FROM table")
-df.to_sql("sqlite:///db.sqlite", "table_name")
+# Parquet / Feather (requires pyarrow)
+df = rpd.read_parquet("data.parquet")
+df.to_parquet("output.parquet")
+df = rpd.read_feather("data.feather")
+
+# SQL (requires sqlalchemy)
+df = rpd.read_sql("SELECT * FROM table", engine)
+df.to_sql("table_name", engine)
 
 # Pickle
 df = rpd.read_pickle("data.pkl")
 df.to_pickle("output.pkl")
 ```
 
-### Merge & Concat
+### Merge & Reshape
 
 ```python
 df1 = rpd.DataFrame({"key": ["a", "b", "c"], "v1": [1, 2, 3]})
 df2 = rpd.DataFrame({"key": ["b", "c", "d"], "v2": [4, 5, 6]})
 
-df1.merge(df2, on="key", how="inner")  # inner join
-df1.merge(df2, on="key", how="left")   # left join
-df1.merge(df2, on="key", how="outer")  # outer join
+df1.merge(df2, on="key", how="inner")   # inner join
+df1.merge(df2, on="key", how="left")    # left join
+rpd.concat([df1, df2], axis=0)          # row-wise
 
-rpd.concat([df1, df2], axis=0)  # row-wise
-rpd.concat([df1, df2], axis=1)  # column-wise
+# Melt / Pivot
+df.melt(id_vars=["a"])
+df.pivot(index="x", columns="y", values="v")
 ```
 
 ### Interop
@@ -225,22 +194,53 @@ rpd.DataFrame.from_arrow(table)
 ### Utilities
 
 ```python
-rpd.factorize(["a", "b", "a", "c"])  # (codes, categories)
+rpd.factorize(["a", "b", "a", "c"])          # (codes, categories)
 rpd.to_numeric(["1", "2", "x"], errors="coerce")  # [1, 2, None]
 rpd.get_dummies(df)
 rpd.cut(s, bins=[0, 10, 20, 30])
-rpd.qcut(s, q=4)
 rpd.crosstab(df["a"], df["b"])
 ```
 
-### Options
+## Performance
 
-```python
-rpd.set_option("display.max_rows", 100)
-rpd.set_option("display.max_columns", 50)
-rpd.get_option("display.width")  # 80
-rpd.reset_option("all")
+rspandas leverages multi-threaded parallelism via [Rayon](https://github.com/rayon-rs/rayon) across all heavy operations:
+
+| Operation         | Parallelized methods                                                     |
+| ----------------- | ------------------------------------------------------------------------ |
+| Aggregation       | `sum`, `mean`, `min`, `max`, `std`, `var`, `nunique`, `any`, `all`       |
+| Filtering         | `filter`, `dropna`, `isnull`, `notnull`, `fillna`                        |
+| I/O               | CSV type inference & parsing, XLSX column conversion                     |
+| DataFrame         | `head`, `tail`, `filter_rows`, `dropna_rows`, `fillna_rows`, `to_string` |
+| String conversion | `to_string_vec`, `columns_to_string`                                     |
+
+The Rust core uses columnar `Vec<Option<T>>` storage with `opt-level=3` and `lto=true` in release builds.
+
+## Architecture
+
 ```
+User Code (Python)
+    │  import rspandas as rpd
+    ▼
+┌──────────────────────────────────────┐
+│  python/rspandas/                    │  ← Python API layer
+│  series.py / dataframe.py / ...      │     (pandas-compatible signatures)
+└────────────────┬─────────────────────┘
+                 │  PyO3 FFI
+                 ▼
+┌──────────────────────────────────────┐
+│  rspandas._rust  (compiled .so/.dylib)│  ← Native module
+├──────────────────────────────────────┤
+│  PySeries / PyDataFrame  (#[pyclass])│
+├──────────────────────────────────────┤
+│  Series / DataFrame  (Rust structs)  │  ← Rust core
+├──────────────────────────────────────┤
+│  ColumnData  (Int/Float/Bool/String/…)│
+└──────────────────────────────────────┘
+```
+
+- **Python layer**: parameter validation, type inference, display formatting, API compatibility
+- **Rust core**: columnar storage, vectorized computation, parallel filtering & aggregation
+- **PyO3 bridge**: zero-copy Python/Rust type conversion
 
 ## API Coverage
 
@@ -250,7 +250,7 @@ rpd.reset_option("all")
 
 ### Series
 
-Properties: `shape`, `dtype`, `name`, `values`, `index`, `size`, `empty`
+Properties: `shape`, `dtype`, `name`, `values`, `index`, `size`, `empty`, `nbytes`
 
 Accessors: `.str`, `.dt`, `.cat`
 
@@ -274,34 +274,6 @@ Methods: `head`, `tail`, `describe`, `info`, `dropna`, `fillna`, `merge`, `conca
 
 `Index`, `RangeIndex`, `MultiIndex`, `IntervalIndex`, `DatetimeIndex`, `TimedeltaIndex`, `PeriodIndex`, `CategoricalIndex`
 
-## Architecture
-
-```
-User Code (Python)
-    |
-    |  import rspandas as rpd
-    v
-+----------------------------------------+
-|  python/rspandas/                      |  <-- Python API layer
-|  series.py / dataframe.py / ...        |      (pandas-compatible signatures)
-+----------------------------------------+
-    | PyO3 FFI
-    v
-+----------------------------------------+
-|  rspandas._rust (compiled .so/.dylib)  |  <-- Native module
-+----------------------------------------+
-|  PySeries / PyDataFrame (#[pyclass])   |
-+----------------------------------------+
-|  Series / DataFrame (Rust structs)     |  <-- Rust core
-+----------------------------------------+
-|  ColumnData (Int/Float/Bool/String)    |
-+----------------------------------------+
-```
-
-- **Python layer**: parameter validation, type inference, formatted display, API compatibility
-- **Rust core**: columnar storage, vectorized computation, filtering, aggregation
-- **PyO3 bridge**: zero-copy Python/Rust type conversion
-
 ## Development
 
 ```bash
@@ -321,7 +293,7 @@ cargo fmt
 
 - Python >= 3.9
 - Rust toolchain (stable)
-- maturin >= 1.7
+- [maturin](https://github.com/PyO3/maturin) >= 1.7
 
 ## License
 
