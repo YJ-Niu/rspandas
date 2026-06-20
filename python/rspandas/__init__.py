@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from .series import Series
 from .dataframe import DataFrame
-from .datetime import (
+from ._datetime import (
     to_datetime,
     date_range,
     to_timedelta,

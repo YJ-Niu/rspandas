@@ -79,7 +79,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: [build, sdist]
-
+    environment: pypi
     runs-on: ubuntu-latest
     permissions:
       id-token: write
