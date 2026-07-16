@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
-
+from .series import Series
 from rspandas.rspandas import _DataFrame as _PyDataFrame  # type: ignore
 from rspandas.rspandas import _Series as _PySeries
 from rspandas.rspandas import (
@@ -12,8 +11,7 @@ from rspandas.rspandas import (
     write_csv_path,
     write_csv_string,
 )
-
-from .series import Series
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, list]:
@@ -3049,9 +3047,9 @@ class DataFrame:
         :param index: 是否包含索引
         :param deep: 是否深度计算 (字符串等)
         """
-        import sys
-
         from .series import Series
+
+        import sys
 
         result = {}
         for c in self._columns:

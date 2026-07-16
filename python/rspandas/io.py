@@ -4,11 +4,11 @@
 
 from __future__ import annotations
 
-import json as _json
-import pickle as _pickle
+from .dataframe import DataFrame
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .dataframe import DataFrame
+import json as _json
+import pickle as _pickle
 
 
 class ExcelWriter:

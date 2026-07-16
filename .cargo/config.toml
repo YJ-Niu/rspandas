@@ -1,5 +1,0 @@
-[env]
-PYO3_PYTHON = "/Users/user/Desktop/rust_project/rspandas/.venv/bin/python"
-
-[target.aarch64-apple-darwin]
-rustflags = ["-L", "/Users/user/.local/share/uv/python/cpython-3.13-macos-aarch64-none/lib", "-lpython3.13"]

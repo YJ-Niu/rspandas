@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import calendar
+from .series import Series
 from datetime import date, datetime, time, timedelta
 from typing import Optional, Union
 
-from .series import Series
+import calendar
 
 # ---------------------------------------------------------------------------
 # 频率 -> timedelta 映射

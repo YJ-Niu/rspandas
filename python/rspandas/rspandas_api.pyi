@@ -3,10 +3,9 @@
 用于 IDE 自动补全和类型检查。
 """
 
-from typing import Any, Dict, List, Optional, Tuple
-
 from .rspandas import _DataFrame as rspandas_DataFrame
 from .rspandas import _Series as rspandas_Series  # type: ignore
+from typing import Any, Dict, List, Optional, Tuple
 
 class _Series:
     name: Optional[str]

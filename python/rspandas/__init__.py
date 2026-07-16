@@ -3,13 +3,11 @@
 A drop-in pandas-like API where the heavy lifting is done in Rust.
 """
 
-from typing import Any, Dict
-
 from . import offsets
 from ._datetime import (
-    DatetimeSeries,
     bdate_range,
     date_range,
+    DatetimeSeries,
     infer_freq,
     period_range,
     timedelta_range,
@@ -17,7 +15,7 @@ from ._datetime import (
     to_timedelta,
 )
 from .dataframe import DataFrame
-from .indexes import Index, MultiIndex, RangeIndex, crosstab, cut, get_dummies, qcut
+from .indexes import crosstab, cut, get_dummies, Index, MultiIndex, qcut, RangeIndex
 from .io import (
     ExcelWriter,
     read_excel,
@@ -36,6 +34,7 @@ from .io import (
 from .rspandas import _DataFrame, _Series  # 重新导出 Rust 类型，供内部使用
 from .rspandas import factorize as _factorize  # Rust 端 factorize
 from .series import Series
+from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
 # 全局选项配置

@@ -5,11 +5,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
-
 from .rspandas import _DataFrame as rspandas_DataFrame  # type: ignore
 from .series import Series
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Union
 
 # ============================================================================
 # Index

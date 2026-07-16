@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Any, Iterator, Optional, Tuple
-
 from .rspandas import _DataFrame as _PyDataFrame
 from .rspandas import _Series as _PySeries  # type: ignore
+from datetime import timedelta
+from typing import Any, Iterator, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # 类型推断
