@@ -54,6 +54,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python dev dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3.13-dev
+
       - name: Run cargo deny
         uses: EmbarkStudios/cargo-deny-action@v1
         with:

@@ -16,6 +16,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  PYO3_PYTHON: python
 
 jobs:
   rust-checks:
@@ -32,6 +33,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Install Python dev dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y python3.13-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
