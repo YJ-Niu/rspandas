@@ -191,7 +191,7 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
     return _Series(result, name=None)
 
 
-__version__ = "2.0.3"
+__version__ = "2.0.5"
 __all__ = [
     "Series",
     "DataFrame",
