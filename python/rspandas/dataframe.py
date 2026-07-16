@@ -6,8 +6,12 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from rspandas.rspandas import _DataFrame as _PyDataFrame  # type: ignore
 from rspandas.rspandas import _Series as _PySeries
-from rspandas.rspandas import (read_csv_path, read_csv_string, write_csv_path,
-                               write_csv_string)
+from rspandas.rspandas import (
+    read_csv_path,
+    read_csv_string,
+    write_csv_path,
+    write_csv_string,
+)
 
 from .series import Series
 

@@ -1,10 +1,8 @@
 [licenses]
 unlicensed = "deny"
 copyleft = "warn"
-
 default = "deny"
-
-allowed = [
+allow = [
     "MIT",
     "Apache-2.0",
     "BSD-3-Clause",
@@ -18,6 +16,3 @@ allowed = [
 
 [sources]
 unknown-registry = "deny"
-unacceptable = []
-
-default = "allow"

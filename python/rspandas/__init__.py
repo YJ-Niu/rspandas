@@ -6,15 +6,33 @@ A drop-in pandas-like API where the heavy lifting is done in Rust.
 from typing import Any, Dict
 
 from . import offsets
-from ._datetime import (DatetimeSeries, bdate_range, date_range, infer_freq,
-                        period_range, timedelta_range, to_datetime,
-                        to_timedelta)
+from ._datetime import (
+    DatetimeSeries,
+    bdate_range,
+    date_range,
+    infer_freq,
+    period_range,
+    timedelta_range,
+    to_datetime,
+    to_timedelta,
+)
 from .dataframe import DataFrame
-from .indexes import (Index, MultiIndex, RangeIndex, crosstab, cut,
-                      get_dummies, qcut)
-from .io import (ExcelWriter, read_excel, read_feather, read_json,
-                 read_parquet, read_pickle, read_sql, to_excel, to_feather,
-                 to_json, to_parquet, to_pickle, to_sql)
+from .indexes import Index, MultiIndex, RangeIndex, crosstab, cut, get_dummies, qcut
+from .io import (
+    ExcelWriter,
+    read_excel,
+    read_feather,
+    read_json,
+    read_parquet,
+    read_pickle,
+    read_sql,
+    to_excel,
+    to_feather,
+    to_json,
+    to_parquet,
+    to_pickle,
+    to_sql,
+)
 from .rspandas import _DataFrame, _Series  # 重新导出 Rust 类型，供内部使用
 from .rspandas import factorize as _factorize  # Rust 端 factorize
 from .series import Series

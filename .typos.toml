@@ -1,0 +1,10 @@
+[default]
+extend-identifiers = [
+    "caled",
+    "ser",
+]
+
+[files]
+extend-ignore = [
+    "test/test_rf/",
+]
