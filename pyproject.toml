@@ -32,4 +32,3 @@ classifiers = [
 [tool.maturin]
 python-source = "python"
 module-name = "rspandas"
-features = ["pyo3/extension-module"]
