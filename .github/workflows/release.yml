@@ -7,21 +7,14 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      release_type:
-        description: "Release type"
-        required: true
-        default: "build_only"
-        type: choice
-        options:
-          - build_only
-          - publish_testpypi
-          - publish_pypi
+
 
 permissions:
   contents: read
 
 jobs:
+  # ---------------- Linux: x86_64 + aarch64 ----------------
+  # manylinux 容器内含全部 CPython，--find-interpreter 自动为每个版本各产出一个 wheel。
   linux:
     runs-on: ubuntu-latest
     strategy:
@@ -42,7 +35,8 @@ jobs:
         with:
           name: wheels-linux-${{ matrix.target }}
           path: dist
-
+          
+  # ---------------- Windows: x64，按 Python 版本矩阵 ----------------
   windows:
     runs-on: windows-latest
     strategy:
@@ -66,7 +60,9 @@ jobs:
         with:
           name: wheels-windows-${{ matrix.python-version }}
           path: dist
-
+  # ---------------- macOS: universal2（Intel + Apple Silicon），按版本矩阵 ----------------
+  # macos-13(Intel) runner 已退役，改在 arm64 runner 上交叉编译 universal2，
+  # 一个 wheel 同时兼容 x86_64 与 arm64，无需 Intel 机器。
   macos:
     runs-on: macos-latest
     strategy:
@@ -91,6 +87,8 @@ jobs:
           name: wheels-macos-${{ matrix.python-version }}
           path: dist
 
+  # ---------------- 源码分发（sdist）----------------
+  # 当某平台/版本无预编译 wheel 时，pip 可用 sdist 从源码构建（需目标机器有 Rust）。
   sdist:
     runs-on: ubuntu-latest
     steps:
@@ -131,6 +129,8 @@ jobs:
             ls /tmp/wheel_check
             rm -rf /tmp/wheel_check
           done
+          
+  # ---------------- 发布到 PyPI（仅标签 / Release 触发）----------------
 
   publish:
     name: Publish to PyPI
@@ -152,16 +152,12 @@ jobs:
         if: github.event.inputs.release_type == 'publish_testpypi'
         uses: PyO3/maturin-action@v1
         env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.TESTPYPI_TOKEN }}
+          MATURIN_PYPI_TOKEN: ${{ secrets.YJ_NIU }}
         with:
           command: upload
           args: --non-interactive --skip-existing --repository testpypi dist/*
 
       - name: Publish to PyPI
-        if: |
-          startsWith(github.ref, 'refs/tags/') || 
-          github.event_name == 'release' ||
-          (github.event_name == 'workflow_dispatch' && inputs.release_type == 'publish_pypi')
         uses: PyO3/maturin-action@v1
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.YJ_NIU }}
