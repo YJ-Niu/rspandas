@@ -7,11 +7,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.png
 *.egg-info/
 dist/
 build/
 tests/
-test/
 test_*.py
 *.egg
 .venv/
