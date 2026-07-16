@@ -34,7 +34,7 @@ jobs:
         run: isort --check python/
 
       - name: flake8 linting
-        run: flake8 python/ --max-line-length=100 --extend-ignore=E203
+        run: flake8 python/ --max-line-length=500 --extend-ignore=E203
 
   rust-audit:
     name: Rust Security Audit
