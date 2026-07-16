@@ -12,6 +12,7 @@ import os
 from skrf.data import ring_slot_meas
 from skrf.plotting import save_all_figs
 from skrf import plotting
+from skrf.circuit import Circuit
 
 def pprint(n, ss):
     print(f"Network {n}")
@@ -498,3 +499,82 @@ ro_ns = rf.io.read('./test/test_rf/test_data/ro set.ns')
 pprint(59, ro_ns)
 
 ro_ns.write_spreadsheet('./test/test_rf/test_data/ro_spreadsheet.csv', form='db')
+
+params = [{'a': 0, 'X': 10, 'c': 'A'},
+          {'a': 1, 'X': 10, 'c': 'A'},
+          {'a': 2, 'X': 10, 'c': 'A'},
+          {'a': 1, 'X': 20, 'c': 'A'},
+          {'a': 0, 'X': 20, 'c': 'A'},
+          ]
+# create a NetworkSet made of dummy Networks, each define for set of parameters
+freq1 = rf.Frequency(75, 110, 101, 'ghz')
+rng = np.random.default_rng()
+ntwks_params = [rf.Network(frequency=freq1, s=rng.uniform(size=(len(freq1), 2, 2)),
+                           name=f'ntwk_{m}', comment=f'ntwk_{m}', params=params) for (m, params) in enumerate(params)]
+ns = rf.networkSet.NetworkSet(ntwks_params)
+pprint(60, ns)
+
+pprint(61, ns.sel({'a': 1}))
+
+pprint(62, ns.sel({'a': 0, 'X': 10}))
+
+pprint(63, ns.sel({'a': 0, 'X': [10, 20]}))
+
+pprint(64, ns.sel({'a': [0, 1], 'X': [10, 20]}))
+pprint(65, ns.dims)
+
+pprint(66, ns.coords)
+
+param_x = [1, 2, 3]  # a parameter associated to each Network
+x0 = 1.5  # parameter value to interpolate for
+interp_ntwk = ro_ns.interpolate_from_network(param_x, x0)
+pprint(67, interp_ntwk)
+
+rf.stylely()
+Z_0 = 50
+Z_L = 75
+theta = 0
+
+# the necessary Frequency description
+freq = rf.Frequency(start=1, stop=2, unit='GHz', npoints=3)
+
+# The combination of a transmission line + a load can be created
+# using the convenience delay_load method
+# important: all the Network must have the parameter "name" defined
+tline_media = rf.media.DefinedGammaZ0(freq, z0=Z_0)
+delay_load = tline_media.delay_load(rf.tlineFunctions.zl_2_Gamma0(Z_0, Z_L), theta, unit='deg', name='delay_load')
+
+# the input port of the circuit is defined with the Circuit.Port method
+port1 = Circuit.Port(freq, 'port1', z0=Z_0)
+
+# connection list
+cnx = [
+    [(port1, 0), (delay_load, 0)]
+]
+# building the circuit
+cir = Circuit(cnx)
+
+# getting the resulting Network from the 'network' parameter:
+ntw = cir.network
+pprint(68, ntw)
+
+# as expected the reflection coefficient is:
+pprint(69, ntw.s[0])
+
+port1 = Circuit.Port(freq, 'port1', z0=Z_0)
+# piece of transmission line and series impedance
+trans_line = tline_media.line(theta, unit='deg', name='trans_line')
+load = tline_media.resistor(Z_L, name='delay_load')
+# ground network (short)
+ground = Circuit.Ground(freq, name='ground')
+
+# connection list
+cnx = [
+    [(port1, 0), (trans_line, 0)],
+    [(trans_line, 1), (load, 0)],
+    [(load, 1), (ground, 0)]
+]
+# building the circuit
+cir = Circuit(cnx)
+# the result if the same :
+pprint(70, cir.network.s[0])
