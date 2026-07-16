@@ -487,11 +487,11 @@ ro_ns_interp.plot_violin("s_deg")
 plt.savefig('./test/test_rf/test37.png')
 plt.clf()
 
-pprint(58, ro_ns.write_touchstone(dir='/Users/user/Desktop/rust_project/rsplotlib/test/test_rf/data'))
+pprint(58, ro_ns.write_touchstone(dir='/Users/user/Desktop/rust_project/rspandas/test/test_rf/test_data'))
 
-rf.io.write('./test/test_rf/data/ro set.ns', ro_ns)
+rf.io.write('./test/test_rf/test_data/ro set.ns', ro_ns)
 
-ro_ns = rf.io.read('./test/test_rf/data/ro set.ns')
+ro_ns = rf.io.read('./test/test_rf/test_data/ro set.ns')
 pprint(59, ro_ns)
 
-ro_ns.write_spreadsheet('./test/test_rf/data/ro_spreadsheet.xls', form='db')
+ro_ns.write_spreadsheet('./test/test_rf/test_data/ro_spreadsheet.xls', form='db')
