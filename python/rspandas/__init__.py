@@ -199,7 +199,7 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
     return _Series(result, name=None)
 
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 __all__ = [
     "Series",
     "DataFrame",
