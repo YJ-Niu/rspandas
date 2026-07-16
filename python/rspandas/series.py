@@ -74,6 +74,8 @@ def _to_python_list(data: Any) -> list:
     if isinstance(data, dict):
         # dict: 默认用 values
         return list(data.values())
+    if hasattr(data, "tolist"):
+        return data.tolist()
     if data is None:
         return []
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
@@ -87,6 +89,8 @@ def _to_python_list_and_index(data: Any):
         return list(data), None
     if isinstance(data, dict):
         return list(data.values()), list(data.keys())
+    if hasattr(data, "tolist"):
+        return data.tolist(), None
     if data is None:
         return [], None
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
@@ -187,7 +191,10 @@ class Series:
 
     @property
     def index(self):
-        return self._index
+        from .indexes import Index, RangeIndex
+        if _is_range_index(self._index):
+            return RangeIndex(len(self._index))
+        return Index(self._index)
 
     @property
     def ndim(self) -> int:
@@ -507,10 +514,14 @@ class Series:
     # ---------- 子集 ----------
 
     def head(self, n: int = 5) -> _PySeries:
-        return Series(self._inner.head(n), name=self.name, dtype=self._dtype_str)
+        n = min(n, len(self))
+        sliced_index = self._index[:n] if self._index is not None else None
+        return Series(self._inner.head(n), name=self.name, dtype=self._dtype_str, index=sliced_index)
 
     def tail(self, n: int = 5) -> _PySeries:
-        return Series(self._inner.tail(n), name=self.name, dtype=self._dtype_str)
+        n = min(n, len(self))
+        sliced_index = self._index[-n:] if self._index is not None else None
+        return Series(self._inner.tail(n), name=self.name, dtype=self._dtype_str, index=sliced_index)
 
     def iloc(self, key) -> _PySeries:
         """按位置索引。key: int / list[int] / slice / bool mask。"""

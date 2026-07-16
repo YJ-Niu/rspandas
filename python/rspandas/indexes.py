@@ -109,7 +109,7 @@ class Index:
 
     def __repr__(self) -> str:
         name = f", name='{self._name}'" if self._name else ""
-        return f"Index({self._data}{name})"
+        return f"Index({self._data}, dtype='{self.dtype}'{name})"
 
     def __str__(self) -> str:
         return self.__repr__()
