@@ -4,7 +4,9 @@
 """
 
 from typing import Any, Dict, List, Optional, Tuple
-from .rspandas import _Series as rspandas_Series, _DataFrame as rspandas_DataFrame  # type: ignore
+
+from .rspandas import _DataFrame as rspandas_DataFrame
+from .rspandas import _Series as rspandas_Series  # type: ignore
 
 class _Series:
     name: Optional[str]

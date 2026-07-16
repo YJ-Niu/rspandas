@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json as _json
 import pickle as _pickle
-from typing import Any, Dict, Optional, Union, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 from .dataframe import DataFrame
 
 
@@ -213,7 +214,8 @@ def read_excel(
     -------
     DataFrame
     """
-    from .rspandas import read_xlsx as _read_xlsx, _DataFrame
+    from .rspandas import _DataFrame
+    from .rspandas import read_xlsx as _read_xlsx
 
     if isinstance(sheet_name, int):
         cols, series_list = _read_xlsx(path, None, sheet_name, header)

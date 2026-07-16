@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from rspandas.rspandas import (  # type: ignore
-    _DataFrame as _PyDataFrame,
-    _Series as _PySeries,
-    read_csv_path,
-    write_csv_path,
-    read_csv_string,
-    write_csv_string,
-)
+from rspandas.rspandas import _DataFrame as _PyDataFrame  # type: ignore
+from rspandas.rspandas import _Series as _PySeries
+from rspandas.rspandas import (read_csv_path, read_csv_string, write_csv_path,
+                               write_csv_string)
+
 from .series import Series
 
 
@@ -1064,7 +1061,8 @@ class DataFrame:
         :param index: 是否写入行索引
         :param header: 是否写入列名
         """
-        from .io import to_excel as _to_excel, ExcelWriter
+        from .io import ExcelWriter
+        from .io import to_excel as _to_excel
 
         if isinstance(path, ExcelWriter):
             path.write(self, sheet_name=sheet_name, index=index, header=header)
@@ -2356,7 +2354,8 @@ class DataFrame:
     @staticmethod
     def _parse_timezone(tz: str):
         """解析时区字符串为 tzinfo 对象。"""
-        from datetime import timezone, timedelta as td
+        from datetime import timedelta as td
+        from datetime import timezone
 
         if tz is None:
             return None
@@ -2476,7 +2475,8 @@ class DataFrame:
         :param axis: 0=行, 1=列
         :return: DataFrame
         """
-        from datetime import datetime, time as dt_time
+        from datetime import datetime
+        from datetime import time as dt_time
 
         if isinstance(time, str):
             time = dt_time.fromisoformat(time)
@@ -3046,6 +3046,7 @@ class DataFrame:
         :param deep: 是否深度计算 (字符串等)
         """
         import sys
+
         from .series import Series
 
         result = {}

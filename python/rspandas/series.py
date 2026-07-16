@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Iterator, Optional, Tuple
-from .rspandas import _Series as _PySeries, _DataFrame as _PyDataFrame  # type: ignore
+
+from .rspandas import _DataFrame as _PyDataFrame
+from .rspandas import _Series as _PySeries  # type: ignore
 
 # ---------------------------------------------------------------------------
 # 类型推断
