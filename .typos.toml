@@ -1,5 +1,6 @@
-[default]
-extend-identifiers = "caled,ser"
+[default.extend-identifiers]
+caled = "caled"
+ser = "ser"
 
 [files]
-extend-ignore = "test/test_rf/"
+extend-exclude = ["test/test_rf/"]
