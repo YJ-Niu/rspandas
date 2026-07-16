@@ -3,16 +3,18 @@
 //! - 读取: 自动推断每列类型 (int -> float -> bool -> string)，None 表示空字符串
 //! - 写入: 顺序写出列
 
+use crate::core::dtype::DType;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
-use crate::core::dtype::DType;
 
 use crate::core::series::{PySeries, Series};
 
+type CsvParseResult = (Vec<String>, Vec<Vec<Option<String>>>);
+
 /// 从 CSV 字符串构造 DataFrame
-fn parse_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<Vec<Option<String>>>)> {
+fn parse_csv_string(content: &str, has_header: bool) -> PyResult<CsvParseResult> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(has_header)
         .flexible(true)
@@ -20,17 +22,18 @@ fn parse_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, V
 
     let mut headers: Vec<String> = Vec::new();
     if has_header {
-        for h in rdr.headers().map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("csv header: {e}"))
-        })?.iter() {
+        for h in rdr
+            .headers()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("csv header: {e}")))?
+            .iter()
+        {
             headers.push(h.to_string());
         }
     }
 
     let mut cols: Vec<Vec<Option<String>>> = Vec::new();
     let mut ncols_hint: Option<usize> = None;
-    let mut row_idx = 0;
-    for result in rdr.records() {
+    for (row_idx, result) in rdr.records().enumerate() {
         let record = result.map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("csv row {row_idx}: {e}"))
         })?;
@@ -57,10 +60,9 @@ fn parse_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, V
                 cols[i].push(Some(val.to_string()));
             }
         }
-        for j in record.len()..cols.len() {
-            cols[j].push(None);
-        }
-        row_idx += 1;
+        cols.iter_mut().skip(record.len()).for_each(|col| {
+            col.push(None);
+        });
     }
 
     // 只有表头没有数据: 用表头长度初始化空列
@@ -73,8 +75,9 @@ fn parse_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, V
 
 /// 推断字符串列的类型 (并行化)
 fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Option<String>>) {
-    let (all_int, all_float, all_bool, any_non_null) = values.par_iter().map(|v| {
-        match v {
+    let (all_int, all_float, all_bool, any_non_null) = values
+        .par_iter()
+        .map(|v| match v {
             Some(s) => {
                 let int_ok = s.parse::<i64>().is_ok();
                 let float_ok = s.parse::<f64>().is_ok();
@@ -83,13 +86,18 @@ fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Op
                 (int_ok, float_ok, bool_ok, true)
             }
             None => (true, true, true, false),
-        }
-    }).reduce(
-        || (true, true, true, false),
-        |(a_int, a_float, a_bool, a_any), (b_int, b_float, b_bool, b_any)| {
-            (a_int && b_int, a_float && b_float, a_bool && b_bool, a_any || b_any)
-        }
-    );
+        })
+        .reduce(
+            || (true, true, true, false),
+            |(a_int, a_float, a_bool, a_any), (b_int, b_float, b_bool, b_any)| {
+                (
+                    a_int && b_int,
+                    a_float && b_float,
+                    a_bool && b_bool,
+                    a_any || b_any,
+                )
+            },
+        );
     let dtype = if !any_non_null {
         DType::Object
     } else if all_bool {
@@ -105,9 +113,13 @@ fn infer_column(values: &[Option<String>]) -> (crate::core::dtype::DType, Vec<Op
 }
 
 /// 将 string 列转换为目标 dtype 的 string 表示 (并行化)
-fn cast_strings(values: &[Option<String>], target: crate::core::dtype::DType) -> Vec<Option<String>> {
-    values.par_iter().map(|opt| {
-        match opt {
+fn cast_strings(
+    values: &[Option<String>],
+    target: crate::core::dtype::DType,
+) -> Vec<Option<String>> {
+    values
+        .par_iter()
+        .map(|opt| match opt {
             None => None,
             Some(s) => match target {
                 DType::Int64 => {
@@ -136,52 +148,61 @@ fn cast_strings(values: &[Option<String>], target: crate::core::dtype::DType) ->
                 }
                 DType::Object => Some(s.clone()),
                 DType::Categorical => Some(s.clone()),
-            }
-        }
-    }).collect()
+            },
+        })
+        .collect()
 }
 
 #[pyfunction]
-pub fn read_csv_string<'py>(content: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
+pub fn read_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
     let (headers, cols) = parse_csv_string(content, has_header)?;
-    let series_list: Vec<PySeries> = headers.par_iter().zip(cols.par_iter()).map(|(h, col)| {
-        // 空列: 强制为 object dtype (0 长度)
-        if col.is_empty() {
-            return PySeries { inner: Series::from_options_string(h.clone(), &[]) };
-        }
-        let (dtype, _strings) = infer_column(col);
-        let casted = cast_strings(col, dtype);
-        let series = match dtype {
-            crate::core::dtype::DType::Int64 => {
-                let ints: Vec<Option<i64>> = casted.par_iter().map(|v| {
-                    v.as_ref().and_then(|s| s.parse::<i64>().ok())
-                }).collect();
-                Series::from_options_i64(h.clone(), &ints)
+    let series_list: Vec<PySeries> = headers
+        .par_iter()
+        .zip(cols.par_iter())
+        .map(|(h, col)| {
+            // 空列: 强制为 object dtype (0 长度)
+            if col.is_empty() {
+                return PySeries {
+                    inner: Series::from_options_string(h.clone(), &[]),
+                };
             }
-            crate::core::dtype::DType::Float64 => {
-                let floats: Vec<Option<f64>> = casted.par_iter().map(|v| {
-                    v.as_ref().and_then(|s| s.parse::<f64>().ok())
-                }).collect();
-                Series::from_options_f64(h.clone(), &floats)
-            }
-            crate::core::dtype::DType::Bool => {
-                let bools: Vec<Option<bool>> = casted.par_iter().map(|v| {
-                    v.as_ref().map(|s| {
-                        let sl = s.to_lowercase();
-                        sl == "true" || sl == "1"
-                    })
-                }).collect();
-                Series::from_options_bool(h.clone(), &bools)
-            }
-            crate::core::dtype::DType::Object => {
-                Series::from_options_string(h.clone(), col)
-            }
-            crate::core::dtype::DType::Categorical => {
-                Series::from_options_string(h.clone(), col)
-            }
-        };
-        PySeries { inner: series }
-    }).collect();
+            let (dtype, _strings) = infer_column(col);
+            let casted = cast_strings(col, dtype);
+            let series = match dtype {
+                crate::core::dtype::DType::Int64 => {
+                    let ints: Vec<Option<i64>> = casted
+                        .par_iter()
+                        .map(|v| v.as_ref().and_then(|s| s.parse::<i64>().ok()))
+                        .collect();
+                    Series::from_options_i64(h.clone(), &ints)
+                }
+                crate::core::dtype::DType::Float64 => {
+                    let floats: Vec<Option<f64>> = casted
+                        .par_iter()
+                        .map(|v| v.as_ref().and_then(|s| s.parse::<f64>().ok()))
+                        .collect();
+                    Series::from_options_f64(h.clone(), &floats)
+                }
+                crate::core::dtype::DType::Bool => {
+                    let bools: Vec<Option<bool>> = casted
+                        .par_iter()
+                        .map(|v| {
+                            v.as_ref().map(|s| {
+                                let sl = s.to_lowercase();
+                                sl == "true" || sl == "1"
+                            })
+                        })
+                        .collect();
+                    Series::from_options_bool(h.clone(), &bools)
+                }
+                crate::core::dtype::DType::Object => Series::from_options_string(h.clone(), col),
+                crate::core::dtype::DType::Categorical => {
+                    Series::from_options_string(h.clone(), col)
+                }
+            };
+            PySeries { inner: series }
+        })
+        .collect();
     Ok((headers, series_list))
 }
 
@@ -195,7 +216,7 @@ fn csv_escape(s: &str) -> String {
 }
 
 #[pyfunction]
-pub fn write_csv_string<'py>(
+pub fn write_csv_string(
     columns: Vec<String>,
     series_list: Vec<PySeries>,
     include_header: bool,
@@ -234,14 +255,12 @@ pub fn write_csv_string<'py>(
 }
 
 #[pyfunction]
-pub fn read_csv_path<'py>(path: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
+pub fn read_csv_path(path: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
     let mut content = String::new();
-    let mut file = File::open(path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("open {path}: {e}"))
-    })?;
-    file.read_to_string(&mut content).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("read {path}: {e}"))
-    })?;
+    let mut file = File::open(path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("open {path}: {e}")))?;
+    file.read_to_string(&mut content)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("read {path}: {e}")))?;
     read_csv_string(&content, has_header)
 }
 
@@ -253,11 +272,9 @@ pub fn write_csv_path(
     include_header: bool,
 ) -> PyResult<()> {
     let content = write_csv_string(columns, series_list, include_header)?;
-    let mut file = File::create(path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("create {path}: {e}"))
-    })?;
-    file.write_all(content.as_bytes()).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("write {path}: {e}"))
-    })?;
+    let mut file = File::create(path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("create {path}: {e}")))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("write {path}: {e}")))?;
     Ok(())
 }

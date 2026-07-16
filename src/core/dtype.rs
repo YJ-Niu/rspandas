@@ -29,7 +29,7 @@ impl DType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<DType> {
+    pub fn parse(s: &str) -> Option<DType> {
         match s.to_lowercase().as_str() {
             "int64" | "int" | "i64" => Some(DType::Int64),
             "float64" | "float" | "f64" => Some(DType::Float64),
@@ -136,7 +136,7 @@ impl ColumnData {
                 let r: Vec<Option<i64>> = v
                     .par_iter()
                     .zip(mask.par_iter())
-                    .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
+                    .filter_map(|(val, m)| if *m { Some(*val) } else { None })
                     .collect();
                 ColumnData::Int(r)
             }
@@ -144,7 +144,7 @@ impl ColumnData {
                 let r: Vec<Option<f64>> = v
                     .par_iter()
                     .zip(mask.par_iter())
-                    .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
+                    .filter_map(|(val, m)| if *m { Some(*val) } else { None })
                     .collect();
                 ColumnData::Float(r)
             }
@@ -152,7 +152,7 @@ impl ColumnData {
                 let r: Vec<Option<bool>> = v
                     .par_iter()
                     .zip(mask.par_iter())
-                    .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
+                    .filter_map(|(val, m)| if *m { Some(*val) } else { None })
                     .collect();
                 ColumnData::Bool(r)
             }
@@ -165,10 +165,11 @@ impl ColumnData {
                 ColumnData::String(r)
             }
             ColumnData::Categorical(c) => {
-                let r: Vec<Option<i32>> = c.codes
+                let r: Vec<Option<i32>> = c
+                    .codes
                     .par_iter()
                     .zip(mask.par_iter())
-                    .filter_map(|(val, m)| if *m { Some(val.clone()) } else { None })
+                    .filter_map(|(val, m)| if *m { Some(*val) } else { None })
                     .collect();
                 ColumnData::Categorical(CategoricalData {
                     categories: c.categories.clone(),
@@ -227,7 +228,9 @@ impl ColumnData {
                 for code in &c.codes {
                     match code {
                         Some(code_idx) => {
-                            let cat_str = c.categories.get(*code_idx as usize)
+                            let cat_str = c
+                                .categories
+                                .get(*code_idx as usize)
                                 .cloned()
                                 .unwrap_or_else(|| "NaN".to_string());
                             list.append(cat_str).unwrap();
@@ -266,44 +269,55 @@ impl ColumnData {
     pub fn fillna_i64(&self, v: i64) -> ColumnData {
         if let ColumnData::Int(col) = self {
             ColumnData::Int(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
-        } else { self.clone() }
+        } else {
+            self.clone()
+        }
     }
     pub fn fillna_f64(&self, v: f64) -> ColumnData {
         if let ColumnData::Float(col) = self {
             ColumnData::Float(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
-        } else { self.clone() }
+        } else {
+            self.clone()
+        }
     }
     pub fn fillna_bool(&self, v: bool) -> ColumnData {
         if let ColumnData::Bool(col) = self {
             ColumnData::Bool(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
-        } else { self.clone() }
+        } else {
+            self.clone()
+        }
     }
     pub fn fillna_string(&self, v: &str) -> ColumnData {
         if let ColumnData::String(col) = self {
             let v_clone = v.to_string();
-            ColumnData::String(col.par_iter().map(|x| Some(x.clone().unwrap_or_else(|| v_clone.clone()))).collect())
-        } else { self.clone() }
+            ColumnData::String(
+                col.par_iter()
+                    .map(|x| Some(x.clone().unwrap_or_else(|| v_clone.clone())))
+                    .collect(),
+            )
+        } else {
+            self.clone()
+        }
     }
     pub fn fillna_categorical(&self, v: &str) -> ColumnData {
         if let ColumnData::Categorical(c) = self {
             let v_clone = v.to_string();
             // 找到或添加 fill value 的 code
-            let fill_code = c.categories.iter().position(|cat| cat == &v_clone)
+            let fill_code = c
+                .categories
+                .iter()
+                .position(|cat| cat == &v_clone)
                 .map(|i| i as i32)
                 .unwrap_or_else(|| c.categories.len() as i32);
             let mut new_categories = c.categories.clone();
-            let new_codes: Vec<Option<i32>> = c.codes.par_iter().map(|code| {
-                match code {
+            let new_codes: Vec<Option<i32>> = c
+                .codes
+                .par_iter()
+                .map(|code| match code {
                     Some(c) => Some(*c),
-                    None => {
-                        if fill_code as usize >= new_categories.len() {
-                            Some(fill_code) // 需要外部同步添加
-                        } else {
-                            Some(fill_code)
-                        }
-                    }
-                }
-            }).collect();
+                    None => Some(fill_code),
+                })
+                .collect();
             // 如果 fill_code 对应的 category 不在列表中，添加它
             if fill_code as usize >= new_categories.len() {
                 new_categories.push(v_clone);
@@ -313,7 +327,9 @@ impl ColumnData {
                 codes: new_codes,
                 ordered: c.ordered,
             })
-        } else { self.clone() }
+        } else {
+            self.clone()
+        }
     }
 
     /// 删除 None 所在行
@@ -332,8 +348,8 @@ impl ColumnData {
                 ColumnData::String(v.par_iter().filter_map(|x| x.clone()).map(Some).collect())
             }
             ColumnData::Categorical(c) => {
-                let codes: Vec<Option<i32>> = c.codes.par_iter()
-                    .filter_map(|x| *x).map(Some).collect();
+                let codes: Vec<Option<i32>> =
+                    c.codes.par_iter().filter_map(|x| *x).map(Some).collect();
                 ColumnData::Categorical(CategoricalData {
                     categories: c.categories.clone(),
                     codes,
@@ -348,68 +364,64 @@ impl ColumnData {
         match self {
             ColumnData::Int(v) => {
                 let mut seen = std::collections::HashSet::new();
-                let mut out: Vec<Option<i64>> = Vec::new();
-                for x in v {
-                    if let Some(val) = x {
-                        if seen.insert(*val) {
-                            out.push(Some(*val));
-                        }
-                    }
-                }
+                let out: Vec<Option<i64>> = v
+                    .iter()
+                    .flatten()
+                    .filter(|val| seen.insert(**val))
+                    .map(|val| Some(*val))
+                    .collect();
                 ColumnData::Int(out)
             }
             ColumnData::Float(v) => {
                 let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
-                let mut out: Vec<Option<f64>> = Vec::new();
-                for x in v {
-                    if let Some(val) = x {
-                        if seen.insert(val.to_bits()) {
-                            out.push(Some(*val));
-                        }
-                    }
-                }
+                let out: Vec<Option<f64>> = v
+                    .iter()
+                    .flatten()
+                    .filter(|val| seen.insert(val.to_bits()))
+                    .map(|val| Some(*val))
+                    .collect();
                 ColumnData::Float(out)
             }
             ColumnData::Bool(v) => {
                 let mut seen = std::collections::HashSet::new();
-                let mut out: Vec<Option<bool>> = Vec::new();
-                for x in v {
-                    if let Some(val) = x {
-                        if seen.insert(*val) {
-                            out.push(Some(*val));
-                        }
-                    }
-                }
+                let out: Vec<Option<bool>> = v
+                    .iter()
+                    .flatten()
+                    .filter(|val| seen.insert(**val))
+                    .map(|val| Some(*val))
+                    .collect();
                 ColumnData::Bool(out)
             }
             ColumnData::String(v) => {
                 let mut seen = std::collections::HashSet::new();
-                let mut out: Vec<Option<String>> = Vec::new();
-                for x in v {
-                    if let Some(val) = x {
-                        if seen.insert(val.clone()) {
-                            out.push(Some(val.clone()));
-                        }
-                    }
-                }
+                let out: Vec<Option<String>> = v
+                    .iter()
+                    .flatten()
+                    .filter(|&val| seen.insert(val.clone()))
+                    .cloned()
+                    .map(Some)
+                    .collect();
                 ColumnData::String(out)
             }
             ColumnData::Categorical(c) => {
                 let mut seen = std::collections::HashSet::new();
-                let mut out_codes: Vec<Option<i32>> = Vec::new();
                 let mut out_categories: Vec<String> = Vec::new();
-                for code in &c.codes {
-                    if let Some(code_idx) = code {
-                        if seen.insert(*code_idx) {
-                            let cat_str = c.categories.get(*code_idx as usize)
-                                .cloned()
-                                .unwrap_or_default();
-                            let new_code = out_categories.len() as i32;
-                            out_categories.push(cat_str);
-                            out_codes.push(Some(new_code));
-                        }
-                    }
-                }
+                let out_codes: Vec<Option<i32>> = c
+                    .codes
+                    .iter()
+                    .flatten()
+                    .filter(|code_idx| seen.insert(**code_idx))
+                    .map(|code_idx| {
+                        let cat_str = c
+                            .categories
+                            .get(*code_idx as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        let new_code = out_categories.len() as i32;
+                        out_categories.push(cat_str);
+                        Some(new_code)
+                    })
+                    .collect();
                 ColumnData::Categorical(CategoricalData {
                     categories: out_categories,
                     codes: out_codes,
@@ -434,11 +446,11 @@ mod tests {
 
     #[test]
     fn test_dtype_from_str() {
-        assert_eq!(DType::from_str("int64"), Some(DType::Int64));
-        assert_eq!(DType::from_str("FLOAT64"), Some(DType::Float64));
-        assert_eq!(DType::from_str("bool"), Some(DType::Bool));
-        assert_eq!(DType::from_str("str"), Some(DType::Object));
-        assert_eq!(DType::from_str("unknown"), None);
+        assert_eq!(DType::parse("int64"), Some(DType::Int64));
+        assert_eq!(DType::parse("FLOAT64"), Some(DType::Float64));
+        assert_eq!(DType::parse("bool"), Some(DType::Bool));
+        assert_eq!(DType::parse("str"), Some(DType::Object));
+        assert_eq!(DType::parse("unknown"), None);
     }
 
     #[test]

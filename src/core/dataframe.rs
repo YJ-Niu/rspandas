@@ -1,13 +1,13 @@
 //! DataFrame: 列存储的多列数据结构 + PyO3 绑定
 
+use pyo3::IntoPyObject;
 use pyo3::prelude::*;
+use pyo3::types::PyAnyMethods;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
-use pyo3::types::PyAnyMethods;
-use pyo3::IntoPyObject;
 
-use super::series::{PySeries, Series};
 use super::dtype::DType;
+use super::series::{PySeries, Series};
 
 #[derive(Debug, Clone)]
 pub struct DataFrame {
@@ -17,13 +17,18 @@ pub struct DataFrame {
 
 impl DataFrame {
     pub fn new_empty() -> Self {
-        Self { columns: Vec::new(), data: Vec::new() }
+        Self {
+            columns: Vec::new(),
+            data: Vec::new(),
+        }
     }
 
     pub fn from_series(columns: Vec<String>, data: Vec<Series>) -> PyResult<Self> {
         if columns.len() != data.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "columns len {} != data len {}", columns.len(), data.len()
+                "columns len {} != data len {}",
+                columns.len(),
+                data.len()
             )));
         }
         // 校验列名去重
@@ -31,7 +36,8 @@ impl DataFrame {
         for c in &columns {
             if !seen.insert(c.clone()) {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "duplicate column name: {}", c
+                    "duplicate column name: {}",
+                    c
                 )));
             }
         }
@@ -42,7 +48,9 @@ impl DataFrame {
                 if s.len() != n {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
                         "column '{}' length {} != row length {}",
-                        columns[i], s.len(), n
+                        columns[i],
+                        s.len(),
+                        n
                     )));
                 }
             }
@@ -53,18 +61,28 @@ impl DataFrame {
     pub fn nrows(&self) -> usize {
         self.data.first().map(|s| s.len()).unwrap_or(0)
     }
-    pub fn ncols(&self) -> usize { self.columns.len() }
-    pub fn shape(&self) -> (usize, usize) { (self.nrows(), self.ncols()) }
-    pub fn column_names(&self) -> &[String] { &self.columns }
+    pub fn ncols(&self) -> usize {
+        self.columns.len()
+    }
+    pub fn shape(&self) -> (usize, usize) {
+        (self.nrows(), self.ncols())
+    }
+    pub fn column_names(&self) -> &[String] {
+        &self.columns
+    }
 
     pub fn dtypes(&self) -> Vec<(&str, &'static str)> {
-        self.data.iter().zip(self.columns.iter())
+        self.data
+            .iter()
+            .zip(self.columns.iter())
             .map(|(s, c)| (c.as_str(), s.dtype_name()))
             .collect()
     }
 
     pub fn get_column(&self, name: &str) -> Option<&Series> {
-        self.columns.iter().position(|c| c == name)
+        self.columns
+            .iter()
+            .position(|c| c == name)
             .and_then(|i| self.data.get(i))
     }
 
@@ -78,22 +96,33 @@ impl DataFrame {
 
     pub fn head(&self, n: usize) -> DataFrame {
         let n_data: Vec<Series> = self.data.par_iter().map(|s| s.head(n)).collect();
-        DataFrame { columns: self.columns.clone(), data: n_data }
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
     }
 
     pub fn tail(&self, n: usize) -> DataFrame {
         let n_data: Vec<Series> = self.data.par_iter().map(|s| s.tail(n)).collect();
-        DataFrame { columns: self.columns.clone(), data: n_data }
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
     }
 
     pub fn filter_rows(&self, mask: &[bool]) -> PyResult<DataFrame> {
         if mask.len() != self.nrows() {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "mask length {} != nrows {}", mask.len(), self.nrows()
+                "mask length {} != nrows {}",
+                mask.len(),
+                self.nrows()
             )));
         }
         let n_data: Vec<Series> = self.data.par_iter().map(|s| s.filter(mask)).collect();
-        Ok(DataFrame { columns: self.columns.clone(), data: n_data })
+        Ok(DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        })
     }
 
     /// 删除任意一列为 None 的行 (axis=0)
@@ -105,36 +134,50 @@ impl DataFrame {
         // 并行计算每列的非空 mask，然后合并 (任意列 None 则整行删除)
         let keep: Vec<bool> = (0..nrows)
             .into_par_iter()
-            .map(|i| self.data.iter().all(|s| {
-                match &s.data {
+            .map(|i| {
+                self.data.iter().all(|s| match &s.data {
                     super::dtype::ColumnData::Int(v) => v[i].is_some(),
                     super::dtype::ColumnData::Float(v) => v[i].is_some(),
                     super::dtype::ColumnData::Bool(v) => v[i].is_some(),
                     super::dtype::ColumnData::String(v) => v[i].is_some(),
                     super::dtype::ColumnData::Categorical(c) => c.codes[i].is_some(),
-                }
-            }))
+                })
+            })
             .collect();
         let n_data: Vec<Series> = self.data.par_iter().map(|s| s.filter(&keep)).collect();
-        DataFrame { columns: self.columns.clone(), data: n_data }
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
     }
 
     /// 填充整个 DataFrame 中所有列的 None 值
-    pub fn fillna_rows(&self, fill_dict: &std::collections::HashMap<String, FillValue>) -> PyResult<DataFrame> {
-        let n_data: Vec<Series> = self.columns.par_iter().zip(self.data.par_iter()).map(|(col, series)| {
-            if let Some(v) = fill_dict.get(col) {
-                match (v, series.dtype()) {
-                    (FillValue::Int(x), DType::Int64) => series.fillna_i64(*x),
-                    (FillValue::Float(x), DType::Float64) => series.fillna_f64(*x),
-                    (FillValue::Bool(x), DType::Bool) => series.fillna_bool(*x),
-                    (FillValue::String(x), DType::Object) => series.fillna_string(x),
-                    _ => series.clone(),
+    pub fn fillna_rows(
+        &self,
+        fill_dict: &std::collections::HashMap<String, FillValue>,
+    ) -> PyResult<DataFrame> {
+        let n_data: Vec<Series> = self
+            .columns
+            .par_iter()
+            .zip(self.data.par_iter())
+            .map(|(col, series)| {
+                if let Some(v) = fill_dict.get(col) {
+                    match (v, series.dtype()) {
+                        (FillValue::Int(x), DType::Int64) => series.fillna_i64(*x),
+                        (FillValue::Float(x), DType::Float64) => series.fillna_f64(*x),
+                        (FillValue::Bool(x), DType::Bool) => series.fillna_bool(*x),
+                        (FillValue::String(x), DType::Object) => series.fillna_string(x),
+                        _ => series.clone(),
+                    }
+                } else {
+                    series.clone()
                 }
-            } else {
-                series.clone()
-            }
-        }).collect();
-        Ok(DataFrame { columns: self.columns.clone(), data: n_data })
+            })
+            .collect();
+        Ok(DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        })
     }
 }
 
@@ -170,21 +213,29 @@ impl PyDataFrame {
     // ---------- 属性 ----------
 
     #[getter]
-    fn nrows(&self) -> usize { self.inner.nrows() }
+    fn nrows(&self) -> usize {
+        self.inner.nrows()
+    }
     #[getter]
-    fn ncols(&self) -> usize { self.inner.ncols() }
+    fn ncols(&self) -> usize {
+        self.inner.ncols()
+    }
     #[getter]
-    fn shape(&self) -> (usize, usize) { self.inner.shape() }
+    fn shape(&self) -> (usize, usize) {
+        self.inner.shape()
+    }
     #[getter]
     fn size(&self) -> usize {
         self.inner.nrows() * self.inner.ncols()
     }
     #[getter]
-    fn empty(&self) -> bool { self.inner.nrows() == 0 }
+    fn empty(&self) -> bool {
+        self.inner.nrows() == 0
+    }
 
     #[getter]
     fn columns<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        Ok(PyList::new(py, self.inner.columns.iter().map(|s| s.as_str()))?)
+        PyList::new(py, self.inner.columns.iter().map(|s| s.as_str()))
     }
 
     #[getter]
@@ -203,7 +254,8 @@ impl PyDataFrame {
         match self.inner.get_column(name) {
             Some(s) => Ok(PySeries { inner: s.clone() }),
             None => Err(pyo3::exceptions::PyKeyError::new_err(format!(
-                "column not found: {}", name
+                "column not found: {}",
+                name
             ))),
         }
     }
@@ -213,7 +265,8 @@ impl PyDataFrame {
         match self.inner.get_column_at(idx) {
             Some(s) => Ok(PySeries { inner: s.clone() }),
             None => Err(pyo3::exceptions::PyIndexError::new_err(format!(
-                "column index out of range: {}", idx
+                "column index out of range: {}",
+                idx
             ))),
         }
     }
@@ -224,19 +277,27 @@ impl PyDataFrame {
     }
 
     fn head(&self, n: usize) -> Self {
-        PyDataFrame { inner: self.inner.head(n) }
+        PyDataFrame {
+            inner: self.inner.head(n),
+        }
     }
     fn tail(&self, n: usize) -> Self {
-        PyDataFrame { inner: self.inner.tail(n) }
+        PyDataFrame {
+            inner: self.inner.tail(n),
+        }
     }
     fn filter_rows(&self, mask: Vec<bool>) -> PyResult<Self> {
-        Ok(PyDataFrame { inner: self.inner.filter_rows(&mask)? })
+        Ok(PyDataFrame {
+            inner: self.inner.filter_rows(&mask)?,
+        })
     }
 
     // ---------- 缺失值 ----------
 
     fn dropna(&self) -> Self {
-        PyDataFrame { inner: self.inner.dropna_rows() }
+        PyDataFrame {
+            inner: self.inner.dropna_rows(),
+        }
     }
 
     /// fillna: 接受 dict {col_name: value}，只填充指定列
@@ -255,11 +316,14 @@ impl PyDataFrame {
                 converted.insert(col, FillValue::String(s));
             } else {
                 return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                    "unsupported fill value type for column '{}'", col
+                    "unsupported fill value type for column '{}'",
+                    col
                 )));
             }
         }
-        Ok(PyDataFrame { inner: self.inner.fillna_rows(&converted)? })
+        Ok(PyDataFrame {
+            inner: self.inner.fillna_rows(&converted)?,
+        })
     }
 
     // ---------- 显示辅助 ----------
@@ -290,7 +354,9 @@ impl PyDataFrame {
                     },
                     super::dtype::ColumnData::Categorical(c) => match c.codes.get(i) {
                         Some(Some(code_idx)) => {
-                            let cat_str = c.categories.get(*code_idx as usize)
+                            let cat_str = c
+                                .categories
+                                .get(*code_idx as usize)
                                 .cloned()
                                 .unwrap_or_else(|| "NaN".to_string());
                             cat_str.into_pyobject(py).unwrap().into_any().unbind()
@@ -308,14 +374,16 @@ impl PyDataFrame {
     /// 每列的 string 列表 (用于显示)
     fn columns_to_string<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let d = PyDict::new(py);
-        let pairs: Vec<(&str, Vec<String>)> = self.inner.columns.par_iter()
+        let pairs: Vec<(&str, Vec<String>)> = self
+            .inner
+            .columns
+            .par_iter()
             .zip(self.inner.data.par_iter())
-            .map(|(col_name, series)| {
-                (col_name.as_str(), series.to_string_vec())
-            })
+            .map(|(col_name, series)| (col_name.as_str(), series.to_string_vec()))
             .collect();
         for (col_name, svec) in pairs {
-            let pylist: Bound<'_, PyList> = PyList::new(py, svec.iter().map(|s| s.as_str())).unwrap();
+            let pylist: Bound<'_, PyList> =
+                PyList::new(py, svec.iter().map(|s| s.as_str())).unwrap();
             d.set_item(col_name, pylist).unwrap();
         }
         d
@@ -334,11 +402,16 @@ mod tests {
     #[test]
     fn test_dataframe_basic() {
         let s1 = Series::new_int(Some("a".to_string()), vec![Some(1), Some(2), Some(3)]);
-        let s2 = Series::new_string(Some("b".to_string()), vec![Some("x".to_string()), Some("y".to_string()), Some("z".to_string())]);
-        let df = DataFrame::from_series(
-            vec!["a".to_string(), "b".to_string()],
-            vec![s1, s2],
-        ).unwrap();
+        let s2 = Series::new_string(
+            Some("b".to_string()),
+            vec![
+                Some("x".to_string()),
+                Some("y".to_string()),
+                Some("z".to_string()),
+            ],
+        );
+        let df =
+            DataFrame::from_series(vec!["a".to_string(), "b".to_string()], vec![s1, s2]).unwrap();
         assert_eq!(df.shape(), (3, 2));
         assert_eq!(df.nrows(), 3);
         assert_eq!(df.ncols(), 2);
@@ -364,10 +437,7 @@ mod tests {
     fn test_dataframe_duplicate_col() {
         let s1 = Series::new_int(None, vec![Some(1)]);
         let s2 = Series::new_int(None, vec![Some(2)]);
-        let r = DataFrame::from_series(
-            vec!["a".to_string(), "a".to_string()],
-            vec![s1, s2],
-        );
+        let r = DataFrame::from_series(vec!["a".to_string(), "a".to_string()], vec![s1, s2]);
         assert!(r.is_err());
     }
 
@@ -375,10 +445,7 @@ mod tests {
     fn test_dataframe_shape_mismatch() {
         let s1 = Series::new_int(None, vec![Some(1), Some(2)]);
         let s2 = Series::new_int(None, vec![Some(3)]);
-        let r = DataFrame::from_series(
-            vec!["a".to_string(), "b".to_string()],
-            vec![s1, s2],
-        );
+        let r = DataFrame::from_series(vec!["a".to_string(), "b".to_string()], vec![s1, s2]);
         assert!(r.is_err());
     }
 

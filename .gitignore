@@ -33,7 +33,7 @@ Thumbs.db
 testing/
 main*.py
 out/
-
+test_data/
 wheelhouse/
 N237S NB.csv
 plots*.py

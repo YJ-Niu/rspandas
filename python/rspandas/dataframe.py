@@ -1010,7 +1010,7 @@ class DataFrame:
 
     def to_excel(
         self,
-        path: str,
+        path,
         sheet_name: str = "Sheet1",
         index: bool = False,
         header: bool = True,
@@ -1018,13 +1018,16 @@ class DataFrame:
     ) -> None:
         """将 DataFrame 写入 Excel 文件。
 
-        :param path: 输出文件路径
+        :param path: 输出文件路径或 ExcelWriter 对象
         :param sheet_name: 工作表名称
         :param index: 是否写入行索引
         :param header: 是否写入列名
         """
-        from .io import to_excel as _to_excel
-        _to_excel(self, path, sheet_name=sheet_name, index=index, header=header, **kwargs)
+        from .io import to_excel as _to_excel, ExcelWriter
+        if isinstance(path, ExcelWriter):
+            path.write(self, sheet_name=sheet_name, index=index, header=header)
+        else:
+            _to_excel(self, path, sheet_name=sheet_name, index=index, header=header, **kwargs)
 
     def to_parquet(
         self,

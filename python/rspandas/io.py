@@ -1,14 +1,50 @@
 """IO 扩展: JSON / Excel / Parquet / Pickle / SQL 读写。
 
-所有函数都接受/返回 DataFrame，与 pandas IO API 对齐。
-"""
+所有函数都接受/返回 DataFrame，与 pandas IO API 对齐。"""
 
 from __future__ import annotations
 
 import json as _json
 import pickle as _pickle
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List, Tuple
 from .dataframe import DataFrame
+
+
+class ExcelWriter:
+    """Excel 写入器，支持将多个 DataFrame 写入同一个文件的不同 sheet。
+
+    用法:
+        with ExcelWriter('output.xlsx') as writer:
+            df1.to_excel(writer, sheet_name='Sheet1')
+            df2.to_excel(writer, sheet_name='Sheet2')
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._sheets: List[Tuple[str, DataFrame, bool, bool]] = []
+
+    def write(self, df: DataFrame, sheet_name: str = "Sheet1", index: bool = False, header: bool = True):
+        """将 DataFrame 写入指定 sheet。"""
+        self._sheets.append((sheet_name, df, header, index))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.close()
+
+    def close(self):
+        """关闭写入器并保存文件。"""
+        from .rspandas import write_xlsx_multi as _write_xlsx_multi
+
+        sheets_data = []
+        for sheet_name, df, include_header, include_index in self._sheets:
+            cols = list(df.columns)
+            series_list = [df._inner.get_column(c) for c in cols]
+            sheets_data.append((sheet_name, cols, series_list, include_header, include_index))
+
+        _write_xlsx_multi(self._path, sheets_data)
 
 
 # ============================================================================

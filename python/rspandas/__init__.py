@@ -30,6 +30,7 @@ from .io import (
     to_pickle,
     read_sql,
     to_sql,
+    ExcelWriter,
 )
 from .indexes import (
     Index,
@@ -215,6 +216,7 @@ __all__ = [
     "to_json",
     "read_excel",
     "to_excel",
+    "ExcelWriter",
     "read_parquet",
     "to_parquet",
     "read_feather",
