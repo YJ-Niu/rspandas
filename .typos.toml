@@ -1,0 +1,6 @@
+[default.extend-identifiers]
+caled = "caled"
+ser = "ser"
+
+[files]
+extend-exclude = ["test/test_rf/"]

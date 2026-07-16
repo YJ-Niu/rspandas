@@ -3,47 +3,38 @@
 A drop-in pandas-like API where the heavy lifting is done in Rust.
 """
 
-from typing import Any, Dict
-
-from .series import Series
-from .dataframe import DataFrame
+from . import offsets
 from ._datetime import (
-    to_datetime,
-    date_range,
-    to_timedelta,
-    timedelta_range,
-    period_range,
     bdate_range,
-    infer_freq,
+    date_range,
     DatetimeSeries,
+    infer_freq,
+    period_range,
+    timedelta_range,
+    to_datetime,
+    to_timedelta,
 )
+from .dataframe import DataFrame
+from .indexes import crosstab, cut, get_dummies, Index, MultiIndex, qcut, RangeIndex
 from .io import (
-    read_json,
-    to_json,
+    ExcelWriter,
     read_excel,
-    to_excel,
-    read_parquet,
-    to_parquet,
     read_feather,
-    to_feather,
+    read_json,
+    read_parquet,
     read_pickle,
-    to_pickle,
     read_sql,
+    to_excel,
+    to_feather,
+    to_json,
+    to_parquet,
+    to_pickle,
     to_sql,
 )
-from .indexes import (
-    Index,
-    RangeIndex,
-    MultiIndex,
-    get_dummies,
-    cut,
-    qcut,
-    crosstab,
-)
-from .rspandas import _Series, _DataFrame  # 重新导出 Rust 类型，供内部使用
+from .rspandas import _DataFrame, _Series  # 重新导出 Rust 类型，供内部使用
 from .rspandas import factorize as _factorize  # Rust 端 factorize
-from . import offsets
-
+from .series import Series
+from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
 # 全局选项配置
@@ -193,12 +184,14 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
             if all(v is None or isinstance(v, int) for v in result):
                 pass
             else:
-                result = [int(v) if v is not None and v == int(v) else v for v in result]
+                result = [
+                    int(v) if v is not None and v == int(v) else v for v in result
+                ]
 
     return _Series(result, name=None)
 
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 __all__ = [
     "Series",
     "DataFrame",
@@ -215,6 +208,7 @@ __all__ = [
     "to_json",
     "read_excel",
     "to_excel",
+    "ExcelWriter",
     "read_parquet",
     "to_parquet",
     "read_feather",

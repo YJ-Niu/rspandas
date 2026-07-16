@@ -1,19 +1,65 @@
 """IO 扩展: JSON / Excel / Parquet / Pickle / SQL 读写。
 
-所有函数都接受/返回 DataFrame，与 pandas IO API 对齐。
-"""
+所有函数都接受/返回 DataFrame，与 pandas IO API 对齐。"""
 
 from __future__ import annotations
 
+from .dataframe import DataFrame
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import json as _json
 import pickle as _pickle
-from typing import Any, Dict, Optional, Union
-from .dataframe import DataFrame
+
+
+class ExcelWriter:
+    """Excel 写入器，支持将多个 DataFrame 写入同一个文件的不同 sheet。
+
+    用法:
+        with ExcelWriter('output.xlsx') as writer:
+            df1.to_excel(writer, sheet_name='Sheet1')
+            df2.to_excel(writer, sheet_name='Sheet2')
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._sheets: List[Tuple[str, DataFrame, bool, bool]] = []
+
+    def write(
+        self,
+        df: DataFrame,
+        sheet_name: str = "Sheet1",
+        index: bool = False,
+        header: bool = True,
+    ):
+        """将 DataFrame 写入指定 sheet。"""
+        self._sheets.append((sheet_name, df, header, index))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.close()
+
+    def close(self):
+        """关闭写入器并保存文件。"""
+        from .rspandas import write_xlsx_multi as _write_xlsx_multi
+
+        sheets_data = []
+        for sheet_name, df, include_header, include_index in self._sheets:
+            cols = list(df.columns)
+            series_list = [df._inner.get_column(c) for c in cols]
+            sheets_data.append(
+                (sheet_name, cols, series_list, include_header, include_index)
+            )
+
+        _write_xlsx_multi(self._path, sheets_data)
 
 
 # ============================================================================
 # JSON
 # ============================================================================
+
 
 def read_json(
     path: str,
@@ -144,6 +190,7 @@ def to_json(
 # Excel (使用 Rust 后端 calamine + rust_xlsxwriter，无需 openpyxl)
 # ============================================================================
 
+
 def read_excel(
     path: str,
     sheet_name: Union[str, int] = 0,
@@ -167,7 +214,8 @@ def read_excel(
     -------
     DataFrame
     """
-    from .rspandas import read_xlsx as _read_xlsx, _DataFrame
+    from .rspandas import _DataFrame
+    from .rspandas import read_xlsx as _read_xlsx
 
     if isinstance(sheet_name, int):
         cols, series_list = _read_xlsx(path, None, sheet_name, header)
@@ -213,6 +261,7 @@ def to_excel(
 # Parquet
 # ============================================================================
 
+
 def read_parquet(path: str, **kwargs) -> DataFrame:
     """从 Parquet 文件读取 DataFrame。
 
@@ -229,6 +278,7 @@ def read_parquet(path: str, **kwargs) -> DataFrame:
     """
     try:
         import pyarrow.parquet as pq
+
         table = pq.read_table(path, **kwargs)
         return _arrow_table_to_dataframe(table)
     except ImportError:
@@ -304,7 +354,9 @@ def _dataframe_to_arrow_table(df: DataFrame):
         elif all(isinstance(v, float) for v in non_null):
             arrays.append(pa.array(col_data, type=pa.float64()))
         else:
-            arrays.append(pa.array([str(v) if v is not None else None for v in col_data]))
+            arrays.append(
+                pa.array([str(v) if v is not None else None for v in col_data])
+            )
 
     return pa.table(dict(zip(df.columns, arrays)))
 
@@ -312,6 +364,7 @@ def _dataframe_to_arrow_table(df: DataFrame):
 # ============================================================================
 # Feather (Arrow IPC)
 # ============================================================================
+
 
 def read_feather(path: str, **kwargs) -> DataFrame:
     """从 Feather 文件读取 DataFrame。
@@ -329,6 +382,7 @@ def read_feather(path: str, **kwargs) -> DataFrame:
     """
     try:
         import pyarrow.feather as pf
+
         table = pf.read_table(path, **kwargs)
         return _arrow_table_to_dataframe(table)
     except ImportError:
@@ -359,6 +413,7 @@ def to_feather(
     """
     try:
         import pyarrow.feather as pf
+
         table = _dataframe_to_arrow_table(df)
         pf.write_feather(table, path, compression=compression, **kwargs)
     except ImportError:
@@ -371,6 +426,7 @@ def to_feather(
 # ============================================================================
 # Pickle
 # ============================================================================
+
 
 def read_pickle(path: str, **kwargs) -> DataFrame:
     """从 Pickle 文件读取 DataFrame。
@@ -419,6 +475,7 @@ def to_pickle(df: DataFrame, path: str, **kwargs) -> None:
 # ============================================================================
 # SQL
 # ============================================================================
+
 
 def read_sql(
     query: str,

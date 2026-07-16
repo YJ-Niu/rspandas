@@ -18,6 +18,11 @@ def pprint(n, ss):
     print("++++++++++++++++++++++++++++++")
     print(ss, "\n")
 
+# 保存当前图
+def ssaver(name):
+    plt.savefig(name)
+    plt.clf()
+
 
 # ring_slot = rf.Network('data/ring slot.s2p')
 
@@ -48,19 +53,19 @@ pprint(7, f_match)
 
 rf.stylely(figsize=(20, 16), dpi=144)
 ring_slot.plot_s_db()
-plt.savefig('./test/test_rf/test1.png')
-plt.clf()
+# ssaver('./test/test_rf/test1.png')
+
 
 rf.stylely(figsize=(20, 16), dpi=144)
 ring_slot.plot_s_deg(m=0, n=1)
-plt.savefig('./test/test_rf/test2.png')
-plt.clf()
+# ssaver('./test/test_rf/test2.png')
+
 
 rf.stylely(figsize=(20, 16), dpi=144)
 ring_slot.plot_s_smith(lw=2)
 plt.title('Big ole Smith Chart')
-plt.savefig('./test/test_rf/test3.png')
-plt.clf()
+# ssaver('./test/test_rf/test3.png')
+
 
 print(rf.io.read_all('./test/test_rf/skrf/data/', contains='ro'))
 ro_dict = rf.io.read_all('./test/test_rf/skrf/data/', contains='ro')
@@ -73,12 +78,12 @@ ro_ns.std_s.plot_s_mag(label='S11')
 plt.ylabel('Standard Deviation')
 plt.title('Standard Deviation of RO')
 plt.legend()
-plt.savefig('./test/test_rf/ro_std_s.png')
-plt.clf()
+# ssaver('./test/test_rf/ro_std_s.png')
+
 
 ro_ns.plot_uncertainty_bounds_s_db(label='S11')
-plt.savefig('./test/test_rf/test4.png')
-plt.clf()
+# ssaver('./test/test_rf/test4.png')
+
 
 freq = Frequency(75, 110, 101, 'GHz')
 cpw = CPW(freq, w=10e-6, s=5e-6, ep_r=10.6)
@@ -99,8 +104,8 @@ ntwk = Network(frequency=freq, s=s, name='random values 2-port')
 pprint(13, ntwk)
 
 ntwk.plot_s_db()
-plt.savefig('./test/test_rf/test5.png')
-plt.clf()
+# ssaver('./test/test_rf/test5.png')
+
 
 # let's assume we have separate arrays for the frequency and s-parameters
 f = np.array([1, 2, 3, 4])  # in GHz
@@ -163,8 +168,8 @@ pprint(25, ring_slot.s11['80-90ghz'])
 
 rf.stylely()
 ring_slot.plot_s_smith()
-plt.savefig('./test/test_rf/test6.png')
-plt.clf()
+# ssaver('./test/test_rf/test6.png')
+
 
 plt.title('Ring Slot $S_{21}$')
 
@@ -172,9 +177,7 @@ rf.stylely()
 ring_slot.s11.plot_s_db(label='Full Band Response')
 ring_slot.s11['82-90ghz'].plot_s_db(lw=3, label='Band of Interest')
 plt.legend()
-plt.savefig('./test/test_rf/test7.png')
-plt.clf()
-
+# ssaver('./test/test_rf/test7.png')
 
 short - delayshort
 short + delayshort
@@ -183,12 +186,12 @@ pprint(26, short / delayshort)
 
 difference = (short - delayshort)
 difference.plot_s_mag(label='Mag of difference')
-plt.savefig('./test/test_rf/test8.png')
-plt.clf()
+# ssaver('./test/test_rf/test8.png')
+
 
 (delayshort/short).plot_s_deg(label='Detrended Phase')
-plt.savefig('./test/test_rf/test9.png')
-plt.clf()
+# ssaver('./test/test_rf/test9.png')
+
 
 hopen = (short*-1)
 pprint(27, hopen.s[:3, ...])
@@ -240,8 +243,8 @@ pprint(41, dict_o_ntwks_files)
 pprint(42, ring_slot.z[:3, ...])
 
 ring_slot.plot_z_im(m=1, n=0)
-plt.savefig('./test/test_rf/test10.png')
-plt.clf()
+# ssaver('./test/test_rf/test10.png')
+
 
 line = rf.data.wr2p2_line  # 2-port
 short = rf.data.wr2p2_short  # 1-port
@@ -280,21 +283,21 @@ line.z0 = [10, 20]
 pprint(49, rf.network.connect(tee, 1, line, 0))
 
 ring_slot.plot_s_smith()
-plt.savefig("./test/test_rf/test11.png")
-plt.clf()
+# ssaver("./test/test_rf/test11.png")
+
 
 rf.stylely()  # nicer looking. Can be configured with different styles
 ring_slot.plot_s_smith()
-plt.savefig("./test/test_rf/test12.png")
-plt.clf()
+# ssaver("./test/test_rf/test12.png")
+
 
 ring_slot.plot_s_smith(draw_labels=True)
-plt.savefig("./test/test_rf/test13.png")
-plt.clf()
+# ssaver("./test/test_rf/test13.png")
+
 
 ring_slot.plot_s_smith(chart_type='y')
-plt.savefig("./test/test_rf/test14.png")
-plt.clf()
+# ssaver("./test/test_rf/test14.png")
+
 
 # prepare markers
 lines = [
@@ -343,8 +346,8 @@ the_table = ax.table(cellText=cell_text,
 the_table.auto_set_font_size(False)
 the_table.set_fontsize(6)
 # the_table.scale(1.5, 1.5)
-plt.savefig("./test/test_rf/test15.png")
-plt.clf()
+# ssaver("./test/test_rf/test15.png")
+
 
 # prepare figure
 fig, ax = plt.subplots(1, 1, figsize=(8, 8))
@@ -355,65 +358,65 @@ fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 rf.plotting.smith(ax=ax, draw_labels=True, ref_imm=1.0, chart_type='z')
 
 ring_slot.plot_s_smith(ax=ax, draw_chart=False)
-plt.savefig("./test/test_rf/test16.png")
-plt.clf()
+# ssaver("./test/test_rf/test16.png")
+
 
 ring_slot.plot_s_complex()
 
 rf.stylely()
 plt.axis('equal')  # otherwise circles won't be circles
-plt.savefig("./test/test_rf/test17.png")
-plt.clf()
+# ssaver("./test/test_rf/test17.png")
+
 
 rf.stylely()
 ring_slot.plot_s_db()
-plt.savefig("./test/test_rf/test18.png")
-plt.clf()
+# ssaver("./test/test_rf/test18.png")
+
 
 rf.stylely()
 ring_slot.plot_s_db(m=0, n=0, label='Theory')
 ring_slot_meas.plot_s_db(m=0, n=0, label='Measurement')
-plt.savefig("./test/test_rf/test19.png")
-plt.clf()
+# ssaver("./test/test_rf/test19.png")
+
 
 ring_slot.plot_s_deg()
-plt.savefig("./test/test_rf/test20.png")
-plt.clf()
+# ssaver("./test/test_rf/test20.png")
+
 
 ring_slot.plot_s_deg_unwrap()
-plt.savefig("./test/test_rf/test21.png")
-plt.clf()
+# ssaver("./test/test_rf/test21.png")
+
 
 gd = abs(ring_slot.s21.group_delay) * 1e9  # in ns
 
 ring_slot.plot(gd)
 plt.ylabel('Group Delay (ns)')
 plt.title('Group Delay of Ring Slot S21')
-plt.savefig("./test/test_rf/test22.png")
-plt.clf()
+# ssaver("./test/test_rf/test22.png")
+
 
 ring_slot.plot_z_im()
-plt.savefig('./test/test_rf/test23.png')
-plt.clf()
+# ssaver('./test/test_rf/test23.png')
+
 
 ring_slot.plot_y_im()
-plt.savefig('./test/test_rf/test24.png')
-plt.clf()
+# ssaver('./test/test_rf/test24.png')
+
 
 ring_slot.plot_s_db(m=0, n=0, label='Simulation')
-plt.savefig('./test/test_rf/test25.png')
-plt.clf()
+# ssaver('./test/test_rf/test25.png')
+
 
 ring_slot.frequency.unit = 'mhz'
 ring_slot.plot_s_db(0, 0)
-plt.savefig('./test/test_rf/test26.png')
-plt.clf()
+# ssaver('./test/test_rf/test26.png')
+
 
 ring_slot.frequency.unit = 'ghz'
 ring_slot.plot_s_db(m=0, n=0, linewidth=3, linestyle='--', label='Simulation')
 ring_slot_meas.plot_s_db(m=0, n=0, marker='<', markevery=10, label='Measured')
-plt.savefig('./test/test_rf/test27.png')
-plt.clf()
+# ssaver('./test/test_rf/test27.png')
+
 
 mpl_style = "seaborn-ticks"
 try:
@@ -427,8 +430,8 @@ with style.context(mpl_style):
     plt.title('Smith Chart With Legend Room')
     plt.axis([-1.1, 2.1, -1.1, 1.1])
     plt.legend(loc=5)
-plt.savefig('./test/test_rf/test28.png')
-plt.clf()
+# ssaver('./test/test_rf/test28.png')
+
 
 save_all_figs('./test/test_rf', format=['png'])
 
@@ -438,8 +441,8 @@ with plt.style.context('grayscale'):
     plotting.add_markers_to_lines()
     plt.legend()  # have to re-generate legend
 
-    plt.savefig('./test/test_rf/test29.png')
-    plt.clf()
+    # ssaver('./test/test_rf/test29.png')
+    
 
 pprint(50, rf.io.read_all(rf.data.pwd, contains='ro'))
 
@@ -451,47 +454,47 @@ pprint(52, ro_ns[0])
 
 rf.stylely()
 ro_ns.plot_s_db()
-plt.savefig('./test/test_rf/test30.png')
-plt.clf()
+# ssaver('./test/test_rf/test30.png')
+
 
 pprint(53, ro_ns.mean_s)
 ro_ns.mean_s.plot_s_db(label='ro')
-plt.savefig('./test/test_rf/test31.png')
-plt.clf()
+# ssaver('./test/test_rf/test31.png')
+
 
 ro_ns.std_s.plot_s_re(y_label='Standard Deviations')
-plt.savefig('./test/test_rf/test32.png')
-plt.clf()
+# ssaver('./test/test_rf/test32.png')
+
 
 ro_ns.mean_s_deg.plot_s_re()
-plt.savefig('./test/test_rf/test33.png')
-plt.clf()
+# ssaver('./test/test_rf/test33.png')
+
 plt.close()
 
 ro_ns.plot_uncertainty_bounds_s_db()
-plt.savefig('./test/test_rf/test34.png')
-plt.clf()
+# ssaver('./test/test_rf/test34.png')
+
 
 ro_ns.plot_uncertainty_bounds_s_deg()
-plt.savefig('./test/test_rf/test35.png')
-plt.clf()
+# ssaver('./test/test_rf/test35.png')
+
 
 rf.stylely()
 ro_ns_interp = ro_ns.interpolate_frequency(rf.Frequency(500, 600, 15, "GHz"))
 ro_ns_interp.plot_violin("s_db")
-plt.savefig('./test/test_rf/test36.png')
-plt.clf()
+# ssaver('./test/test_rf/test36.png')
+
 
 rf.stylely()
 ro_ns_interp.plot_violin("s_deg")
-plt.savefig('./test/test_rf/test37.png')
-plt.clf()
+# ssaver('./test/test_rf/test37.png')
 
-pprint(58, ro_ns.write_touchstone(dir='/Users/user/Desktop/rust_project/rsplotlib/test/test_rf/data'))
 
-rf.io.write('./test/test_rf/data/ro set.ns', ro_ns)
+pprint(58, ro_ns.write_touchstone(dir='/Users/user/Desktop/rust_project/rspandas/test/test_rf/test_data'))
 
-ro_ns = rf.io.read('./test/test_rf/data/ro set.ns')
+rf.io.write('./test/test_rf/test_data/ro set.ns', ro_ns)
+
+ro_ns = rf.io.read('./test/test_rf/test_data/ro set.ns')
 pprint(59, ro_ns)
 
-ro_ns.write_spreadsheet('./test/test_rf/data/ro_spreadsheet.xls', form='db')
+ro_ns.write_spreadsheet('./test/test_rf/test_data/ro_spreadsheet.csv', form='db')

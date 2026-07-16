@@ -3,11 +3,14 @@
 //! - 读取: calamine 支持 .xlsx / .xls / .ods 等格式
 //! - 写入: rust_xlsxwriter 生成 .xlsx 文件
 
-use std::collections::HashMap;
+use crate::core::series::{PySeries, Series};
+use calamine::Reader;
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use calamine::Reader;
-use crate::core::series::{PySeries, Series};
+use std::collections::HashMap;
+
+type XlsxRawResult = (Vec<String>, Vec<Vec<Option<String>>>);
+type SheetData = (String, Vec<String>, Vec<PySeries>, bool, bool);
 
 /// 从 xlsx 文件读取数据，返回 (列名, 列数据)。
 /// 返回格式: Vec<(col_name, Vec<Option<String>>)>
@@ -16,10 +19,9 @@ fn read_xlsx_raw(
     sheet_name: Option<&str>,
     sheet_index: Option<usize>,
     header_row: usize,
-) -> PyResult<(Vec<String>, Vec<Vec<Option<String>>>)> {
-    let mut workbook = calamine::open_workbook_auto(path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("open xlsx {path}: {e}"))
-    })?;
+) -> PyResult<XlsxRawResult> {
+    let mut workbook = calamine::open_workbook_auto(path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("open xlsx {path}: {e}")))?;
 
     let target_sheet = if let Some(name) = sheet_name {
         name.to_string()
@@ -35,13 +37,9 @@ fn read_xlsx_raw(
         names[idx].to_string()
     };
 
-    let range = workbook
-        .worksheet_range(&target_sheet)
-        .map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "sheet '{target_sheet}' not found: {e}"
-            ))
-        })?;
+    let range = workbook.worksheet_range(&target_sheet).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("sheet '{target_sheet}' not found: {e}"))
+    })?;
 
     let rows: Vec<Vec<calamine::Data>> = range.rows().map(|r| r.to_vec()).collect();
     if rows.is_empty() {
@@ -130,8 +128,9 @@ fn read_xlsx_raw(
 /// 推断字符串列的类型并转换为对应的 Series (并行化)
 fn strings_to_series(name: &str, values: &[Option<String>]) -> PySeries {
     // 并行推断类型
-    let (all_int, all_float, all_bool, any_non_null) = values.par_iter().map(|v| {
-        match v {
+    let (all_int, all_float, all_bool, any_non_null) = values
+        .par_iter()
+        .map(|v| match v {
             Some(s) => {
                 let int_ok = s.parse::<i64>().is_ok();
                 let float_ok = s.parse::<f64>().is_ok();
@@ -140,13 +139,18 @@ fn strings_to_series(name: &str, values: &[Option<String>]) -> PySeries {
                 (int_ok, float_ok, bool_ok, true)
             }
             None => (true, true, true, false),
-        }
-    }).reduce(
-        || (true, true, true, false),
-        |(a_int, a_float, a_bool, a_any), (b_int, b_float, b_bool, b_any)| {
-            (a_int && b_int, a_float && b_float, a_bool && b_bool, a_any || b_any)
-        }
-    );
+        })
+        .reduce(
+            || (true, true, true, false),
+            |(a_int, a_float, a_bool, a_any), (b_int, b_float, b_bool, b_any)| {
+                (
+                    a_int && b_int,
+                    a_float && b_float,
+                    a_bool && b_bool,
+                    a_any || b_any,
+                )
+            },
+        );
 
     if !any_non_null {
         return PySeries {
@@ -212,10 +216,59 @@ pub fn read_xlsx(
 /// 获取 xlsx 文件的工作表名称列表。
 #[pyfunction]
 pub fn xlsx_sheet_names(path: &str) -> PyResult<Vec<String>> {
-    let workbook = calamine::open_workbook_auto(path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("open xlsx {path}: {e}"))
-    })?;
+    let workbook = calamine::open_workbook_auto(path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("open xlsx {path}: {e}")))?;
     Ok(workbook.sheet_names().to_vec())
+}
+
+fn write_sheet(
+    worksheet: &mut rust_xlsxwriter::Worksheet,
+    columns: &[String],
+    series_list: &[PySeries],
+    include_header: bool,
+    include_index: bool,
+) -> PyResult<()> {
+    let col_offset: usize = if include_index { 1 } else { 0 };
+
+    let mut row: u32 = 0;
+    if include_header {
+        for (j, col_name) in columns.iter().enumerate() {
+            worksheet
+                .write_string(row, (j + col_offset) as u16, col_name)
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("write header: {e}")))?;
+        }
+        row += 1;
+    }
+
+    if !series_list.is_empty() {
+        let nrows = series_list[0].inner.len();
+        for i in 0..nrows {
+            if include_index {
+                worksheet.write(row, 0, i as u64).map_err(|e| {
+                    pyo3::exceptions::PyIOError::new_err(format!("write index: {e}"))
+                })?;
+            }
+            for (j, s) in series_list.iter().enumerate() {
+                let val = s.inner.get_str_at(i);
+                let col = (j + col_offset) as u16;
+                let write_result = if let Ok(i64_val) = val.parse::<i64>() {
+                    worksheet.write(row, col, i64_val)
+                } else if let Ok(f64_val) = val.parse::<f64>() {
+                    worksheet.write(row, col, f64_val)
+                } else if val == "NaN" || val.is_empty() {
+                    worksheet.write_blank(row, col, &rust_xlsxwriter::Format::new())
+                } else {
+                    worksheet.write_string(row, col, &val)
+                };
+                write_result.map_err(|e| {
+                    pyo3::exceptions::PyIOError::new_err(format!("write cell: {e}"))
+                })?;
+            }
+            row += 1;
+        }
+    }
+
+    Ok(())
 }
 
 /// 将 DataFrame 写入 xlsx 文件。
@@ -239,60 +292,57 @@ pub fn write_xlsx(
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
 
-    worksheet.set_name(sheet_name).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("set sheet name: {e}"))
-    })?;
+    worksheet
+        .set_name(sheet_name)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("set sheet name: {e}")))?;
 
-    let col_offset: usize = if include_index { 1 } else { 0 };
+    write_sheet(
+        worksheet,
+        &columns,
+        &series_list,
+        include_header,
+        include_index,
+    )?;
 
-    // 写入表头
-    let mut row: u32 = 0;
-    if include_header {
-        for (j, col_name) in columns.iter().enumerate() {
-            worksheet
-                .write_string(row, (j + col_offset) as u16, col_name)
-                .map_err(|e| {
-                    pyo3::exceptions::PyIOError::new_err(format!("write header: {e}"))
-                })?;
-        }
-        row += 1;
+    workbook
+        .save(path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("save xlsx {path}: {e}")))?;
+
+    Ok(())
+}
+
+/// 将多个 DataFrame 写入同一个 xlsx 文件的不同 sheet。
+///
+/// path: 文件路径
+/// sheets: Vec<(sheet_name, columns, series_list, include_header, include_index)>
+#[pyfunction]
+pub fn write_xlsx_multi(path: &str, sheets: Vec<SheetData>) -> PyResult<()> {
+    use rust_xlsxwriter::*;
+
+    let mut workbook = Workbook::new();
+
+    for (sheet_name, columns, series_list, include_header, include_index) in sheets {
+        let worksheet = workbook.add_worksheet();
+
+        worksheet.set_name(&sheet_name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "set sheet name '{}': {}",
+                sheet_name, e
+            ))
+        })?;
+
+        write_sheet(
+            worksheet,
+            &columns,
+            &series_list,
+            include_header,
+            include_index,
+        )?;
     }
 
-    // 写入数据
-    if !series_list.is_empty() {
-        let nrows = series_list[0].inner.len();
-        for i in 0..nrows {
-            if include_index {
-                worksheet
-                    .write(row, 0, i as u64)
-                    .map_err(|e| {
-                        pyo3::exceptions::PyIOError::new_err(format!("write index: {e}"))
-                    })?;
-            }
-            for (j, s) in series_list.iter().enumerate() {
-                let val = s.inner.get_str_at(i);
-                let col = (j + col_offset) as u16;
-                // 尝试写入数字
-                let write_result = if let Ok(i64_val) = val.parse::<i64>() {
-                    worksheet.write(row, col, i64_val)
-                } else if let Ok(f64_val) = val.parse::<f64>() {
-                    worksheet.write(row, col, f64_val)
-                } else if val == "NaN" || val.is_empty() {
-                    worksheet.write_blank(row, col, &Format::new())
-                } else {
-                    worksheet.write_string(row, col, &val)
-                };
-                write_result.map_err(|e| {
-                    pyo3::exceptions::PyIOError::new_err(format!("write cell: {e}"))
-                })?;
-            }
-            row += 1;
-        }
-    }
-
-    workbook.save(path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("save xlsx {path}: {e}"))
-    })?;
+    workbook
+        .save(path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("save xlsx {path}: {e}")))?;
 
     Ok(())
 }

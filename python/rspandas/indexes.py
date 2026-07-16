@@ -5,15 +5,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
 from .rspandas import _DataFrame as rspandas_DataFrame  # type: ignore
 from .series import Series
-
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Union
 
 # ============================================================================
 # Index
 # ============================================================================
+
 
 class Index:
     """不可变的一维标签数组，与 pandas.Index 对齐。
@@ -211,7 +211,9 @@ class Index:
         return Index(self._data, name=name)
 
     def fillna(self, value) -> "Index":
-        return Index([v if v is not None else value for v in self._data], name=self._name)
+        return Index(
+            [v if v is not None else value for v in self._data], name=self._name
+        )
 
     def dropna(self) -> "Index":
         return Index([v for v in self._data if v is not None], name=self._name)
@@ -284,7 +286,9 @@ class Index:
 
         :param cond: bool 列表
         """
-        new_data = [v if i < len(cond) and cond[i] else None for i, v in enumerate(self._data)]
+        new_data = [
+            v if i < len(cond) and cond[i] else None for i, v in enumerate(self._data)
+        ]
         return Index(new_data, name=self._name)
 
     def mask(self, cond: list) -> "Index":
@@ -292,7 +296,9 @@ class Index:
 
         :param cond: bool 列表
         """
-        new_data = [None if i < len(cond) and cond[i] else v for i, v in enumerate(self._data)]
+        new_data = [
+            None if i < len(cond) and cond[i] else v for i, v in enumerate(self._data)
+        ]
         return Index(new_data, name=self._name)
 
     def set_names(self, names, level=None) -> "Index":
@@ -328,6 +334,7 @@ class Index:
         """转换为 numpy 数组。"""
         try:
             import numpy as np
+
             return np.array(self._data)
         except ImportError:
             raise ImportError("numpy is required for to_numpy()")
@@ -335,6 +342,7 @@ class Index:
     def to_frame(self, index: bool = True, name: Optional[str] = None):
         """转换为 DataFrame。"""
         from .dataframe import DataFrame
+
         col_name = name or self._name or "index"
         df = DataFrame({col_name: self._data})
         if not index:
@@ -345,6 +353,7 @@ class Index:
 # ============================================================================
 # RangeIndex
 # ============================================================================
+
 
 class RangeIndex(Index):
     """优化的范围索引，类似 pandas.RangeIndex。
@@ -386,7 +395,9 @@ class RangeIndex(Index):
     def __len__(self) -> int:
         if self._step > 0:
             return max(0, (self._stop - self._start + self._step - 1) // self._step)
-        return max(0, (self._start - self._stop + abs(self._step) - 1) // abs(self._step))
+        return max(
+            0, (self._start - self._stop + abs(self._step) - 1) // abs(self._step)
+        )
 
     def __repr__(self) -> str:
         name = f", name='{self._name}'" if self._name else ""
@@ -416,12 +427,21 @@ class RangeIndex(Index):
         if not isinstance(item, int):
             return False
         if self._step > 0:
-            return self._start <= item < self._stop and (item - self._start) % self._step == 0
-        return self._stop < item <= self._start and (item - self._start) % self._step == 0
+            return (
+                self._start <= item < self._stop
+                and (item - self._start) % self._step == 0
+            )
+        return (
+            self._stop < item <= self._start and (item - self._start) % self._step == 0
+        )
 
     def __eq__(self, other) -> bool:
         if isinstance(other, RangeIndex):
-            return (self._start == other._start and self._stop == other._stop and self._step == other._step)
+            return (
+                self._start == other._start
+                and self._stop == other._stop
+                and self._step == other._step
+            )
         return False
 
     # ---------- 方法 ----------
@@ -478,6 +498,7 @@ class RangeIndex(Index):
 # ============================================================================
 # MultiIndex
 # ============================================================================
+
 
 class MultiIndex(Index):
     """多级索引，类似 pandas.MultiIndex。
@@ -547,7 +568,9 @@ class MultiIndex(Index):
         return len(self._codes[0]) if self._codes else 0
 
     def __repr__(self) -> str:
-        names_str = f", names={self._names}" if any(n is not None for n in self._names) else ""
+        names_str = (
+            f", names={self._names}" if any(n is not None for n in self._names) else ""
+        )
         return f"MultiIndex(levels={self._levels}, codes={self._codes}{names_str})"
 
     def __iter__(self):
@@ -556,8 +579,11 @@ class MultiIndex(Index):
     def __getitem__(self, key):
         if isinstance(key, int):
             return tuple(
-                self._levels[level][self._codes[level][key]]
-                if self._codes[level][key] >= 0 else None
+                (
+                    self._levels[level][self._codes[level][key]]
+                    if self._codes[level][key] >= 0
+                    else None
+                )
                 for level in range(self.nlevels)
             )
         if isinstance(key, slice):
@@ -574,7 +600,11 @@ class MultiIndex(Index):
 
     def __eq__(self, other) -> bool:
         if isinstance(other, MultiIndex):
-            return (self._levels == other._levels and self._codes == other._codes and self._names == other._names)
+            return (
+                self._levels == other._levels
+                and self._codes == other._codes
+                and self._names == other._names
+            )
         return False
 
     # ---------- 构造方法 ----------
@@ -785,11 +815,17 @@ class MultiIndex(Index):
         return MultiIndex(self._levels, new_codes, names=self._names)
 
     def copy(self) -> MultiIndex:
-        return MultiIndex([list(level) for level in self._levels], [list(c) for c in self._codes], names=list(self._names))
+        return MultiIndex(
+            [list(level) for level in self._levels],
+            [list(c) for c in self._codes],
+            names=list(self._names),
+        )
 
     # ---------- v2.0.0: MultiIndex 扩展 ----------
 
-    def set_levels(self, levels, level=None, verify_integrity: bool = True) -> MultiIndex:
+    def set_levels(
+        self, levels, level=None, verify_integrity: bool = True
+    ) -> MultiIndex:
         """设置 levels。
 
         :param levels: 新的 levels 列表
@@ -798,7 +834,10 @@ class MultiIndex(Index):
         """
         if level is not None:
             if isinstance(level, int):
-                new_levels = [list(self._levels[i]) if i != level else list(levels) for i in range(self.nlevels)]
+                new_levels = [
+                    list(self._levels[i]) if i != level else list(levels)
+                    for i in range(self.nlevels)
+                ]
             else:
                 new_levels = [list(lev) for lev in self._levels]
             new_names = list(self._names)
@@ -816,17 +855,23 @@ class MultiIndex(Index):
         """
         if level is not None:
             if isinstance(level, int):
-                new_codes = [list(self._codes[i]) if i != level else list(codes) for i in range(self.nlevels)]
+                new_codes = [
+                    list(self._codes[i]) if i != level else list(codes)
+                    for i in range(self.nlevels)
+                ]
             else:
                 new_codes = [list(c) for c in self._codes]
         else:
             new_codes = [list(c) for c in codes]
-        return MultiIndex([list(lvl) for lvl in self._levels], new_codes, names=list(self._names))
+        return MultiIndex(
+            [list(lvl) for lvl in self._levels], new_codes, names=list(self._names)
+        )
 
 
 # ============================================================================
 # IntervalIndex - 区间索引 (v2.0.0)
 # ============================================================================
+
 
 class IntervalIndex(Index):
     """区间索引，用于存储区间（左闭右闭或左闭右开）。
@@ -890,8 +935,12 @@ class IntervalIndex(Index):
         if isinstance(key, slice):
             return IntervalIndex(self._data[key], closed=self._closed, name=self._name)
         if isinstance(key, (list, tuple)):
-            return IntervalIndex([self._data[i] for i in key], closed=self._closed, name=self._name)
-        raise TypeError(f"IntervalIndex key must be int/slice/list, not {type(key).__name__}")
+            return IntervalIndex(
+                [self._data[i] for i in key], closed=self._closed, name=self._name
+            )
+        raise TypeError(
+            f"IntervalIndex key must be int/slice/list, not {type(key).__name__}"
+        )
 
     def __contains__(self, item) -> bool:
         if isinstance(item, tuple) and len(item) == 2:
@@ -958,10 +1007,15 @@ class IntervalIndex(Index):
         """检查每个区间是否与另一个区间重叠。"""
         if isinstance(other, tuple) and len(other) == 2:
             other_itv = other
-            return [self._overlaps(d, other_itv) if d is not None else None for d in self._data]
+            return [
+                self._overlaps(d, other_itv) if d is not None else None
+                for d in self._data
+            ]
         if isinstance(other, IntervalIndex):
-            return [self._overlaps(d1, d2) if d1 is not None and d2 is not None else None
-                    for d1, d2 in zip(self._data, other._data)]
+            return [
+                self._overlaps(d1, d2) if d1 is not None and d2 is not None else None
+                for d1, d2 in zip(self._data, other._data)
+            ]
         raise TypeError("overlaps requires IntervalIndex or tuple")
 
     def _overlaps(self, a, b) -> bool:
@@ -1007,6 +1061,7 @@ class IntervalIndex(Index):
 # CategoricalIndex - 分类索引 (v2.0.0)
 # ============================================================================
 
+
 class CategoricalIndex(Index):
     """分类索引，用于存储有限类别。
 
@@ -1018,7 +1073,9 @@ class CategoricalIndex(Index):
         [0, 1, 0, 2]
     """
 
-    def __init__(self, data, categories=None, ordered: bool = False, name: Optional[str] = None):
+    def __init__(
+        self, data, categories=None, ordered: bool = False, name: Optional[str] = None
+    ):
         """构造 CategoricalIndex。
 
         :param data: 数据列表
@@ -1041,7 +1098,9 @@ class CategoricalIndex(Index):
 
         # 构建 codes
         cat_to_code = {c: i for i, c in enumerate(self._categories)}
-        self._codes = [cat_to_code.get(v, -1) if v is not None else -1 for v in self._data]
+        self._codes = [
+            cat_to_code.get(v, -1) if v is not None else -1 for v in self._data
+        ]
 
     @property
     def categories(self) -> list:
@@ -1069,12 +1128,22 @@ class CategoricalIndex(Index):
         if isinstance(key, int):
             return self._data[key]
         if isinstance(key, slice):
-            return CategoricalIndex(self._data[key], categories=self._categories,
-                                    ordered=self._ordered, name=self._name)
+            return CategoricalIndex(
+                self._data[key],
+                categories=self._categories,
+                ordered=self._ordered,
+                name=self._name,
+            )
         if isinstance(key, (list, tuple)):
-            return CategoricalIndex([self._data[i] for i in key], categories=self._categories,
-                                    ordered=self._ordered, name=self._name)
-        raise TypeError(f"CategoricalIndex key must be int/slice/list, not {type(key).__name__}")
+            return CategoricalIndex(
+                [self._data[i] for i in key],
+                categories=self._categories,
+                ordered=self._ordered,
+                name=self._name,
+            )
+        raise TypeError(
+            f"CategoricalIndex key must be int/slice/list, not {type(key).__name__}"
+        )
 
     def __contains__(self, item) -> bool:
         return item in self._data
@@ -1097,13 +1166,17 @@ class CategoricalIndex(Index):
         for c in new_categories:
             if c not in new_cats:
                 new_cats.append(c)
-        return CategoricalIndex(self._data, categories=new_cats, ordered=self._ordered, name=self._name)
+        return CategoricalIndex(
+            self._data, categories=new_cats, ordered=self._ordered, name=self._name
+        )
 
     def remove_unused_categories(self) -> CategoricalIndex:
         """移除未使用的类别。"""
         used = set(v for v in self._data if v is not None)
         new_cats = [c for c in self._categories if c in used]
-        return CategoricalIndex(self._data, categories=new_cats, ordered=self._ordered, name=self._name)
+        return CategoricalIndex(
+            self._data, categories=new_cats, ordered=self._ordered, name=self._name
+        )
 
     def rename_categories(self, new_categories) -> CategoricalIndex:
         """重命名类别。"""
@@ -1111,18 +1184,28 @@ class CategoricalIndex(Index):
             raise ValueError("new_categories must have same length as categories")
         mapping = dict(zip(self._categories, new_categories))
         new_data = [mapping.get(v, v) if v is not None else None for v in self._data]
-        return CategoricalIndex(new_data, categories=list(new_categories), ordered=self._ordered, name=self._name)
+        return CategoricalIndex(
+            new_data,
+            categories=list(new_categories),
+            ordered=self._ordered,
+            name=self._name,
+        )
 
     def as_ordered(self) -> CategoricalIndex:
-        return CategoricalIndex(self._data, categories=self._categories, ordered=True, name=self._name)
+        return CategoricalIndex(
+            self._data, categories=self._categories, ordered=True, name=self._name
+        )
 
     def as_unordered(self) -> CategoricalIndex:
-        return CategoricalIndex(self._data, categories=self._categories, ordered=False, name=self._name)
+        return CategoricalIndex(
+            self._data, categories=self._categories, ordered=False, name=self._name
+        )
 
 
 # ============================================================================
 # DatetimeIndex - 日期时间索引 (v2.0.0)
 # ============================================================================
+
 
 class DatetimeIndex(Index):
     """日期时间索引，用于存储 datetime 值。
@@ -1153,6 +1236,7 @@ class DatetimeIndex(Index):
                     self._data.append(datetime.fromisoformat(v))
                 except (ValueError, TypeError):
                     from .datetime import _parse_iso
+
                     self._data.append(_parse_iso(v))
             else:
                 self._data.append(v)
@@ -1177,23 +1261,39 @@ class DatetimeIndex(Index):
 
     @property
     def minute(self) -> Index:
-        return Index([v.minute if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [v.minute if isinstance(v, datetime) else None for v in self._data]
+        )
 
     @property
     def second(self) -> Index:
-        return Index([v.second if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [v.second if isinstance(v, datetime) else None for v in self._data]
+        )
 
     @property
     def weekday(self) -> Index:
-        return Index([v.weekday() if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [v.weekday() if isinstance(v, datetime) else None for v in self._data]
+        )
 
     @property
     def dayofyear(self) -> Index:
-        return Index([v.timetuple().tm_yday if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [
+                v.timetuple().tm_yday if isinstance(v, datetime) else None
+                for v in self._data
+            ]
+        )
 
     @property
     def quarter(self) -> Index:
-        return Index([(v.month - 1) // 3 + 1 if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [
+                (v.month - 1) // 3 + 1 if isinstance(v, datetime) else None
+                for v in self._data
+            ]
+        )
 
     @property
     def tz(self):
@@ -1216,8 +1316,12 @@ class DatetimeIndex(Index):
         if isinstance(key, slice):
             return DatetimeIndex(self._data[key], name=self._name, tz=self._tz)
         if isinstance(key, (list, tuple)):
-            return DatetimeIndex([self._data[i] for i in key], name=self._name, tz=self._tz)
-        raise TypeError(f"DatetimeIndex key must be int/slice/list, not {type(key).__name__}")
+            return DatetimeIndex(
+                [self._data[i] for i in key], name=self._name, tz=self._tz
+            )
+        raise TypeError(
+            f"DatetimeIndex key must be int/slice/list, not {type(key).__name__}"
+        )
 
     def __contains__(self, item) -> bool:
         return item in self._data
@@ -1245,20 +1349,29 @@ class DatetimeIndex(Index):
             raise KeyError(key)
 
     def strftime(self, fmt: str) -> Index:
-        return Index([v.strftime(fmt) if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [v.strftime(fmt) if isinstance(v, datetime) else None for v in self._data]
+        )
 
     def normalize(self) -> DatetimeIndex:
         """将时间归一化到午夜。"""
         return DatetimeIndex(
-            [v.replace(hour=0, minute=0, second=0, microsecond=0) if isinstance(v, datetime) else None
-             for v in self._data],
-            name=self._name, tz=self._tz,
+            [
+                (
+                    v.replace(hour=0, minute=0, second=0, microsecond=0)
+                    if isinstance(v, datetime)
+                    else None
+                )
+                for v in self._data
+            ],
+            name=self._name,
+            tz=self._tz,
         )
 
     def floor(self, freq: str) -> DatetimeIndex:
         """向下舍入到指定频率。"""
         freq = freq.strip().upper()
-        
+
         def _floor(dt):
             if dt is None:
                 return None
@@ -1271,7 +1384,10 @@ class DatetimeIndex(Index):
             elif freq == "S":
                 return dt.replace(microsecond=0)
             return dt
-        return DatetimeIndex([_floor(v) for v in self._data], name=self._name, tz=self._tz)
+
+        return DatetimeIndex(
+            [_floor(v) for v in self._data], name=self._name, tz=self._tz
+        )
 
     def ceil(self, freq: str) -> DatetimeIndex:
         """向上舍入到指定频率。"""
@@ -1300,7 +1416,10 @@ class DatetimeIndex(Index):
             elif freq == "S":
                 return floored + timedelta(seconds=1)
             return dt
-        return DatetimeIndex([_ceil(v) for v in self._data], name=self._name, tz=self._tz)
+
+        return DatetimeIndex(
+            [_ceil(v) for v in self._data], name=self._name, tz=self._tz
+        )
 
     def round(self, freq: str) -> DatetimeIndex:
         """四舍五入到指定频率。"""
@@ -1326,12 +1445,16 @@ class DatetimeIndex(Index):
             if dt - floored < next_tick - dt:
                 return floored
             return next_tick
-        return DatetimeIndex([_round(v) for v in self._data], name=self._name, tz=self._tz)
+
+        return DatetimeIndex(
+            [_round(v) for v in self._data], name=self._name, tz=self._tz
+        )
 
 
 # ============================================================================
 # TimedeltaIndex - 时间差索引 (v2.0.0)
 # ============================================================================
+
 
 class TimedeltaIndex(Index):
     """时间差索引，用于存储 timedelta 值。
@@ -1390,15 +1513,24 @@ class TimedeltaIndex(Index):
 
     @property
     def seconds(self) -> Index:
-        return Index([v.seconds if isinstance(v, timedelta) else None for v in self._data])
+        return Index(
+            [v.seconds if isinstance(v, timedelta) else None for v in self._data]
+        )
 
     @property
     def microseconds(self) -> Index:
-        return Index([v.microseconds if isinstance(v, timedelta) else None for v in self._data])
+        return Index(
+            [v.microseconds if isinstance(v, timedelta) else None for v in self._data]
+        )
 
     @property
     def total_seconds(self) -> Index:
-        return Index([v.total_seconds() if isinstance(v, timedelta) else None for v in self._data])
+        return Index(
+            [
+                v.total_seconds() if isinstance(v, timedelta) else None
+                for v in self._data
+            ]
+        )
 
     def __repr__(self) -> str:
         name = f", name='{self._name}'" if self._name else ""
@@ -1417,7 +1549,9 @@ class TimedeltaIndex(Index):
             return TimedeltaIndex(self._data[key], name=self._name)
         if isinstance(key, (list, tuple)):
             return TimedeltaIndex([self._data[i] for i in key], name=self._name)
-        raise TypeError(f"TimedeltaIndex key must be int/slice/list, not {type(key).__name__}")
+        raise TypeError(
+            f"TimedeltaIndex key must be int/slice/list, not {type(key).__name__}"
+        )
 
     def __contains__(self, item) -> bool:
         return item in self._data
@@ -1446,6 +1580,7 @@ class TimedeltaIndex(Index):
 # PeriodIndex - 时期索引 (v2.0.0)
 # ============================================================================
 
+
 class PeriodIndex(Index):
     """时期索引，用于存储固定频率的时期。
 
@@ -1473,6 +1608,7 @@ class PeriodIndex(Index):
                 self._data.append(v)
             elif isinstance(v, str):
                 from .datetime import _parse_iso
+
                 # Try to parse as period string (e.g. '2024-01', '2024-Q1')
                 try:
                     self._data.append(_parse_iso(v))
@@ -1480,10 +1616,12 @@ class PeriodIndex(Index):
                     # Try period-specific parsing
                     try:
                         # '2024-01' -> treat as first day of month
-                        if '-' in v and len(v) == 7:  # 'YYYY-MM'
+                        if "-" in v and len(v) == 7:  # 'YYYY-MM'
                             self._data.append(datetime.strptime(v + "-01", "%Y-%m-%d"))
-                        elif '-' in v and len(v) == 4:  # 'YYYY'
-                            self._data.append(datetime.strptime(v + "-01-01", "%Y-%m-%d"))
+                        elif "-" in v and len(v) == 4:  # 'YYYY'
+                            self._data.append(
+                                datetime.strptime(v + "-01-01", "%Y-%m-%d")
+                            )
                         else:
                             self._data.append(v)
                     except ValueError:
@@ -1510,11 +1648,18 @@ class PeriodIndex(Index):
 
     @property
     def quarter(self) -> Index:
-        return Index([(v.month - 1) // 3 + 1 if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [
+                (v.month - 1) // 3 + 1 if isinstance(v, datetime) else None
+                for v in self._data
+            ]
+        )
 
     @property
     def start_time(self) -> DatetimeIndex:
-        return DatetimeIndex([v if isinstance(v, datetime) else None for v in self._data])
+        return DatetimeIndex(
+            [v if isinstance(v, datetime) else None for v in self._data]
+        )
 
     @property
     def end_time(self) -> DatetimeIndex:
@@ -1533,6 +1678,7 @@ class PeriodIndex(Index):
             elif self._freq == "Y":
                 return dt.replace(month=12, day=31, hour=23, minute=59, second=59)
             return dt
+
         return DatetimeIndex([_end(v) for v in self._data])
 
     def __repr__(self) -> str:
@@ -1551,8 +1697,12 @@ class PeriodIndex(Index):
         if isinstance(key, slice):
             return PeriodIndex(self._data[key], freq=self._freq, name=self._name)
         if isinstance(key, (list, tuple)):
-            return PeriodIndex([self._data[i] for i in key], freq=self._freq, name=self._name)
-        raise TypeError(f"PeriodIndex key must be int/slice/list, not {type(key).__name__}")
+            return PeriodIndex(
+                [self._data[i] for i in key], freq=self._freq, name=self._name
+            )
+        raise TypeError(
+            f"PeriodIndex key must be int/slice/list, not {type(key).__name__}"
+        )
 
     def __contains__(self, item) -> bool:
         return item in self._data
@@ -1566,6 +1716,7 @@ class PeriodIndex(Index):
     def get_loc(self, key) -> int:
         if isinstance(key, str):
             from .datetime import _parse_iso
+
             key_dt = _parse_iso(key)
             for i, v in enumerate(self._data):
                 if isinstance(v, datetime) and v == key_dt:
@@ -1577,7 +1728,9 @@ class PeriodIndex(Index):
             raise KeyError(key)
 
     def strftime(self, fmt: str) -> Index:
-        return Index([v.strftime(fmt) if isinstance(v, datetime) else None for v in self._data])
+        return Index(
+            [v.strftime(fmt) if isinstance(v, datetime) else None for v in self._data]
+        )
 
     def asfreq(self, freq: str) -> PeriodIndex:
         """转换为不同频率。"""
@@ -1587,6 +1740,7 @@ class PeriodIndex(Index):
 # ============================================================================
 # 工具函数: get_dummies / cut / qcut / crosstab
 # ============================================================================
+
 
 def get_dummies(
     data,
@@ -1620,19 +1774,28 @@ def get_dummies(
 
     if isinstance(data, _DataFrame):
         if columns is None:
-            columns = [c for c in data.columns
-                       if data[c].dtype in ("object", "category", "bool")]
+            columns = [
+                c
+                for c in data.columns
+                if data[c].dtype in ("object", "category", "bool")
+            ]
         result = data
         for col in columns:
             dummies = _get_dummies_series(
                 list(data[col].values),
-                prefix=prefix if isinstance(prefix, str) else (prefix[columns.index(col)] if prefix else col),
+                prefix=(
+                    prefix
+                    if isinstance(prefix, str)
+                    else (prefix[columns.index(col)] if prefix else col)
+                ),
                 sep=prefix_sep,
             )
             result = _concat_frames([result, dummies])
         return result
 
-    raise TypeError(f"get_dummies expected Series or DataFrame, got {type(data).__name__}")
+    raise TypeError(
+        f"get_dummies expected Series or DataFrame, got {type(data).__name__}"
+    )
 
 
 def _get_dummies_series(values: list, prefix: str, sep: str) -> rspandas_DataFrame:
@@ -1937,15 +2100,15 @@ def crosstab(
             col_sums.append(sum(row_sums))
 
         # 添加汇总行
-        df_data = {c: list(df[c].values) + [col_sums[i]]
-                   for i, c in enumerate(df.columns)}
+        df_data = {
+            c: list(df[c].values) + [col_sums[i]] for i, c in enumerate(df.columns)
+        }
         df = _DataFrame(df_data)
 
     # 归一化
     if normalize is True or normalize == "all":
         total = sum(
-            sum(v for v in df[c].values if v is not None)
-            for c in df.columns if c != ""
+            sum(v for v in df[c].values if v is not None) for c in df.columns if c != ""
         )
         if total > 0:
             for c in df.columns:

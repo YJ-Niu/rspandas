@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from .rspandas import _DataFrame as _PyDataFrame
+from .rspandas import _Series as _PySeries  # type: ignore
 from datetime import timedelta
 from typing import Any, Iterator, Optional, Tuple
-from .rspandas import _Series as _PySeries, _DataFrame as _PyDataFrame  # type: ignore
-
 
 # ---------------------------------------------------------------------------
 # 类型推断
 # ---------------------------------------------------------------------------
+
 
 def _infer_dtype(values: list) -> str:
     """根据数据推断 dtype（对齐 pandas 的行为）。"""
@@ -107,6 +108,7 @@ def _is_range_index(index) -> bool:
 # Series
 # ---------------------------------------------------------------------------
 
+
 class Series:
     """一维带标签数组，对齐 pandas API。
 
@@ -192,6 +194,7 @@ class Series:
     @property
     def index(self):
         from .indexes import Index, RangeIndex
+
         if _is_range_index(self._index):
             return RangeIndex(len(self._index))
         return Index(self._index)
@@ -244,7 +247,9 @@ class Series:
             raise ValueError(f"mask length {len(mask)} != series length {len(self)}")
         rust_mask = [bool(x) for x in mask]
         dtype = self._dtype_str if preserve_dtype else None
-        return Series(_PySeries_filter(self._inner, rust_mask), name=self.name, dtype=dtype)
+        return Series(
+            _PySeries_filter(self._inner, rust_mask), name=self.name, dtype=dtype
+        )
 
     def __eq__(self, other) -> _PySeries:
         mask = self._inner.eq_scalar(other)
@@ -311,7 +316,7 @@ class Series:
                     else:
                         result.append(a % b)
                 elif op == "pow":
-                    result.append(a ** b)
+                    result.append(a**b)
             except (TypeError, ValueError):
                 result.append(None)
         # 推断结果 dtype
@@ -419,8 +424,10 @@ class Series:
             raise ImportError("pandas is required for from_pandas()")
         if not isinstance(ps, pd.Series):
             raise TypeError("expected pandas Series")
-        vals = [None if pd.isna(v) else v.item() if hasattr(v, 'item') else v
-                for v in ps.values]
+        vals = [
+            None if pd.isna(v) else v.item() if hasattr(v, "item") else v
+            for v in ps.values
+        ]
         index = list(ps.index) if ps.index is not None else None
         return cls(vals, name=ps.name, index=index)
 
@@ -466,8 +473,9 @@ class Series:
 
     def to_dict(self) -> dict:
         """转换为 dict (index -> value)。"""
-        return {self._index[i] if self._index else i: v
-                for i, v in enumerate(self.values)}
+        return {
+            self._index[i] if self._index else i: v for i, v in enumerate(self.values)
+        }
 
     def to_frame(self, name=None) -> _PyDataFrame:
         """转换为 DataFrame。"""
@@ -509,19 +517,31 @@ class Series:
             if v is None:
                 raise ValueError("truth value of a None element is ambiguous")
             return bool(v)
-        raise ValueError(f"truth value of a Series with {len(self)} elements is ambiguous")
+        raise ValueError(
+            f"truth value of a Series with {len(self)} elements is ambiguous"
+        )
 
     # ---------- 子集 ----------
 
     def head(self, n: int = 5) -> _PySeries:
         n = min(n, len(self))
         sliced_index = self._index[:n] if self._index is not None else None
-        return Series(self._inner.head(n), name=self.name, dtype=self._dtype_str, index=sliced_index)
+        return Series(
+            self._inner.head(n),
+            name=self.name,
+            dtype=self._dtype_str,
+            index=sliced_index,
+        )
 
     def tail(self, n: int = 5) -> _PySeries:
         n = min(n, len(self))
         sliced_index = self._index[-n:] if self._index is not None else None
-        return Series(self._inner.tail(n), name=self.name, dtype=self._dtype_str, index=sliced_index)
+        return Series(
+            self._inner.tail(n),
+            name=self.name,
+            dtype=self._dtype_str,
+            index=sliced_index,
+        )
 
     def iloc(self, key) -> _PySeries:
         """按位置索引。key: int / list[int] / slice / bool mask。"""
@@ -538,7 +558,9 @@ class Series:
                 new_index = self._index[key]
             else:
                 new_index = None
-            return Series(values, name=self.name, index=new_index, dtype=self._dtype_str)
+            return Series(
+                values, name=self.name, index=new_index, dtype=self._dtype_str
+            )
         if isinstance(key, (list, tuple)):
             if all(isinstance(x, bool) for x in key):
                 return self._filter_mask(key)
@@ -549,7 +571,9 @@ class Series:
                 new_index = [self._index[i] for i in indices]
             else:
                 new_index = None
-            return Series(values, name=self.name, index=new_index, dtype=self._dtype_str)
+            return Series(
+                values, name=self.name, index=new_index, dtype=self._dtype_str
+            )
         raise TypeError(f"iloc: unsupported key {type(key).__name__}")
 
     def sort_values(self, ascending: bool = True, inplace: bool = False) -> _PySeries:
@@ -644,6 +668,7 @@ class Series:
             out = list(reversed(rev_out))
         elif keep is False:
             from collections import Counter
+
             c = Counter(self.values)
             dup = {k for k, n in c.items() if n > 1}
             out = [v in dup for v in self.values]
@@ -656,8 +681,7 @@ class Series:
         seen = set()
         out = []
         out_idx = []
-        for v, i in zip(self.values,
-                        self._index if self._index else range(len(self))):
+        for v, i in zip(self.values, self._index if self._index else range(len(self))):
             if v in seen:
                 continue
             seen.add(v)
@@ -667,8 +691,10 @@ class Series:
             seen = set()
             out = []
             out_idx = []
-            for v, i in zip(reversed(self.values),
-                            reversed(self._index if self._index else range(len(self)))):
+            for v, i in zip(
+                reversed(self.values),
+                reversed(self._index if self._index else range(len(self))),
+            ):
                 if v in seen:
                     continue
                 seen.add(v)
@@ -719,6 +745,7 @@ class Series:
         elif target == "category":
             # 转换为 Categorical
             from .rspandas import factorize as _factorize
+
             codes, categories = _factorize(self.values)
             s = Series(self.values, name=self.name, dtype="category")
             return s
@@ -930,6 +957,7 @@ class Series:
     def mode(self, dropna: bool = True) -> _PySeries:
         """返回众数。"""
         from collections import Counter
+
         values = self.values
         if dropna:
             values = [v for v in values if v is not None]
@@ -950,8 +978,8 @@ class Series:
         var = sum((x - m) ** 2 for x in values) / n
         if var == 0:
             return 0.0
-        std = var ** 0.5
-        skew = sum((x - m) ** 3 for x in values) / (n * std ** 3)
+        std = var**0.5
+        skew = sum((x - m) ** 3 for x in values) / (n * std**3)
         return skew
 
     def kurt(self) -> float:
@@ -964,8 +992,8 @@ class Series:
         var = sum((x - m) ** 2 for x in values) / n
         if var == 0:
             return 0.0
-        std = var ** 0.5
-        kurt = sum((x - m) ** 4 for x in values) / (n * std ** 4) - 3
+        std = var**0.5
+        kurt = sum((x - m) ** 4 for x in values) / (n * std**4) - 3
         return kurt
 
     # ---------- 过滤 ----------
@@ -1120,7 +1148,14 @@ class Series:
 
     # ---------- 窗口函数 (v1.0.0) ----------
 
-    def rolling(self, window: int, min_periods: Optional[int] = None, center: bool = False, win_type: Optional[str] = None, closed: Optional[str] = None) -> "Rolling":
+    def rolling(
+        self,
+        window: int,
+        min_periods: Optional[int] = None,
+        center: bool = False,
+        win_type: Optional[str] = None,
+        closed: Optional[str] = None,
+    ) -> "Rolling":
         """返回 Rolling 窗口对象。
 
         :param window: 窗口大小
@@ -1133,7 +1168,9 @@ class Series:
             raise ValueError("window must be >= 1")
         if min_periods is None:
             min_periods = window
-        return Rolling(self, window, min_periods, center=center, win_type=win_type, closed=closed)
+        return Rolling(
+            self, window, min_periods, center=center, win_type=win_type, closed=closed
+        )
 
     def expanding(self, min_periods: int = 1) -> "Expanding":
         """返回 Expanding 窗口对象。"""
@@ -1158,7 +1195,9 @@ class Series:
         :param adjust: 是否使用调整因子
         :return: EWM 对象
         """
-        return EWM(self, alpha=alpha, span=span, halflife=halflife, com=com, adjust=adjust)
+        return EWM(
+            self, alpha=alpha, span=span, halflife=halflife, com=com, adjust=adjust
+        )
 
     def resample(self, freq: str) -> "Resampler":
         """时间序列重采样 (简化版 v1.0.0)。
@@ -1167,12 +1206,12 @@ class Series:
         :return: Resampler 对象，可调用 .sum()/.mean() 等聚合方法
         """
         from datetime import datetime
+
         # 解析 index -> datetime
         index = self._index if self._index is not None else list(range(len(self)))
         if not all(isinstance(i, datetime) for i in index):
             raise TypeError(
-                "resample requires a datetime index; "
-                "use to_datetime() to convert"
+                "resample requires a datetime index; " "use to_datetime() to convert"
             )
         return Resampler(self, freq, index)
 
@@ -1180,16 +1219,14 @@ class Series:
 
     def _format_repr(self) -> str:
         # 字符串化每个值
-        strs = [
-            str(v) if v is not None else "NaN"
-            for v in self.values
-        ]
+        strs = [str(v) if v is not None else "NaN" for v in self.values]
 
         n = len(strs)
 
         # 准备索引字符串
         idx_strs = (
-            [str(i) for i in self._index] if self._index is not None
+            [str(i) for i in self._index]
+            if self._index is not None
             else [str(i) for i in range(n)]
         )
         # 截断：> 60 行
@@ -1202,9 +1239,7 @@ class Series:
             idx_strs = head_idx + ["..."] + tail_idx
 
         # 索引列宽度
-        idx_width = max(
-            (len(s) for s in idx_strs), default=1
-        )
+        idx_width = max((len(s) for s in idx_strs), default=1)
 
         lines = []
         pos = 0
@@ -1229,6 +1264,7 @@ def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:
 # 窗口函数类 (v1.0.0)
 # ---------------------------------------------------------------------------
 
+
 class Rolling:
     """Rolling 滚动窗口。
 
@@ -1238,13 +1274,21 @@ class Rolling:
         [None, None, 2.0, 3.0, 4.0]
     """
 
-    def __init__(self, series: _PySeries, window: int, min_periods: int, center: bool = False, win_type: Optional[str] = None, closed: Optional[str] = None):
+    def __init__(
+        self,
+        series: _PySeries,
+        window: int,
+        min_periods: int,
+        center: bool = False,
+        win_type: Optional[str] = None,
+        closed: Optional[str] = None,
+    ):
         self._s = series
         self._window = window
         self._min_periods = min_periods
         self._center = center
         self._win_type = win_type
-        self._closed = closed or 'right'
+        self._closed = closed or "right"
 
     def _apply(self, func) -> _PySeries:
         """应用窗口函数 func(window_values) -> scalar。"""
@@ -1255,18 +1299,24 @@ class Rolling:
         # 计算权重 (如果指定了 win_type)
         weights = None
         if self._win_type is not None:
-            if self._win_type == 'boxcar':
+            if self._win_type == "boxcar":
                 weights = [1.0] * self._window
-            elif self._win_type == 'triang':
+            elif self._win_type == "triang":
                 w = self._window
                 weights = [(i + 1) / w for i in range(w)]
-            elif self._win_type == 'blackman':
+            elif self._win_type == "blackman":
                 import math
+
                 w = self._window
                 if w == 1:
                     weights = [1.0]
                 else:
-                    weights = [0.42 - 0.5 * math.cos(2 * math.pi * i / (w - 1)) + 0.08 * math.cos(4 * math.pi * i / (w - 1)) for i in range(w)]
+                    weights = [
+                        0.42
+                        - 0.5 * math.cos(2 * math.pi * i / (w - 1))
+                        + 0.08 * math.cos(4 * math.pi * i / (w - 1))
+                        for i in range(w)
+                    ]
             else:
                 raise ValueError(f"unsupported window type: {self._win_type}")
 
@@ -1281,10 +1331,10 @@ class Rolling:
             win = values[start:end]
 
             # 根据 closed 参数调整
-            if self._closed == 'left':
+            if self._closed == "left":
                 if len(win) > 0:
                     win = win[:-1]
-            elif self._closed == 'neither':
+            elif self._closed == "neither":
                 if len(win) >= 2:
                     win = win[1:-1]
                 else:
@@ -1297,7 +1347,7 @@ class Rolling:
                 try:
                     if weights is not None:
                         # 加权计算
-                        w = weights[:len(win)]
+                        w = weights[: len(win)]
                         out.append(func(win, w))
                     else:
                         out.append(func(win))
@@ -1308,6 +1358,7 @@ class Rolling:
     def sum(self) -> _PySeries:
         def f(win, w=None):
             return sum(v for v in win if v is not None)
+
         return self._apply(f)
 
     def mean(self) -> _PySeries:
@@ -1321,18 +1372,21 @@ class Rolling:
                 return total / wt_sum if wt_sum > 0 else None
             nums = [v for v in win if v is not None]
             return sum(nums) / len(nums) if nums else None
+
         return self._apply(f)
 
     def min(self) -> _PySeries:
         def f(win, w=None):
             nums = [v for v in win if v is not None]
             return min(nums) if nums else None
+
         return self._apply(f)
 
     def max(self) -> _PySeries:
         def f(win, w=None):
             nums = [v for v in win if v is not None]
             return max(nums) if nums else None
+
         return self._apply(f)
 
     def std(self) -> _PySeries:
@@ -1342,7 +1396,8 @@ class Rolling:
                 return None
             m = sum(nums) / len(nums)
             var = sum((x - m) ** 2 for x in nums) / len(nums)
-            return var ** 0.5
+            return var**0.5
+
         return self._apply(f)
 
     def var(self) -> _PySeries:
@@ -1352,6 +1407,7 @@ class Rolling:
                 return None
             m = sum(nums) / len(nums)
             return sum((x - m) ** 2 for x in nums) / len(nums)
+
         return self._apply(f)
 
     def median(self) -> _PySeries:
@@ -1362,6 +1418,7 @@ class Rolling:
             if len(nums) % 2:
                 return nums[len(nums) // 2]
             return (nums[len(nums) // 2 - 1] + nums[len(nums) // 2]) / 2
+
         return self._apply(f)
 
     def count(self) -> _PySeries:
@@ -1370,7 +1427,7 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            win = values[start:i + 1]
+            win = values[start : i + 1]
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -1388,8 +1445,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -1415,8 +1472,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -1435,6 +1492,7 @@ class Rolling:
 
     def quantile(self, q: float = 0.5) -> _PySeries:
         """滚动分位数。"""
+
         def f(win, w=None):
             nums = sorted([float(v) for v in win if v is not None])
             if not nums:
@@ -1447,10 +1505,12 @@ class Rolling:
             hi = min(lo + 1, n - 1)
             frac = pos - lo
             return nums[lo] * (1 - frac) + nums[hi] * frac
+
         return self._apply(f)
 
     def skew(self) -> _PySeries:
         """滚动偏度。"""
+
         def f(win, w=None):
             nums = [v for v in win if v is not None]
             n = len(nums)
@@ -1461,11 +1521,13 @@ class Rolling:
             if var == 0:
                 return 0.0
             m3 = sum((x - m) ** 3 for x in nums) / n
-            return m3 / (var ** 1.5)
+            return m3 / (var**1.5)
+
         return self._apply(f)
 
     def kurt(self) -> _PySeries:
         """滚动峰度 (excess kurtosis)。"""
+
         def f(win, w=None):
             nums = [v for v in win if v is not None]
             n = len(nums)
@@ -1476,13 +1538,15 @@ class Rolling:
             if var == 0:
                 return None
             m4 = sum((x - m) ** 4 for x in nums) / n
-            return m4 / (var ** 2) - 3.0
+            return m4 / (var**2) - 3.0
+
         return self._apply(f)
 
     # ---------- v2.0.0: sem ----------
 
     def sem(self) -> _PySeries:
         """滚动标准误差 (Standard Error of Mean)。"""
+
         def f(win, w=None):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
@@ -1490,6 +1554,7 @@ class Rolling:
             m = sum(nums) / len(nums)
             var = sum((x - m) ** 2 for x in nums) / (len(nums) - 1)
             return (var / len(nums)) ** 0.5
+
         return self._apply(f)
 
 
@@ -1505,7 +1570,7 @@ class Expanding:
         n = len(values)
         out = []
         for i in range(n):
-            win = values[:i + 1]
+            win = values[: i + 1]
             non_null = [v for v in win if v is not None]
             if len(non_null) < self._min_periods:
                 out.append(None)
@@ -1523,18 +1588,21 @@ class Expanding:
         def f(win):
             nums = [v for v in win if v is not None]
             return sum(nums) / len(nums) if nums else None
+
         return self._apply(f)
 
     def min(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return min(nums) if nums else None
+
         return self._apply(f)
 
     def max(self) -> _PySeries:
         def f(win):
             nums = [v for v in win if v is not None]
             return max(nums) if nums else None
+
         return self._apply(f)
 
     def std(self) -> _PySeries:
@@ -1544,6 +1612,7 @@ class Expanding:
                 return None
             m = sum(nums) / len(nums)
             return (sum((x - m) ** 2 for x in nums) / len(nums)) ** 0.5
+
         return self._apply(f)
 
     def var(self) -> _PySeries:
@@ -1553,13 +1622,14 @@ class Expanding:
                 return None
             m = sum(nums) / len(nums)
             return sum((x - m) ** 2 for x in nums) / len(nums)
+
         return self._apply(f)
 
     def count(self) -> _PySeries:
         values = self._s.values
         out = []
         for i in range(len(values)):
-            win = values[:i + 1]
+            win = values[: i + 1]
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -1571,6 +1641,7 @@ class Expanding:
 # ---------------------------------------------------------------------------
 # EWM 指数加权移动窗口 (v1.4.0)
 # ---------------------------------------------------------------------------
+
 
 class EWM:
     """指数加权移动窗口。
@@ -1608,6 +1679,7 @@ class EWM:
         adjust: bool = True,
     ):
         import math
+
         self._s = series
         self._adjust = adjust
 
@@ -1645,7 +1717,7 @@ class EWM:
         out = [None] * n
 
         for i in range(n):
-            win = values[:i + 1]
+            win = values[: i + 1]
             non_null = [(k, v) for k, v in enumerate(win) if v is not None]
             if not non_null:
                 continue
@@ -1681,7 +1753,7 @@ class EWM:
 
         if self._adjust:
             for i in range(n):
-                win = values[:i + 1]
+                win = values[: i + 1]
                 non_null = [(k, v) for k, v in enumerate(win) if v is not None]
                 if len(non_null) < 2:
                     continue
@@ -1694,7 +1766,7 @@ class EWM:
                 mean = sum(w * v for w, v in zip(w_k, vals)) / w_sum
                 # 偏差修正: 除以 w_sum (总体), 或除以 w_sum - sum(w_k^2)/w_sum (样本)
                 var = sum(w * (v - mean) ** 2 for w, v in zip(w_k, vals)) / w_sum
-                out[i] = var ** 0.5
+                out[i] = var**0.5
         else:
             # 非调整版: 使用递推公式
             mean = None
@@ -1714,7 +1786,7 @@ class EWM:
                     s2 = (1 - alpha) * (s2 + alpha * (v - old_mean) ** 2)
 
                 if s2 is not None and s2 >= 0:
-                    out[i] = s2 ** 0.5
+                    out[i] = s2**0.5
 
         return Series(out, name=self._s.name, index=self._s._index)
 
@@ -1726,7 +1798,7 @@ class EWM:
 
         if self._adjust:
             for i in range(n):
-                win = values[:i + 1]
+                win = values[: i + 1]
                 non_null = [(k, v) for k, v in enumerate(win) if v is not None]
                 if len(non_null) < 2:
                     continue
@@ -1799,10 +1871,13 @@ class EWM:
 
         if self._adjust:
             for i in range(n):
-                wa = values_a[:i + 1]
-                wb = values_b[:i + 1]
-                pairs = [(k, a, b) for k, (a, b) in enumerate(zip(wa, wb))
-                         if a is not None and b is not None]
+                wa = values_a[: i + 1]
+                wb = values_b[: i + 1]
+                pairs = [
+                    (k, a, b)
+                    for k, (a, b) in enumerate(zip(wa, wb))
+                    if a is not None and b is not None
+                ]
                 if len(pairs) < 2:
                     continue
                 weights = self._get_weights(i + 1)
@@ -1812,7 +1887,10 @@ class EWM:
                 w_sum = sum(w_k)
                 ma = sum(w * a for w, a in zip(w_k, vals_a)) / w_sum
                 mb = sum(w * b for w, b in zip(w_k, vals_b)) / w_sum
-                cov_val = sum(w * (a - ma) * (b - mb) for w, a, b in zip(w_k, vals_a, vals_b)) / w_sum
+                cov_val = (
+                    sum(w * (a - ma) * (b - mb) for w, a, b in zip(w_k, vals_a, vals_b))
+                    / w_sum
+                )
                 out[i] = cov_val
         else:
             # 非调整版: 递推公式
@@ -1834,7 +1912,9 @@ class EWM:
                     old_mb = mb
                     ma = alpha * float(a) + (1 - alpha) * old_ma
                     mb = alpha * float(b) + (1 - alpha) * old_mb
-                    cov_val = (1 - alpha) * (cov_val + alpha * (a - old_ma) * (b - old_mb))
+                    cov_val = (1 - alpha) * (
+                        cov_val + alpha * (a - old_ma) * (b - old_mb)
+                    )
                 if cov_val is not None:
                     out[i] = cov_val
 
@@ -1928,7 +2008,9 @@ class Resampler:
                     out_values.append(None)
                 else:
                     m = sum(nums) / len(nums)
-                    out_values.append((sum((x - m) ** 2 for x in nums) / len(nums)) ** 0.5)
+                    out_values.append(
+                        (sum((x - m) ** 2 for x in nums) / len(nums)) ** 0.5
+                    )
             elif aggfunc == "first":
                 out_values.append(nums[0])
             elif aggfunc == "last":
@@ -1982,25 +2064,60 @@ class StringAccessor:
         return None if v is None else str(v)
 
     def upper(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).upper() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).upper() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def lower(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).lower() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).lower() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def title(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).title() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).title() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def capitalize(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).capitalize() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).capitalize() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def strip(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).strip() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).strip() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def lstrip(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).lstrip() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).lstrip() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def rstrip(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).rstrip() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).rstrip() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def len(self) -> _PySeries:
         return self._wrap([len(v) if v is not None else None for v in self._s.values])
@@ -2017,27 +2134,32 @@ class StringAccessor:
         return self._wrap(out)
 
     def startswith(self, pat) -> _PySeries:
-        return self._wrap([str(v).startswith(pat) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).startswith(pat) if v is not None else None for v in self._s.values]
+        )
 
     def endswith(self, pat) -> _PySeries:
-        return self._wrap([str(v).endswith(pat) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).endswith(pat) if v is not None else None for v in self._s.values]
+        )
 
     def replace(self, pat, repl) -> _PySeries:
-        return self._wrap([str(v).replace(pat, repl) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                str(v).replace(pat, repl) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def split(self, pat: str = None, n: int = -1) -> list:
         """字符串分割。返回 list[list[str]]。"""
-        return [
-            str(v).split(pat, n) if v is not None else None
-            for v in self._s.values
-        ]
+        return [str(v).split(pat, n) if v is not None else None for v in self._s.values]
 
     def slice(self, start=None, stop=None, step=None) -> _PySeries:
         s = slice(start, stop, step)
-        return self._wrap([
-            str(v)[s] if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap(
+            [str(v)[s] if v is not None else None for v in self._s.values]
+        )
 
     def cat(self, sep: str = "") -> str:
         return sep.join(str(v) for v in self._s.values if v is not None)
@@ -2088,26 +2210,41 @@ class StringAccessor:
 
     def match(self, pat, case=True, flags=0, na=None) -> _PySeries:
         import re
+
         out = []
         for v in self._s.values:
             if v is None:
                 out.append(na)
             else:
-                out.append(bool(re.match(pat, str(v), flags=flags if case else flags | re.IGNORECASE)))
+                out.append(
+                    bool(
+                        re.match(
+                            pat, str(v), flags=flags if case else flags | re.IGNORECASE
+                        )
+                    )
+                )
         return self._wrap(out)
 
     def fullmatch(self, pat, case=True, flags=0, na=None) -> _PySeries:
         import re
+
         out = []
         for v in self._s.values:
             if v is None:
                 out.append(na)
             else:
-                out.append(bool(re.fullmatch(pat, str(v), flags=flags if case else flags | re.IGNORECASE)))
+                out.append(
+                    bool(
+                        re.fullmatch(
+                            pat, str(v), flags=flags if case else flags | re.IGNORECASE
+                        )
+                    )
+                )
         return self._wrap(out)
 
     def extract(self, pat, flags=0, expand=True):
         import re
+
         results = []
         for v in self._s.values:
             if v is None:
@@ -2126,6 +2263,7 @@ class StringAccessor:
 
     def extractall(self, pat, flags=0):
         import re
+
         results = []
         for v in self._s.values:
             if v is None:
@@ -2137,44 +2275,79 @@ class StringAccessor:
 
     def count(self, pat, flags=0) -> _PySeries:
         import re
-        return self._wrap([
-            len(re.findall(pat, str(v), flags)) if v is not None else None
-            for v in self._s.values
-        ])
+
+        return self._wrap(
+            [
+                len(re.findall(pat, str(v), flags)) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def swapcase(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).swapcase() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).swapcase() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def casefold(self) -> _PySeries:
-        return self._wrap([self._ensure_str(v).casefold() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                self._ensure_str(v).casefold() if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def isalnum(self) -> _PySeries:
-        return self._wrap([str(v).isalnum() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).isalnum() if v is not None else None for v in self._s.values]
+        )
 
     def isalpha(self) -> _PySeries:
-        return self._wrap([str(v).isalpha() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).isalpha() if v is not None else None for v in self._s.values]
+        )
 
     def isdigit(self) -> _PySeries:
-        return self._wrap([str(v).isdigit() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).isdigit() if v is not None else None for v in self._s.values]
+        )
 
     def isspace(self) -> _PySeries:
-        return self._wrap([str(v).isspace() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).isspace() if v is not None else None for v in self._s.values]
+        )
 
     def islower(self) -> _PySeries:
-        return self._wrap([str(v).islower() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).islower() if v is not None else None for v in self._s.values]
+        )
 
     def isupper(self) -> _PySeries:
-        return self._wrap([str(v).isupper() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).isupper() if v is not None else None for v in self._s.values]
+        )
 
     def istitle(self) -> _PySeries:
-        return self._wrap([str(v).istitle() if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).istitle() if v is not None else None for v in self._s.values]
+        )
 
     def zfill(self, width) -> _PySeries:
-        return self._wrap([str(v).zfill(width) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [str(v).zfill(width) if v is not None else None for v in self._s.values]
+        )
 
     def wrap(self, width, **kwargs) -> _PySeries:
         import textwrap
-        return self._wrap([textwrap.fill(str(v), width, **kwargs) if v is not None else None for v in self._s.values])
+
+        return self._wrap(
+            [
+                textwrap.fill(str(v), width, **kwargs) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def pad(self, width, side="left", fillchar=" ") -> _PySeries:
         out = []
@@ -2188,17 +2361,34 @@ class StringAccessor:
             elif side == "both":
                 out.append(str(v).center(width, fillchar))
             else:
-                raise ValueError(f"side must be 'left', 'right', or 'both', got {side!r}")
+                raise ValueError(
+                    f"side must be 'left', 'right', or 'both', got {side!r}"
+                )
         return self._wrap(out)
 
     def center(self, width, fillchar=" ") -> _PySeries:
-        return self._wrap([str(v).center(width, fillchar) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                str(v).center(width, fillchar) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def ljust(self, width, fillchar=" ") -> _PySeries:
-        return self._wrap([str(v).ljust(width, fillchar) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                str(v).ljust(width, fillchar) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def rjust(self, width, fillchar=" ") -> _PySeries:
-        return self._wrap([str(v).rjust(width, fillchar) if v is not None else None for v in self._s.values])
+        return self._wrap(
+            [
+                str(v).rjust(width, fillchar) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def partition(self, sep=" ") -> list:
         return [
@@ -2214,8 +2404,7 @@ class StringAccessor:
 
     def rsplit(self, pat=None, n=-1) -> list:
         return [
-            str(v).rsplit(pat, n) if v is not None else None
-            for v in self._s.values
+            str(v).rsplit(pat, n) if v is not None else None for v in self._s.values
         ]
 
     def slice_replace(self, start=None, stop=None, repl=None) -> _PySeries:
@@ -2232,14 +2421,17 @@ class StringAccessor:
         return self._wrap(out)
 
     def get(self, i) -> _PySeries:
-        return self._wrap([
-            str(v)[i] if v is not None and 0 <= i < len(str(v)) else None
-            for v in self._s.values
-        ])
+        return self._wrap(
+            [
+                str(v)[i] if v is not None and 0 <= i < len(str(v)) else None
+                for v in self._s.values
+            ]
+        )
 
     def get_dummies(self, sep="|"):
         """返回 one-hot 编码的 DataFrame。"""
         from .dataframe import DataFrame
+
         # 收集所有唯一值
         all_values = set()
         for v in self._s.values:
@@ -2259,10 +2451,20 @@ class StringAccessor:
         return DataFrame(data)
 
     def encode(self, encoding, errors="strict"):
-        return [str(v).encode(encoding, errors) if v is not None else None for v in self._s.values]
+        return [
+            str(v).encode(encoding, errors) if v is not None else None
+            for v in self._s.values
+        ]
 
     def decode(self, encoding, errors="strict"):
-        return [v.decode(encoding, errors) if isinstance(v, bytes) else (str(v) if v is not None else None) for v in self._s.values]
+        return [
+            (
+                v.decode(encoding, errors)
+                if isinstance(v, bytes)
+                else (str(v) if v is not None else None)
+            )
+            for v in self._s.values
+        ]
 
 
 class CatAccessor:
