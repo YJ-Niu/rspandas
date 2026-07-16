@@ -45,7 +45,6 @@ from .rspandas import _Series, _DataFrame  # 重新导出 Rust 类型，供内�
 from .rspandas import factorize as _factorize  # Rust 端 factorize
 from . import offsets
 
-
 # ---------------------------------------------------------------------------
 # 全局选项配置
 # ---------------------------------------------------------------------------
@@ -194,7 +193,9 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
             if all(v is None or isinstance(v, int) for v in result):
                 pass
             else:
-                result = [int(v) if v is not None and v == int(v) else v for v in result]
+                result = [
+                    int(v) if v is not None and v == int(v) else v for v in result
+                ]
 
     return _Series(result, name=None)
 

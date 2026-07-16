@@ -98,6 +98,7 @@ def is_list_like(obj) -> bool:
 # 内部辅助函数
 # ---------------------------------------------------------------------------
 
+
 def _extract_dtype(arr_or_dtype) -> str:
     """从各种输入中提取 dtype 字符串。"""
     if isinstance(arr_or_dtype, str):

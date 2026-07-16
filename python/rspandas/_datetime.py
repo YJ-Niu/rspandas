@@ -7,7 +7,6 @@ import calendar
 
 from .series import Series
 
-
 # ---------------------------------------------------------------------------
 # 频率 -> timedelta 映射
 # ---------------------------------------------------------------------------
@@ -34,6 +33,7 @@ def _freq_to_timedelta(freq: str) -> timedelta:
 # ---------------------------------------------------------------------------
 # 日期解析
 # ---------------------------------------------------------------------------
+
 
 def _parse_iso(s: str) -> datetime:
     """解析常见日期格式字符串。"""
@@ -81,6 +81,7 @@ def _to_iso(v) -> Optional[str]:
 # DatetimeSeries: 包装 Series，提供 datetime 语义
 # ---------------------------------------------------------------------------
 
+
 class DatetimeSeries:
     """datetime 类型的 Series 包装类。
 
@@ -95,7 +96,9 @@ class DatetimeSeries:
         [2024, 2024]
     """
 
-    def __init__(self, values: list, name: Optional[str] = None, index: Optional[list] = None):
+    def __init__(
+        self, values: list, name: Optional[str] = None, index: Optional[list] = None
+    ):
         # 内部存储: ISO 字符串列表
         iso_values = [_to_iso(v) for v in values]
         self._inner: Series = Series(iso_values, name=name, index=index, dtype="object")
@@ -143,10 +146,18 @@ class DatetimeSeries:
         return self.values[key]
 
     def head(self, n: int = 5) -> "DatetimeSeries":
-        return DatetimeSeries(self.values[:n], name=self.name, index=self._index[:n] if self._index else None)
+        return DatetimeSeries(
+            self.values[:n],
+            name=self.name,
+            index=self._index[:n] if self._index else None,
+        )
 
     def tail(self, n: int = 5) -> "DatetimeSeries":
-        return DatetimeSeries(self.values[-n:] if n > 0 else [], name=self.name, index=self._index[-n:] if self._index else None)
+        return DatetimeSeries(
+            self.values[-n:] if n > 0 else [],
+            name=self.name,
+            index=self._index[-n:] if self._index else None,
+        )
 
     @property
     def dt(self):
@@ -167,7 +178,7 @@ class DatetimeAccessor:
             if v is None:
                 converted.append(None)
             elif isinstance(v, (datetime, date, time)):
-                converted.append(v.isoformat() if hasattr(v, 'isoformat') else str(v))
+                converted.append(v.isoformat() if hasattr(v, "isoformat") else str(v))
             elif isinstance(v, timedelta):
                 converted.append(v.total_seconds())
             else:
@@ -176,32 +187,46 @@ class DatetimeAccessor:
 
     @property
     def year(self) -> Series:
-        return self._wrap_series([v.year if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.year if v is not None else None for v in self._s.values]
+        )
 
     @property
     def month(self) -> Series:
-        return self._wrap_series([v.month if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.month if v is not None else None for v in self._s.values]
+        )
 
     @property
     def day(self) -> Series:
-        return self._wrap_series([v.day if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.day if v is not None else None for v in self._s.values]
+        )
 
     @property
     def hour(self) -> Series:
-        return self._wrap_series([v.hour if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.hour if v is not None else None for v in self._s.values]
+        )
 
     @property
     def minute(self) -> Series:
-        return self._wrap_series([v.minute if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.minute if v is not None else None for v in self._s.values]
+        )
 
     @property
     def second(self) -> Series:
-        return self._wrap_series([v.second if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.second if v is not None else None for v in self._s.values]
+        )
 
     @property
     def weekday(self) -> Series:
         """返回星期几 (0=周一, 6=周日)，与 pandas 一致。"""
-        return self._wrap_series([v.weekday() if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.weekday() if v is not None else None for v in self._s.values]
+        )
 
     @property
     def dayofweek(self) -> Series:
@@ -210,80 +235,122 @@ class DatetimeAccessor:
     @property
     def day_name(self) -> Series:
         """返回星期几的名称。"""
-        names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        return self._wrap_series([names[v.weekday()] if v is not None else None for v in self._s.values])
+        names = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        return self._wrap_series(
+            [names[v.weekday()] if v is not None else None for v in self._s.values]
+        )
 
     @property
     def month_name(self) -> Series:
-        names = ["", "January", "February", "March", "April", "May", "June",
-                 "July", "August", "September", "October", "November", "December"]
-        return self._wrap_series([names[v.month] if v is not None else None for v in self._s.values])
+        names = [
+            "",
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
+        return self._wrap_series(
+            [names[v.month] if v is not None else None for v in self._s.values]
+        )
 
     @property
     def date(self) -> Series:
         """返回 date 部分 (Python date 对象数组)。"""
-        return self._wrap_series([v.date() if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.date() if v is not None else None for v in self._s.values]
+        )
 
     def strftime(self, fmt: str) -> Series:
         """格式化为字符串。"""
-        return self._wrap_series([v.strftime(fmt) if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.strftime(fmt) if v is not None else None for v in self._s.values]
+        )
 
     @property
     def microsecond(self) -> Series:
-        return self._wrap_series([v.microsecond if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.microsecond if v is not None else None for v in self._s.values]
+        )
 
     @property
     def dayofyear(self) -> Series:
-        return self._wrap_series([
-            v.timetuple().tm_yday if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [v.timetuple().tm_yday if v is not None else None for v in self._s.values]
+        )
 
     @property
     def quarter(self) -> Series:
-        return self._wrap_series([
-            (v.month - 1) // 3 + 1 if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [(v.month - 1) // 3 + 1 if v is not None else None for v in self._s.values]
+        )
 
     @property
     def is_month_start(self) -> Series:
-        return self._wrap_series([v.day == 1 if v is not None else None for v in self._s.values])
+        return self._wrap_series(
+            [v.day == 1 if v is not None else None for v in self._s.values]
+        )
 
     @property
     def is_month_end(self) -> Series:
-        return self._wrap_series([
-            v.day == calendar.monthrange(v.year, v.month)[1] if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [
+                (
+                    v.day == calendar.monthrange(v.year, v.month)[1]
+                    if v is not None
+                    else None
+                )
+                for v in self._s.values
+            ]
+        )
 
     @property
     def is_year_start(self) -> Series:
-        return self._wrap_series([
-            (v.month == 1 and v.day == 1) if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [
+                (v.month == 1 and v.day == 1) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     @property
     def is_year_end(self) -> Series:
-        return self._wrap_series([
-            (v.month == 12 and v.day == 31) if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [
+                (v.month == 12 and v.day == 31) if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     @property
     def is_leap_year(self) -> Series:
-        return self._wrap_series([
-            calendar.isleap(v.year) if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [calendar.isleap(v.year) if v is not None else None for v in self._s.values]
+        )
 
     @property
     def days_in_month(self) -> Series:
-        return self._wrap_series([
-            calendar.monthrange(v.year, v.month)[1] if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [
+                calendar.monthrange(v.year, v.month)[1] if v is not None else None
+                for v in self._s.values
+            ]
+        )
 
     def to_pydatetime(self) -> list:
         """返回 Python datetime 对象列表。"""
@@ -295,7 +362,7 @@ class DatetimeAccessor:
     def tz(self):
         """返回时区信息 (如果存在)。"""
         for v in self._s.values:
-            if v is not None and hasattr(v, 'tzinfo') and v.tzinfo is not None:
+            if v is not None and hasattr(v, "tzinfo") and v.tzinfo is not None:
                 return v.tzinfo
         return None
 
@@ -393,23 +460,29 @@ class DatetimeAccessor:
     @property
     def time(self) -> Series:
         """返回 datetime 的时间部分 (datetime.time 对象)。"""
-        return self._wrap_series([
-            v.time() if v is not None else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [v.time() if v is not None else None for v in self._s.values]
+        )
 
     @property
     def total_seconds(self) -> Series:
         """返回 timedelta 的总秒数。"""
-        return self._wrap_series([
-            v.total_seconds() if v is not None and hasattr(v, 'total_seconds') else None
-            for v in self._s.values
-        ])
+        return self._wrap_series(
+            [
+                (
+                    v.total_seconds()
+                    if v is not None and hasattr(v, "total_seconds")
+                    else None
+                )
+                for v in self._s.values
+            ]
+        )
 
 
 # ---------------------------------------------------------------------------
 # 公共 API
 # ---------------------------------------------------------------------------
+
 
 def to_datetime(
     arg,
@@ -451,7 +524,7 @@ def to_datetime(
         raw_values = arg.values
     elif isinstance(arg, (list, tuple)):
         raw_values = list(arg)
-    elif hasattr(arg, '__iter__') and not isinstance(arg, str):
+    elif hasattr(arg, "__iter__") and not isinstance(arg, str):
         raw_values = list(arg)
     else:
         raw_values = [arg]
@@ -668,7 +741,7 @@ def infer_freq(index):
     if isinstance(index[0], datetime):
         deltas = []
         for i in range(1, len(index)):
-            delta = (index[i] - index[i-1]).days
+            delta = (index[i] - index[i - 1]).days
             if delta > 0:
                 deltas.append(delta)
         if not deltas:

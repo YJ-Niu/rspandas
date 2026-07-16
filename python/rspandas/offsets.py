@@ -67,6 +67,7 @@ class MonthEnd:
     def __add__(self, other):
         if isinstance(other, datetime):
             import calendar
+
             year, month = other.year, other.month
             # Check if the date is already at month end
             last_day_current = calendar.monthrange(year, month)[1]
@@ -83,7 +84,15 @@ class MonthEnd:
                 year -= 1
                 month += 12
             last_day = calendar.monthrange(year, month)[1]
-            return datetime(year, month, last_day, other.hour, other.minute, other.second, other.microsecond)
+            return datetime(
+                year,
+                month,
+                last_day,
+                other.hour,
+                other.minute,
+                other.second,
+                other.microsecond,
+            )
         return NotImplemented
 
     def __radd__(self, other):
@@ -129,6 +138,7 @@ class YearEnd:
     def __add__(self, other):
         if isinstance(other, datetime):
             import calendar
+
             year = other.year + self.n
             last_day = calendar.monthrange(year, self.month)[1]
             return datetime(year, self.month, last_day)

@@ -90,9 +90,7 @@ class DataFrame:
         n = len(col_values[0]) if col_values else 0
         for c, vs in zip(col_names, col_values):
             if len(vs) != n:
-                raise ValueError(
-                    f"column '{c}' has length {len(vs)} != {n}"
-                )
+                raise ValueError(f"column '{c}' has length {len(vs)} != {n}")
 
         # 构造 Rust 端 Series
         rust_series_list = []
@@ -125,7 +123,9 @@ class DataFrame:
         # 更新 Rust 端 column 名称 - 通过重命名每个 series
         # MVP 简化: 用 values 重建
         old_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
-        new_series = [_PySeries(old_data[c], value[i]) for i, c in enumerate(self._columns)]
+        new_series = [
+            _PySeries(old_data[c], value[i]) for i, c in enumerate(self._columns)
+        ]
         self._inner = _PyDataFrame(list(value), new_series)
         self._columns = list(value)
 
@@ -219,9 +219,7 @@ class DataFrame:
 
     def _filter_with_mask(self, mask: list) -> "DataFrame":
         if len(mask) != self._nrows:
-            raise ValueError(
-                f"mask length {len(mask)} != nrows {self._nrows}"
-            )
+            raise ValueError(f"mask length {len(mask)} != nrows {self._nrows}")
         cols = self._columns
         new_data = {}
         for c in cols:
@@ -245,12 +243,16 @@ class DataFrame:
 
         if key in self._columns:
             # 更新现有列：重建 DataFrame
-            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            new_data = {
+                c: list(self._inner.get_column(c).values) for c in self._columns
+            }
             new_data[key] = values
             self._reload(new_data)
         else:
             # 新增列
-            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            new_data = {
+                c: list(self._inner.get_column(c).values) for c in self._columns
+            }
             new_data[key] = values
             self._reload(new_data)
             self._columns.append(key)
@@ -289,18 +291,16 @@ class DataFrame:
         n = self._nrows
         # 取出 by 列用于排序
         sort_keys = [
-            [self._inner.get_column(c).values[i] for c in by]
-            for i in range(n)
+            [self._inner.get_column(c).values[i] for c in by] for i in range(n)
         ]
 
         def key_func(row):
-            return tuple(
-                (1 if v is None else 0, v) for v in row
-            )
+            return tuple((1 if v is None else 0, v) for v in row)
 
         try:
-            order = sorted(range(n), key=lambda i: key_func(sort_keys[i]),
-                           reverse=not ascending)
+            order = sorted(
+                range(n), key=lambda i: key_func(sort_keys[i]), reverse=not ascending
+            )
         except TypeError:
             raise TypeError("cannot sort mixed types")
         new_data = {
@@ -311,9 +311,7 @@ class DataFrame:
 
     def filter_rows(self, mask: list) -> "DataFrame":
         if len(mask) != self._nrows:
-            raise ValueError(
-                f"mask length {len(mask)} != nrows {self._nrows}"
-            )
+            raise ValueError(f"mask length {len(mask)} != nrows {self._nrows}")
         cols = self._columns
         new_data = {}
         for c in cols:
@@ -341,13 +339,17 @@ class DataFrame:
                 raise KeyError(f"column {k!r} not in right")
 
         left = [
-            (tuple(self._inner.get_column(k).values[i] for k in keys),
-             {c: self._inner.get_column(c).values[i] for c in self._columns})
+            (
+                tuple(self._inner.get_column(k).values[i] for k in keys),
+                {c: self._inner.get_column(c).values[i] for c in self._columns},
+            )
             for i in range(self._nrows)
         ]
         right = [
-            (tuple(other._inner.get_column(k).values[i] for k in keys),
-             {c: other._inner.get_column(c).values[i] for c in other._columns})
+            (
+                tuple(other._inner.get_column(k).values[i] for k in keys),
+                {c: other._inner.get_column(c).values[i] for c in other._columns},
+            )
             for i in range(other._nrows)
         ]
         left_keys = {lk: i for i, (lk, _) in enumerate(left)}
@@ -591,19 +593,24 @@ class DataFrame:
             mark.reverse()
         elif keep is False:
             from collections import Counter
+
             c = Counter(row_keys)
             dup = {k for k, n in c.items() if n > 1}
             mark = [k in dup for k in row_keys]
         return Series(mark, name=None, index=list(range(n)))
 
-    def drop_duplicates(self, subset=None, keep: str = "first", inplace: bool = False) -> "DataFrame":
+    def drop_duplicates(
+        self, subset=None, keep: str = "first", inplace: bool = False
+    ) -> "DataFrame":
         """删除重复行。"""
         if subset is None:
             subset = self._columns
         elif isinstance(subset, str):
             subset = [subset]
         n = self._nrows
-        row_keys = [tuple(self._inner.get_column(c).values[i] for c in subset) for i in range(n)]
+        row_keys = [
+            tuple(self._inner.get_column(c).values[i] for c in subset) for i in range(n)
+        ]
         seen = set()
         keep_idx = []
         if keep == "first":
@@ -649,9 +656,13 @@ class DataFrame:
             raise ImportError("pandas is required for from_pandas()")
         if not isinstance(pdf, pd.DataFrame):
             raise TypeError("expected pandas DataFrame")
-        data = {c: [None if pd.isna(v) else v.item() if hasattr(v, 'item') else v
-                    for v in pdf[c].values]
-                for c in pdf.columns}
+        data = {
+            c: [
+                None if pd.isna(v) else v.item() if hasattr(v, "item") else v
+                for v in pdf[c].values
+            ]
+            for c in pdf.columns
+        }
         return cls(data)
 
     def to_numpy(self):
@@ -661,7 +672,10 @@ class DataFrame:
         except ImportError:
             raise ImportError("numpy is required for to_numpy()")
         cols = list(self._columns)
-        data = [[self._inner.get_column(c).values[i] for c in cols] for i in range(self._nrows)]
+        data = [
+            [self._inner.get_column(c).values[i] for c in cols]
+            for i in range(self._nrows)
+        ]
         return np.array(data)
 
     @classmethod
@@ -720,7 +734,9 @@ class DataFrame:
             elif all(isinstance(v, float) for v in non_null):
                 arrays.append(pa.array(col_data, type=pa.float64()))
             else:
-                arrays.append(pa.array([str(v) if v is not None else None for v in col_data]))
+                arrays.append(
+                    pa.array([str(v) if v is not None else None for v in col_data])
+                )
         return pa.table(dict(zip(self._columns, arrays)))
 
     @classmethod
@@ -763,6 +779,7 @@ class DataFrame:
         :param encoding: 文件编码
         """
         from .io import read_json as _read_json
+
         return _read_json(path, orient=orient, lines=lines, encoding=encoding)
 
     @staticmethod
@@ -779,6 +796,7 @@ class DataFrame:
         :param header: 用作列名的行号
         """
         from .io import read_excel as _read_excel
+
         return _read_excel(path, sheet_name=sheet_name, header=header, **kwargs)
 
     @staticmethod
@@ -788,6 +806,7 @@ class DataFrame:
         :param path: Parquet 文件路径
         """
         from .io import read_parquet as _read_parquet
+
         return _read_parquet(path, **kwargs)
 
     @staticmethod
@@ -797,6 +816,7 @@ class DataFrame:
         :param path: Feather 文件路径
         """
         from .io import read_feather as _read_feather
+
         return _read_feather(path, **kwargs)
 
     @staticmethod
@@ -806,6 +826,7 @@ class DataFrame:
         :param path: Pickle 文件路径
         """
         from .io import read_pickle as _read_pickle
+
         return _read_pickle(path, **kwargs)
 
     @staticmethod
@@ -816,6 +837,7 @@ class DataFrame:
         :param conn: 数据库连接
         """
         from .io import read_sql as _read_sql
+
         return _read_sql(query, conn, **kwargs)
 
     @classmethod
@@ -844,8 +866,10 @@ class DataFrame:
                 label = self._index[i] if self._index else i
                 if label not in labels:
                     keep_idx.append(i)
-            new_data = {c: [self._inner.get_column(c).values[i] for i in keep_idx]
-                        for c in self._columns}
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in keep_idx]
+                for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             if not isinstance(labels, (list, tuple)):
@@ -864,8 +888,10 @@ class DataFrame:
                 new_cols = [mapper.get(c, c) for c in self._columns]
             else:
                 new_cols = [mapper(c) for c in self._columns]
-            new_data = {new_cols[i]: list(self._inner.get_column(c).values)
-                        for i, c in enumerate(self._columns)}
+            new_data = {
+                new_cols[i]: list(self._inner.get_column(c).values)
+                for i, c in enumerate(self._columns)
+            }
             return DataFrame(new_data)
         else:
             new_index = []
@@ -875,7 +901,9 @@ class DataFrame:
                     new_index.append(mapper.get(label, label))
                 else:
                     new_index.append(mapper(label))
-            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            new_data = {
+                c: list(self._inner.get_column(c).values) for c in self._columns
+            }
             df = DataFrame(new_data)
             df._index = new_index
             return df
@@ -890,8 +918,9 @@ class DataFrame:
             index = list(index)
         if not isinstance(columns, list):
             columns = list(columns)
-        old_index_map = {self._index[i] if self._index else i: i
-                         for i in range(self._nrows)}
+        old_index_map = {
+            self._index[i] if self._index else i: i for i in range(self._nrows)
+        }
         new_data = {c: [] for c in columns}
         for new_idx_label in index:
             old_pos = old_index_map.get(new_idx_label)
@@ -918,9 +947,14 @@ class DataFrame:
             if len(keys) == 1:
                 new_index.append(self._inner.get_column(keys[0]).values[i])
             else:
-                new_index.append(tuple(self._inner.get_column(k).values[i] for k in keys))
-        new_data = {c: list(self._inner.get_column(c).values)
-                    for c in self._columns if c not in keys}
+                new_index.append(
+                    tuple(self._inner.get_column(k).values[i] for k in keys)
+                )
+        new_data = {
+            c: list(self._inner.get_column(c).values)
+            for c in self._columns
+            if c not in keys
+        }
         df = DataFrame(new_data)
         df._index = new_index
         return df
@@ -1005,8 +1039,15 @@ class DataFrame:
         :return: 如果 path 为 None，返回 JSON 字符串
         """
         from .io import to_json as _to_json
-        return _to_json(self, path, orient=orient, lines=lines,
-                        force_ascii=force_ascii, indent=indent)
+
+        return _to_json(
+            self,
+            path,
+            orient=orient,
+            lines=lines,
+            force_ascii=force_ascii,
+            indent=indent,
+        )
 
     def to_excel(
         self,
@@ -1024,10 +1065,13 @@ class DataFrame:
         :param header: 是否写入列名
         """
         from .io import to_excel as _to_excel, ExcelWriter
+
         if isinstance(path, ExcelWriter):
             path.write(self, sheet_name=sheet_name, index=index, header=header)
         else:
-            _to_excel(self, path, sheet_name=sheet_name, index=index, header=header, **kwargs)
+            _to_excel(
+                self, path, sheet_name=sheet_name, index=index, header=header, **kwargs
+            )
 
     def to_parquet(
         self,
@@ -1041,6 +1085,7 @@ class DataFrame:
         :param compression: 压缩算法 (snappy, gzip, brotli, zstd, none)
         """
         from .io import to_parquet as _to_parquet
+
         _to_parquet(self, path, compression=compression, **kwargs)
 
     def to_feather(
@@ -1055,6 +1100,7 @@ class DataFrame:
         :param compression: 压缩算法 (lz4, zstd, uncompressed)
         """
         from .io import to_feather as _to_feather
+
         _to_feather(self, path, compression=compression, **kwargs)
 
     def to_pickle(self, path: str, **kwargs) -> None:
@@ -1063,6 +1109,7 @@ class DataFrame:
         :param path: 输出文件路径
         """
         from .io import to_pickle as _to_pickle
+
         _to_pickle(self, path, **kwargs)
 
     def to_sql(
@@ -1081,6 +1128,7 @@ class DataFrame:
         :param index: 是否写入行索引
         """
         from .io import to_sql as _to_sql
+
         _to_sql(self, name, conn, if_exists=if_exists, index=index, **kwargs)
 
     # ---------- 索引器辅助 ----------
@@ -1090,9 +1138,7 @@ class DataFrame:
             idx += self._nrows
         if idx < 0 or idx >= self._nrows:
             raise IndexError("single positional indexer is out-of-bounds")
-        new_data = {
-            c: [self._inner.get_column(c).values[idx]] for c in self._columns
-        }
+        new_data = {c: [self._inner.get_column(c).values[idx]] for c in self._columns}
         return DataFrame(new_data)
 
     def _select_slice(self, start, stop, step) -> "DataFrame":
@@ -1111,8 +1157,7 @@ class DataFrame:
         stop = min(stop, self._nrows)
         idx = list(range(start, stop, step))
         new_data = {
-            c: [self._inner.get_column(c).values[i] for i in idx]
-            for c in self._columns
+            c: [self._inner.get_column(c).values[i] for i in idx] for c in self._columns
         }
         return DataFrame(new_data)
 
@@ -1151,7 +1196,8 @@ class DataFrame:
         stat_names = ["count", "mean", "std", "min", "50%", "max"]
         # 只对数值列做完整统计
         numeric_cols = [
-            c for c in self._columns
+            c
+            for c in self._columns
             if self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         out: Dict[str, list] = {s: [] for s in stat_names}
@@ -1344,8 +1390,7 @@ class DataFrame:
         # 取出关键列
         col_vals = list(self._inner.get_column(columns).values)
         idx_tuples = [
-            tuple(self._inner.get_column(c).values[i] for c in index)
-            for i in range(n)
+            tuple(self._inner.get_column(c).values[i] for c in index) for i in range(n)
         ]
         # 收集所有 column 值
         new_cols_set: list = []
@@ -1423,7 +1468,8 @@ class DataFrame:
         if values is None:
             # 默认选所有数值列
             values = [
-                c for c in self._columns
+                c
+                for c in self._columns
                 if self._inner.get_column(c).dtype in ("int64", "float64")
             ]
         if isinstance(values, str):
@@ -1499,7 +1545,11 @@ class DataFrame:
         for ct in col_set:
             for v in values:
                 col_name_parts = [str(x) for x in ct] + [v]
-                col_name = "_".join(col_name_parts) if len(col_name_parts) > 1 else col_name_parts[0]
+                col_name = (
+                    "_".join(col_name_parts)
+                    if len(col_name_parts) > 1
+                    else col_name_parts[0]
+                )
                 col_data = []
                 for it in idx_set:
                     g = groups.get((it, ct))
@@ -1511,7 +1561,9 @@ class DataFrame:
                             col_data.append(sum(x for x in vals if x is not None))
                         elif aggfunc == "mean":
                             nums = [x for x in vals if x is not None]
-                            col_data.append(sum(nums) / len(nums) if nums else fill_value)
+                            col_data.append(
+                                sum(nums) / len(nums) if nums else fill_value
+                            )
                         elif aggfunc == "count":
                             col_data.append(sum(1 for x in vals if x is not None))
                         elif aggfunc == "min":
@@ -1527,7 +1579,10 @@ class DataFrame:
                             elif len(nums) % 2:
                                 col_data.append(nums[len(nums) // 2])
                             else:
-                                col_data.append((nums[len(nums) // 2 - 1] + nums[len(nums) // 2]) / 2)
+                                col_data.append(
+                                    (nums[len(nums) // 2 - 1] + nums[len(nums) // 2])
+                                    / 2
+                                )
                         elif aggfunc == "std":
                             nums = [x for x in vals if x is not None]
                             if len(nums) < 2:
@@ -1535,7 +1590,7 @@ class DataFrame:
                             else:
                                 m = sum(nums) / len(nums)
                                 var = sum((x - m) ** 2 for x in nums) / len(nums)
-                                col_data.append(var ** 0.5)
+                                col_data.append(var**0.5)
                         else:
                             raise ValueError(f"unsupported aggfunc: {aggfunc}")
                 new_data[col_name] = col_data
@@ -1606,9 +1661,7 @@ class DataFrame:
         other_cols = other._columns
 
         if cols != other_cols:
-            raise ValueError(
-                "Can only compare identically-labeled DataFrame objects"
-            )
+            raise ValueError("Can only compare identically-labeled DataFrame objects")
 
         diff_data: Dict[str, list] = {}
         for c in cols:
@@ -1734,10 +1787,15 @@ class DataFrame:
                 indices = [i for i, idx in enumerate(self._index) if like in str(idx)]
             elif regex is not None:
                 pat = re.compile(regex)
-                indices = [i for i, idx in enumerate(self._index) if pat.search(str(idx))]
+                indices = [
+                    i for i, idx in enumerate(self._index) if pat.search(str(idx))
+                ]
             else:
                 return self.copy()
-            new_data = {c: [self._inner.get_column(c).values[i] for i in indices] for c in self._columns}
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in indices]
+                for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             if items is not None:
@@ -1834,8 +1892,7 @@ class DataFrame:
         # 每行变成一列
         for i in range(n):
             new_data[str(i)] = [
-                self._inner.get_column(c).values[i]
-                for c in self._columns
+                self._inner.get_column(c).values[i] for c in self._columns
             ]
         return DataFrame(new_data)
 
@@ -1959,7 +2016,10 @@ class DataFrame:
         num = int(offset[:-1])
         unit = offset[-1]
         unit_map = {
-            "D": "days", "H": "hours", "M": "minutes", "S": "seconds",
+            "D": "days",
+            "H": "hours",
+            "M": "minutes",
+            "S": "seconds",
             "W": "weeks",
         }
 
@@ -1991,14 +2051,16 @@ class DataFrame:
                 end = start + timedelta(**{unit_map[unit]: num - 1})
                 end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
                 indices = [
-                    i for i in range(self._nrows)
+                    i
+                    for i in range(self._nrows)
                     if isinstance(self._index[i], datetime) and self._index[i] <= end
                 ]
             else:
                 end = max(times)
                 start = end - timedelta(**{unit_map[unit]: num - 1})
                 indices = [
-                    i for i in range(self._nrows)
+                    i
+                    for i in range(self._nrows)
                     if isinstance(self._index[i], datetime) and self._index[i] >= start
                 ]
         else:
@@ -2007,15 +2069,19 @@ class DataFrame:
                 start = min(times)
                 end = start + num
                 indices = [
-                    i for i in range(self._nrows)
-                    if isinstance(self._index[i], (int, float)) and self._index[i] <= end
+                    i
+                    for i in range(self._nrows)
+                    if isinstance(self._index[i], (int, float))
+                    and self._index[i] <= end
                 ]
             else:
                 end = max(times)
                 start = end - num
                 indices = [
-                    i for i in range(self._nrows)
-                    if isinstance(self._index[i], (int, float)) and self._index[i] >= start
+                    i
+                    for i in range(self._nrows)
+                    if isinstance(self._index[i], (int, float))
+                    and self._index[i] >= start
                 ]
 
         new_data = {
@@ -2036,6 +2102,7 @@ class DataFrame:
             indices = list(range(self._nrows))
             if before is not None:
                 from datetime import datetime
+
                 if isinstance(before, str):
                     try:
                         before = datetime.fromisoformat(before)
@@ -2043,19 +2110,28 @@ class DataFrame:
                         pass
                 # 过滤掉 before 之前的行
                 indices = [
-                    i for i in indices
-                    if not (isinstance(self._index[i], type(before)) and self._index[i] < before)
+                    i
+                    for i in indices
+                    if not (
+                        isinstance(self._index[i], type(before))
+                        and self._index[i] < before
+                    )
                 ]
             if after is not None:
                 from datetime import datetime
+
                 if isinstance(after, str):
                     try:
                         after = datetime.fromisoformat(after)
                     except ValueError:
                         pass
                 indices = [
-                    i for i in indices
-                    if not (isinstance(self._index[i], type(after)) and self._index[i] > after)
+                    i
+                    for i in indices
+                    if not (
+                        isinstance(self._index[i], type(after))
+                        and self._index[i] > after
+                    )
                 ]
             new_data = {
                 c: [self._inner.get_column(c).values[i] for i in indices]
@@ -2074,7 +2150,7 @@ class DataFrame:
             if after is not None:
                 try:
                     idx = cols.index(after)
-                    cols = cols[:idx + 1]
+                    cols = cols[: idx + 1]
                 except ValueError:
                     pass
             new_data = {c: list(self._inner.get_column(c).values) for c in cols}
@@ -2095,9 +2171,14 @@ class DataFrame:
         # 解析 freq
         freq = freq.strip().upper()
         unit_map = {
-            "D": ("days", 1), "H": ("hours", 1), "h": ("hours", 1),
-            "M": ("minutes", 0), "T": ("minutes", 1), "min": ("minutes", 1),
-            "S": ("seconds", 1), "W": ("weeks", 1),
+            "D": ("days", 1),
+            "H": ("hours", 1),
+            "h": ("hours", 1),
+            "M": ("minutes", 0),
+            "T": ("minutes", 1),
+            "min": ("minutes", 1),
+            "S": ("seconds", 1),
+            "W": ("weeks", 1),
         }
 
         if freq not in unit_map:
@@ -2115,9 +2196,13 @@ class DataFrame:
                 try:
                     times.append(datetime.fromisoformat(v))
                 except (ValueError, TypeError):
-                    raise TypeError(f"asfreq requires a DatetimeIndex, got {type(v).__name__}")
+                    raise TypeError(
+                        f"asfreq requires a DatetimeIndex, got {type(v).__name__}"
+                    )
             else:
-                raise TypeError(f"asfreq requires a DatetimeIndex, got {type(v).__name__}")
+                raise TypeError(
+                    f"asfreq requires a DatetimeIndex, got {type(v).__name__}"
+                )
 
         if not times:
             return DataFrame({})
@@ -2181,7 +2266,9 @@ class DataFrame:
         df._index = target_idx
         return df
 
-    def tz_localize(self, tz, axis: int = 0, level=None, copy: bool = True) -> "DataFrame":
+    def tz_localize(
+        self, tz, axis: int = 0, level=None, copy: bool = True
+    ) -> "DataFrame":
         """将 tz-naive 的 datetime 索引本地化为时区感知。
 
         :param tz: 时区字符串 (如 'Asia/Shanghai', 'UTC', 'US/Eastern')
@@ -2197,7 +2284,9 @@ class DataFrame:
             tzinfo = self._parse_timezone(tz)
 
             # 检查索引是否已经是时区感知的
-            if self._index and any(isinstance(v, datetime) and v.tzinfo is not None for v in self._index):
+            if self._index and any(
+                isinstance(v, datetime) and v.tzinfo is not None for v in self._index
+            ):
                 raise TypeError("Index is already tz-aware. Use tz_convert instead.")
 
             # 本地化 index
@@ -2214,7 +2303,9 @@ class DataFrame:
                 else:
                     new_index.append(v)
 
-            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            new_data = {
+                c: list(self._inner.get_column(c).values) for c in self._columns
+            }
             df = DataFrame(new_data)
             df._index = new_index
             return df
@@ -2222,7 +2313,9 @@ class DataFrame:
             # axis == 1: 列索引 (不常用)
             return self.copy() if copy else self
 
-    def tz_convert(self, tz, axis: int = 0, level=None, copy: bool = True) -> "DataFrame":
+    def tz_convert(
+        self, tz, axis: int = 0, level=None, copy: bool = True
+    ) -> "DataFrame":
         """将 tz-aware 的 datetime 索引转换为另一个时区。
 
         :param tz: 目标时区字符串 (如 'Asia/Shanghai', 'UTC', 'US/Eastern')
@@ -2235,7 +2328,9 @@ class DataFrame:
 
         if axis == 0:
             # 检查索引是否是时区感知的
-            has_tz = any(isinstance(v, datetime) and v.tzinfo is not None for v in self._index)
+            has_tz = any(
+                isinstance(v, datetime) and v.tzinfo is not None for v in self._index
+            )
             if not has_tz:
                 raise TypeError("Index is not tz-aware. Use tz_localize first.")
 
@@ -2249,7 +2344,9 @@ class DataFrame:
                 else:
                     new_index.append(v)
 
-            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            new_data = {
+                c: list(self._inner.get_column(c).values) for c in self._columns
+            }
             df = DataFrame(new_data)
             df._index = new_index
             return df
@@ -2294,6 +2391,7 @@ class DataFrame:
         # 尝试使用 pytz (如果可用)
         try:
             import pytz
+
             return pytz.timezone(tz)
         except ImportError:
             pass
@@ -2301,6 +2399,7 @@ class DataFrame:
         # 尝试使用 zoneinfo (Python 3.9+)
         try:
             from zoneinfo import ZoneInfo
+
             return ZoneInfo(tz)
         except (ImportError, Exception):
             pass
@@ -2531,7 +2630,7 @@ class DataFrame:
             for c in self._columns:
                 vals = list(self._inner.get_column(c).values)
                 if periods >= 0:
-                    shifted = ([None] * periods) + vals[:len(vals) - periods]
+                    shifted = ([None] * periods) + vals[: len(vals) - periods]
                 else:
                     p = -periods
                     shifted = vals[p:] + ([None] * p)
@@ -2584,7 +2683,9 @@ class DataFrame:
 
     # ---------- v2.0.0: 统计方法 ----------
 
-    def rank(self, axis: int = 0, method: str = "average", ascending: bool = True) -> "DataFrame":
+    def rank(
+        self, axis: int = 0, method: str = "average", ascending: bool = True
+    ) -> "DataFrame":
         """计算每列的排名。
 
         :param axis: 0=列方向, 1=行方向
@@ -2639,7 +2740,10 @@ class DataFrame:
                 else:  # average
                     group_start = 0
                     for j in range(1, len(indexed) + 1):
-                        if j == len(indexed) or indexed[j][0] != indexed[group_start][0]:
+                        if (
+                            j == len(indexed)
+                            or indexed[j][0] != indexed[group_start][0]
+                        ):
                             n = j - group_start
                             avg_rank = group_start + 1 + (n - 1) / 2.0
                             for k in range(group_start, j):
@@ -2657,6 +2761,7 @@ class DataFrame:
         :param axis: 0=列方向, 1=行方向
         """
         from .series import Series
+
         if axis == 0:
             q_list = [q] if not isinstance(q, (list, tuple)) else list(q)
             new_data = {}
@@ -2693,6 +2798,7 @@ class DataFrame:
                 if dropna:
                     vals = [v for v in vals if v is not None]
                 from collections import Counter
+
                 cnt = Counter(vals)
                 max_count = max(cnt.values()) if cnt else 0
                 modes = [k for k, v in cnt.items() if v == max_count]
@@ -2713,6 +2819,7 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         from .series import Series
+
         if axis == 0:
             result = {}
             for c in self._columns:
@@ -2729,7 +2836,7 @@ class DataFrame:
                 if m2 == 0:
                     result[c] = None
                 else:
-                    result[c] = (n ** 0.5 * m3) / (m2 ** 1.5)
+                    result[c] = (n**0.5 * m3) / (m2**1.5)
             return Series(result)
         else:
             return self.T.skew(axis=0, skipna=skipna)
@@ -2741,6 +2848,7 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         from .series import Series
+
         if axis == 0:
             result = {}
             for c in self._columns:
@@ -2757,7 +2865,9 @@ class DataFrame:
                 if m2 == 0:
                     result[c] = None
                 else:
-                    result[c] = (n * (n + 1) * m4) / ((n - 1) * (n - 2) * (n - 3) * m2 ** 2) - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
+                    result[c] = (n * (n + 1) * m4) / (
+                        (n - 1) * (n - 2) * (n - 3) * m2**2
+                    ) - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
             return Series(result)
         else:
             return self.T.kurt(axis=0, skipna=skipna)
@@ -2769,6 +2879,7 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         from .series import Series
+
         if axis == 0:
             result = {}
             for c in self._columns:
@@ -2791,6 +2902,7 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         from .series import Series
+
         if axis == 0:
             result = {}
             for c in self._columns:
@@ -2802,7 +2914,11 @@ class DataFrame:
                         continue
                     if best_val is None or v > best_val:
                         best_val = v
-                        best_idx = self._index[i] if self._index and i < len(self._index) else i
+                        best_idx = (
+                            self._index[i]
+                            if self._index and i < len(self._index)
+                            else i
+                        )
                 result[c] = best_idx
             return Series(result)
         else:
@@ -2815,6 +2931,7 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         from .series import Series
+
         if axis == 0:
             result = {}
             for c in self._columns:
@@ -2826,7 +2943,11 @@ class DataFrame:
                         continue
                     if best_val is None or v < best_val:
                         best_val = v
-                        best_idx = self._index[i] if self._index and i < len(self._index) else i
+                        best_idx = (
+                            self._index[i]
+                            if self._index and i < len(self._index)
+                            else i
+                        )
                 result[c] = best_idx
             return Series(result)
         else:
@@ -2845,7 +2966,10 @@ class DataFrame:
                 return self.copy()
             indexed = list(enumerate(self._index))
             # 排序时 None 放最后
-            indexed.sort(key=lambda x: (x[1] is None, x[1] if x[1] is not None else ""), reverse=not ascending)
+            indexed.sort(
+                key=lambda x: (x[1] is None, x[1] if x[1] is not None else ""),
+                reverse=not ascending,
+            )
             new_order = [i for i, _ in indexed]
             new_data = {
                 c: [self._inner.get_column(c).values[i] for i in new_order]
@@ -2923,6 +3047,7 @@ class DataFrame:
         """
         import sys
         from .series import Series
+
         result = {}
         for c in self._columns:
             total = 0
@@ -3029,9 +3154,7 @@ class DataFrameGroupBy:
         self._groups: Dict[tuple, list] = {}
         n = df._nrows
         for i in range(n):
-            key = tuple(
-                df._inner.get_column(c).values[i] for c in self._by
-            )
+            key = tuple(df._inner.get_column(c).values[i] for c in self._by)
             self._groups.setdefault(key, []).append(i)
 
     def _agg(self, agg_funcs: Dict[str, str]) -> "DataFrame":
@@ -3081,8 +3204,10 @@ class DataFrameGroupBy:
 
     def mean(self) -> "DataFrame":
         numeric_cols = [
-            c for c in self._df._columns
-            if c not in self._by and self._df._inner.get_column(c).dtype in ("int64", "float64")
+            c
+            for c in self._df._columns
+            if c not in self._by
+            and self._df._inner.get_column(c).dtype in ("int64", "float64")
         ]
         return self._agg({c: "mean" for c in numeric_cols})
 
@@ -3145,6 +3270,7 @@ class DataFrameGroupBy:
     def ngroup(self) -> "Series":
         """返回每个分组的编号 (0-based)。"""
         from .series import Series
+
         group_ids = {}
         for i, key in enumerate(self._groups):
             group_ids[key] = i
@@ -3160,6 +3286,7 @@ class DataFrameGroupBy:
     def cumcount(self, ascending: bool = True) -> "Series":
         """返回每个分组内的累计计数 (0-based)。"""
         from .series import Series
+
         n = self._df._nrows
         result = [None] * n
         for idxs in self._groups.values():
@@ -3225,7 +3352,10 @@ class DataFrameGroupBy:
                 else:  # average
                     group_start = 0
                     for j in range(1, len(indexed) + 1):
-                        if j == len(indexed) or indexed[j][0] != indexed[group_start][0]:
+                        if (
+                            j == len(indexed)
+                            or indexed[j][0] != indexed[group_start][0]
+                        ):
                             n_g = j - group_start
                             avg_rank = group_start + 1 + (n_g - 1) / 2.0
                             for k in range(group_start, j):
@@ -3283,7 +3413,11 @@ class DataFrameGroupBy:
                 if c == other_col:
                     continue
                 col_vals = [self._df._inner.get_column(c).values[i] for i in idxs]
-                pairs = [(a, b) for a, b in zip(col_vals, other_vals) if a is not None and b is not None]
+                pairs = [
+                    (a, b)
+                    for a, b in zip(col_vals, other_vals)
+                    if a is not None and b is not None
+                ]
                 if len(pairs) < 2:
                     result[c].append(None)
                     continue
@@ -3318,13 +3452,19 @@ class DataFrameGroupBy:
                 if c == other_col:
                     continue
                 col_vals = [self._df._inner.get_column(c).values[i] for i in idxs]
-                pairs = [(a, b) for a, b in zip(col_vals, other_vals) if a is not None and b is not None]
+                pairs = [
+                    (a, b)
+                    for a, b in zip(col_vals, other_vals)
+                    if a is not None and b is not None
+                ]
                 if len(pairs) < 2:
                     result[c].append(None)
                     continue
                 ma = sum(a for a, b in pairs) / len(pairs)
                 mb = sum(b for a, b in pairs) / len(pairs)
-                result[c].append(sum((a - ma) * (b - mb) for a, b in pairs) / len(pairs))
+                result[c].append(
+                    sum((a - ma) * (b - mb) for a, b in pairs) / len(pairs)
+                )
 
         return DataFrame(result)
 
@@ -3334,6 +3474,7 @@ class DataFrameGroupBy:
         :param other: 另一个 DataFrame
         """
         from .series import Series
+
         result: Dict[str, float] = {}
         for c in self._df._columns:
             if c in self._by or c not in other._columns:
@@ -3342,7 +3483,13 @@ class DataFrameGroupBy:
             for idxs in self._groups.values():
                 col_a = [self._df._inner.get_column(c).values[i] for i in idxs]
                 col_b = [other._inner.get_column(c).values[i] for i in idxs]
-                all_pairs.extend([(a, b) for a, b in zip(col_a, col_b) if a is not None and b is not None])
+                all_pairs.extend(
+                    [
+                        (a, b)
+                        for a, b in zip(col_a, col_b)
+                        if a is not None and b is not None
+                    ]
+                )
             if len(all_pairs) < 2:
                 result[c] = None
                 continue
@@ -3368,16 +3515,23 @@ class DataFrameGroupBy:
                 for j, idx in enumerate(idxs):
                     if j < periods:
                         result[c][idx] = None
-                    elif vals[j - periods] is None or vals[j - periods] == 0 or vals[j] is None:
+                    elif (
+                        vals[j - periods] is None
+                        or vals[j - periods] == 0
+                        or vals[j] is None
+                    ):
                         result[c][idx] = None
                     else:
-                        result[c][idx] = (vals[j] - vals[j - periods]) / vals[j - periods]
+                        result[c][idx] = (vals[j] - vals[j - periods]) / vals[
+                            j - periods
+                        ]
 
         return DataFrame(result)
 
     def rolling(self, window: int, min_periods=None) -> "DataFrame":
         """返回每个分组内的滚动窗口聚合结果 (按组应用 rolling)。"""
         from .series import Rolling
+
         if min_periods is None:
             min_periods = window
         result: Dict[str, list] = {}
@@ -3399,6 +3553,7 @@ class DataFrameGroupBy:
     def expanding(self, min_periods: int = 1) -> "DataFrame":
         """返回每个分组内的扩展窗口聚合结果 (按组应用 expanding)。"""
         from .series import Expanding
+
         result: Dict[str, list] = {}
         for c in self._df._columns:
             result[c] = [None] * self._df._nrows
@@ -3418,6 +3573,7 @@ class DataFrameGroupBy:
     def ewm(self, **kwargs) -> "DataFrame":
         """返回每个分组内的指数加权移动窗口 (按组应用 ewm)。"""
         from .series import EWM
+
         result: Dict[str, list] = {}
         for c in self._df._columns:
             result[c] = [None] * self._df._nrows
@@ -3437,6 +3593,7 @@ class DataFrameGroupBy:
     def resample(self, freq: str) -> "DataFrame":
         """返回每个分组内的重采样聚合结果 (按组应用 resample)。"""
         from .series import Resampler
+
         result: Dict[str, list] = {}
         for c in self._df._columns:
             result[c] = [None] * self._df._nrows
@@ -3457,6 +3614,7 @@ class DataFrameGroupBy:
 # ---------------------------------------------------------------------------
 # 索引器
 # ---------------------------------------------------------------------------
+
 
 class _IndexerBase:
     """loc/iloc 索引器基类。"""
