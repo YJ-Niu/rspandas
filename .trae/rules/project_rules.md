@@ -4,14 +4,14 @@
 
 rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析库，提供与 **Pandas pandas** 兼容的 API 接口。
 
-- **Rust 层** (`src/`): 负责底层核心实现，包括数组操作、算术运算、线性代数、FFT、排序统计等，底层数据恒为 `Array<f64, IxDyn>`（ndarray 0.17.2）
-- **Python 层** (`python/rspandas/`): 负责公开 API 接口，方法参数默认值要全面，代理调用 Rust 底层实现，包含 dtype 追踪、结构化数组、掩码数组等扩展功能
+- **Rust 层** (`src/`): 负责底层核心实现。
+- **Python 层** (`python/rspandas/`): 负责公开 API 接口，方法参数默认值要全面，代理调用 Rust 底层实现。
 - **构建工具**: 使用 `maturin` 构建 wheel，通过 `build_wheel.sh` 脚本构建并安装到 `.venv`
 
 ## 开发环境
 
 - Python 虚拟环境: `.venv` (使用 uv 创建)
-- 构建命令: `./build_wheel.sh --debug` (调试模式) 或 `./build_wheel.sh` (release 模式)
+- 构建命令: `./build_wheel.sh` (release 模式)
 - Rust 工具链: 由 `rust-toolchain.toml` 固定为 stable，当前为 edition 2024
 
 ## 关键约定
