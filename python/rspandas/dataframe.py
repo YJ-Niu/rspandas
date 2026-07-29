@@ -386,31 +386,26 @@ class DataFrame:
             [self._inner.get_column(c).values[i] for c in by] for i in range(n)
         ]
 
-        def key_func(row):
-            # None 排序逻辑
-            return tuple(
-                (1 if v is None else 0, v if v is not None else 0) 
-                for v in row
-            )
+        # 根据 na_position 分离 None 行和非 None 行
+        none_indices = []
+        non_none_indices = []
+        for i in range(n):
+            if any(v is None for v in sort_keys[i]):
+                none_indices.append(i)
+            else:
+                non_none_indices.append(i)
 
-        # 根据na_position调整排序逻辑
         try:
-            if na_position == "first":
-                order = sorted(
-                    range(n), 
-                    key=lambda i: key_func(sort_keys[i]), 
-                    reverse=not ascending
-                )
-            else:  # "last"
-                order = sorted(
-                    range(n), 
-                    key=lambda i: (
-                        tuple((0 if v is None else 1, v if v is not None else 0) for v in sort_keys[i])
-                    ),
-                    reverse=not ascending
-                )
+            non_none_indices.sort(
+                key=lambda i: sort_keys[i], reverse=not ascending
+            )
         except TypeError:
             raise TypeError("cannot sort mixed types")
+
+        if na_position == "first":
+            order = none_indices + non_none_indices
+        else:  # "last"
+            order = non_none_indices + none_indices
         
         new_data = {
             c: [self._inner.get_column(c).values[i] for i in order]
@@ -1742,60 +1737,156 @@ class DataFrame:
 
     # ---------- 索引操作 (v1.0.0) ----------
 
-    def drop(self, labels, axis: int = 0) -> "DataFrame":
+    def drop(
+        self,
+        labels=None,
+        axis: int = 0,
+        index=None,
+        columns=None,
+        level=None,
+        inplace: bool = False,
+        errors: str = "raise",
+    ) -> "DataFrame":
         """删除行或列。
+
         :param labels: 要删除的标签 (str/int 或 list)
         :param axis: 0=行, 1=列
+        :param index: 要删除的行标签（替代 labels + axis=0）
+        :param columns: 要删除的列名（替代 labels + axis=1）
+        :param level: 多级索引层级（暂不支持）
+        :param inplace: 是否原地修改
+        :param errors: 'raise' (找不到时抛错) 或 'ignore' (静默忽略)
         """
+        # 处理 index / columns 参数优先级
+        if index is not None:
+            labels = index
+            axis = 0
+        elif columns is not None:
+            labels = columns
+            axis = 1
+
+        if labels is None:
+            raise ValueError("labels, index, or columns must be specified")
+
+        if not isinstance(labels, (list, tuple)):
+            labels = [labels]
+
         if axis == 0:
-            if not isinstance(labels, (list, tuple)):
-                labels = [labels]
+            # 删除行
             keep_idx = []
             for i in range(self._nrows):
                 label = self._index[i] if self._index else i
                 if label not in labels:
                     keep_idx.append(i)
+
+            if errors == "raise":
+                missing = [l for l in labels if l not in (self._index or range(len(self)))]
+                if missing:
+                    raise KeyError(f"labels {missing} not found in axis")
+
             new_data = {
                 c: [self._inner.get_column(c).values[i] for i in keep_idx]
                 for c in self._columns
             }
-            return DataFrame(new_data)
+            new_index = [self._index[i] for i in keep_idx] if self._index else None
+            result = DataFrame(new_data, index=new_index)
         else:
-            if not isinstance(labels, (list, tuple)):
-                labels = [labels]
+            # 删除列
+            if errors == "raise":
+                missing = [l for l in labels if l not in self._columns]
+                if missing:
+                    raise KeyError(f"labels {missing} not found in axis")
             new_cols = [c for c in self._columns if c not in labels]
             new_data = {c: list(self._inner.get_column(c).values) for c in new_cols}
-            return DataFrame(new_data)
+            result = DataFrame(new_data, index=self._index)
 
-    def rename(self, mapper, axis: int = 0) -> "DataFrame":
-        """重命名行或列。
-        :param mapper: dict {old_name: new_name} 或 callable
-        :param axis: 0=行索引, 1=列
-        """
-        if axis == 1:
-            if isinstance(mapper, dict):
-                new_cols = [mapper.get(c, c) for c in self._columns]
+        if inplace:
+            self._reload(new_data)
+            if axis == 0:
+                self._index = new_index if self._index else list(range(self._nrows))
             else:
-                new_cols = [mapper(c) for c in self._columns]
-            new_data = {
-                new_cols[i]: list(self._inner.get_column(c).values)
-                for i, c in enumerate(self._columns)
-            }
-            return DataFrame(new_data)
-        else:
-            new_index = []
-            for i in range(self._nrows):
-                label = self._index[i] if self._index else i
-                if isinstance(mapper, dict):
-                    new_index.append(mapper.get(label, label))
+                self._columns = new_cols
+            return self
+        return result
+
+    def rename(
+        self,
+        mapper=None,
+        index=None,
+        columns=None,
+        axis=None,
+        copy: bool = True,
+        inplace: bool = False,
+        level=None,
+        errors: str = "ignore",
+    ) -> "DataFrame":
+        """重命名行或列。
+
+        :param mapper: dict {old_name: new_name} 或 callable
+        :param index: 行索引重命名映射（dict 或 callable）
+        :param columns: 列名重命名映射（dict 或 callable）
+        :param axis: 指定 mapper 应用的轴（0=行, 1=列）
+        :param copy: 是否复制数据
+        :param inplace: 是否原地修改
+        :param level: 多级索引层级（暂不支持）
+        :param errors: 'raise' 或 'ignore'
+        """
+        # 处理 axis 与 mapper 的兼容性
+        if axis is not None:
+            if axis == 1 or axis == "columns":
+                columns = mapper
+            else:
+                index = mapper
+        elif columns is not None:
+            pass
+        elif index is not None:
+            pass
+        elif mapper is not None:
+            # 默认行为：若 mapper 为 dict 且无 axis，尝试推断
+            index = mapper
+
+        new_data = {
+            c: list(self._inner.get_column(c).values) for c in self._columns
+        }
+        new_index = list(self._index) if self._index else None
+        new_cols = list(self._columns)
+
+        # 重命名列
+        if columns is not None:
+            if isinstance(columns, dict):
+                new_cols = [columns.get(c, c) for c in self._columns]
+            elif callable(columns):
+                new_cols = [columns(c) for c in self._columns]
+            else:
+                raise TypeError("columns must be dict or callable")
+            # 处理重复列名（简单去重）
+            seen = set()
+            for i, c in enumerate(new_cols):
+                if c in seen:
+                    new_cols[i] = f"{c}.{i}"
+                seen.add(c)
+            new_data = {new_cols[i]: new_data[c] for i, c in enumerate(self._columns)}
+
+        # 重命名索引
+        if index is not None:
+            if self._index is not None:
+                if isinstance(index, dict):
+                    new_index = [index.get(label, label) for label in self._index]
+                elif callable(index):
+                    new_index = [index(label) for label in self._index]
                 else:
-                    new_index.append(mapper(label))
-            new_data = {
-                c: list(self._inner.get_column(c).values) for c in self._columns
-            }
-            df = DataFrame(new_data)
-            df._index = new_index
-            return df
+                    raise TypeError("index must be dict or callable")
+            else:
+                new_index = list(range(self._nrows))
+
+        result = DataFrame(new_data, index=new_index)
+
+        if inplace:
+            self._reload(new_data)
+            self._index = new_index
+            self._columns = new_cols
+            return self
+        return result
 
     def set_index(self, keys) -> "DataFrame":
         """设置索引列。"""
@@ -1823,18 +1914,58 @@ class DataFrame:
         df._index = new_index
         return df
 
-    def reset_index(self, drop: bool = False) -> "DataFrame":
-        """重置索引为默认 RangeIndex。"""
+    def reset_index(
+        self,
+        level=None,
+        drop: bool = False,
+        inplace: bool = False,
+        col_level: int = 0,
+        col_fill: str = "",
+    ) -> "DataFrame":
+        """重置索引为默认 RangeIndex。
+
+        :param level: 要重置的索引级别（暂不支持多级索引级别筛选）
+        :param drop: 是否丢弃索引列而不是插入到 DataFrame 中
+        :param inplace: 是否原地修改
+        :param col_level: 列多级索引级别（暂不支持）
+        :param col_fill: 列多级索引填充值（暂不支持）
+        """
         new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        new_columns = list(self._columns)
+
         if not drop and self._index is not None:
-            new_data["index"] = list(self._index)
-            cols = ["index"] + [c for c in self._columns]
-            df = DataFrame(new_data)
-            df._columns = cols
-        else:
-            df = DataFrame(new_data)
-        df._index = list(range(self._nrows))
-        return df
+            index_name = "index"
+            if hasattr(self._index, "name") and self._index.name is not None:
+                index_name = self._index.name
+            elif isinstance(self._index, list) and len(self._index) > 0:
+                pass
+
+            # 处理多级索引（tuple 索引）
+            if self._index and isinstance(self._index[0], tuple):
+                nlevels = len(self._index[0])
+                if level is not None:
+                    levels_to_reset = [level] if isinstance(level, int) else list(level)
+                else:
+                    levels_to_reset = list(range(nlevels))
+
+                for lvl in sorted(levels_to_reset, reverse=True):
+                    lvl_name = f"level_{lvl}"
+                    new_data[lvl_name] = [idx[lvl] for idx in self._index]
+                    new_columns.insert(0, lvl_name)
+            else:
+                new_data[index_name] = list(self._index)
+                new_columns.insert(0, index_name)
+
+        result = DataFrame(new_data)
+        result._columns = new_columns
+        result._index = list(range(self._nrows))
+
+        if inplace:
+            self._reload(new_data)
+            self._columns = new_columns
+            self._index = list(range(self._nrows))
+            return self
+        return result
 
     # ---------- CSV I/O ----------
 

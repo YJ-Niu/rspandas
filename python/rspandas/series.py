@@ -911,15 +911,32 @@ class Series:
             )
         return Series(self._inner, name=self.name, dtype=self._dtype_str)
 
-    def drop(self, labels=None, axis: int = 0, errors: str = "raise") -> _PySeries:
+    def drop(
+        self,
+        labels=None,
+        axis: int = 0,
+        index=None,
+        columns=None,
+        level=None,
+        inplace: bool = False,
+        errors: str = "raise",
+    ) -> _PySeries:
         """删除指定索引的元素。
 
         :param labels: 要删除的索引标签 (标量或列表)
         :param axis: 0=索引 (仅支持 0)
+        :param index: 要删除的索引标签（替代 labels）
+        :param columns: 不支持（Series 无列）
+        :param level: 多级索引层级（暂不支持）
+        :param inplace: 是否原地修改
         :param errors: 'raise' (找不到时抛错) 或 'ignore' (静默忽略)
         """
+        if columns is not None:
+            raise ValueError("Series.drop does not support columns")
+        if index is not None:
+            labels = index
         if labels is None:
-            return self.copy()
+            return self if inplace else self.copy()
         if not isinstance(labels, (list, tuple)):
             labels = [labels]
 
@@ -928,8 +945,6 @@ class Series:
         for i, (v, idx) in enumerate(zip(self.values, self._index or range(len(self)))):
             if idx in labels:
                 continue
-            if errors == "raise" and idx not in (self._index or range(len(self))):
-                pass  # 已在上面检查
             new_index.append(idx)
             new_values.append(v)
 
@@ -938,14 +953,27 @@ class Series:
             if missing:
                 raise KeyError(f"labels not found: {missing}")
 
+        if inplace:
+            self._inner = _PySeries(new_values, self.name)
+            self._index = new_index
+            return self
         return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
 
-    def dropna(self, axis: int = 0, how: str = "any", thresh=None) -> _PySeries:
+    def dropna(
+        self,
+        axis: int = 0,
+        inplace: bool = False,
+        how: str = "any",
+        thresh=None,
+        subset=None,
+    ) -> _PySeries:
         """删除缺失值。
 
         :param axis: 0=索引 (仅支持 0)
+        :param inplace: 是否原地修改
         :param how: 'any' (有一个 NaN 就删) 或 'all' (全是 NaN 才删)
         :param thresh: 要求至少 N 个非 NaN 值
+        :param subset: 对 Series 无意义（为兼容 DataFrame API 保留）
         """
         values = self.values
         index = self._index or list(range(len(values)))
@@ -954,8 +982,13 @@ class Series:
             # thresh 模式: 保留至少 thresh 个非 NaN 值
             non_null_count = sum(1 for v in values if v is not None)
             if non_null_count < thresh:
-                return Series([], name=self.name, dtype=self._dtype_str)
-            return self.copy()
+                result = Series([], name=self.name, dtype=self._dtype_str)
+                if inplace:
+                    self._inner = result._inner
+                    self._index = []
+                    return self
+                return result
+            return self if inplace else self.copy()
 
         if how == "any":
             mask = [v is not None for v in values]
@@ -968,6 +1001,11 @@ class Series:
 
         new_values = [v for v, m in zip(values, mask) if m]
         new_index = [i for i, m in zip(index, mask) if m]
+
+        if inplace:
+            self._inner = _PySeries(new_values, self.name)
+            self._index = new_index
+            return self
         return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
 
     def isna(self) -> _PySeries:
