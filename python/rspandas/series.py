@@ -485,6 +485,7 @@ class Series:
         :param name: 列名 (默认使用 Series.name)
         """
         from .dataframe import DataFrame
+
         col_name = name if name is not None else self.name
         if col_name is None:
             col_name = 0
@@ -722,6 +723,7 @@ class Series:
         if regex:
             # 正则替换
             import re
+
             if isinstance(to_replace, str) and isinstance(value, str):
                 pattern = re.compile(to_replace)
                 for v in self.values:
@@ -747,14 +749,20 @@ class Series:
             if not isinstance(to_replace, (list, tuple, dict)):
                 out = [value if v == to_replace else v for v in self.values]
             # 形式 3: list[old] + list[new]
-            elif isinstance(to_replace, (list, tuple)) and isinstance(value, (list, tuple)):
+            elif isinstance(to_replace, (list, tuple)) and isinstance(
+                value, (list, tuple)
+            ):
                 if len(to_replace) != len(value):
                     raise ValueError("to_replace and value must have the same length")
                 mapping = dict(zip(to_replace, value))
-                out = [mapping.get(v, v) if v is not None else None for v in self.values]
+                out = [
+                    mapping.get(v, v) if v is not None else None for v in self.values
+                ]
             elif isinstance(to_replace, dict):
                 mapping = to_replace
-                out = [mapping.get(v, v) if v is not None else None for v in self.values]
+                out = [
+                    mapping.get(v, v) if v is not None else None for v in self.values
+                ]
             else:
                 raise TypeError("invalid replace arguments")
 
@@ -957,7 +965,9 @@ class Series:
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return self
-        return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def dropna(
         self,
@@ -1006,7 +1016,9 @@ class Series:
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return self
-        return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def isna(self) -> _PySeries:
         """isnull 的别名。"""
@@ -1047,7 +1059,9 @@ class Series:
         else:
             result_values = [v for _, v in top]
             result_index = [self._index[i] for i, _ in top]
-        return Series(result_values, name=self.name, dtype=self._dtype_str, index=result_index)
+        return Series(
+            result_values, name=self.name, dtype=self._dtype_str, index=result_index
+        )
 
     def nsmallest(self, n: int = 5, keep: str = "first") -> _PySeries:
         """返回最小的 N 个元素。
@@ -1079,7 +1093,9 @@ class Series:
         else:
             result_values = [v for _, v in top]
             result_index = [self._index[i] for i, _ in top]
-        return Series(result_values, name=self.name, dtype=self._dtype_str, index=result_index)
+        return Series(
+            result_values, name=self.name, dtype=self._dtype_str, index=result_index
+        )
 
     def droplevel(self, level, axis: int = 0) -> _PySeries:
         """删除索引级别 (多级索引时)。"""
@@ -1103,9 +1119,17 @@ class Series:
             new_values.append(self.values[pos] if pos is not None else None)
             new_index.append(label)
 
-        return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
-    def sort_index(self, ascending: bool = True, inplace: bool = False, kind: str = "quicksort", na_position: str = "last") -> _PySeries:
+    def sort_index(
+        self,
+        ascending: bool = True,
+        inplace: bool = False,
+        kind: str = "quicksort",
+        na_position: str = "last",
+    ) -> _PySeries:
         """按索引排序。
 
         :param ascending: 是否升序
@@ -1126,7 +1150,9 @@ class Series:
             self._inner = _PySeries(new_values, self.name, dtype=self._dtype_str)
             self._index = new_index
             return self
-        return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def clip(self, lower=None, upper=None) -> _PySeries:
         """裁剪值到指定范围。
@@ -1157,12 +1183,14 @@ class Series:
         if not isinstance(other, Series):
             raise TypeError("other must be Series")
         result = {}
-        all_keys = set(self._index or range(len(self))) | set(other._index or range(len(other)))
+        all_keys = set(self._index or range(len(self))) | set(
+            other._index or range(len(other))
+        )
         for key in sorted(all_keys):
             v1 = self[key] if key in (self._index or range(len(self))) else None
             v2 = other[key] if key in (other._index or range(len(other))) else None
             if v1 != v2:
-                result[key] = {'self': v1, 'other': v2}
+                result[key] = {"self": v1, "other": v2}
         return Series(list(result.values()), index=list(result.keys()), name=self.name)
 
     def transform(self, func, axis: int = 0, *args, **kwargs) -> _PySeries:
@@ -1261,7 +1289,16 @@ class Series:
         """交换多级索引的级别。"""
         return self.copy()
 
-    def rename(self, index=None, mapper=None, axis: int = 0, copy: bool = True, inplace: bool = False, level=None, errors: str = "ignore") -> _PySeries:
+    def rename(
+        self,
+        index=None,
+        mapper=None,
+        axis: int = 0,
+        copy: bool = True,
+        inplace: bool = False,
+        level=None,
+        errors: str = "ignore",
+    ) -> _PySeries:
         """重命名 Series 或索引。
 
         :param index: 新索引 (list) 或 None
@@ -1276,7 +1313,12 @@ class Series:
             if inplace:
                 self._index = list(index) if not isinstance(index, list) else index
                 return self
-            return Series(list(self.values), name=self.name, dtype=self._dtype_str, index=list(index) if not isinstance(index, list) else index)
+            return Series(
+                list(self.values),
+                name=self.name,
+                dtype=self._dtype_str,
+                index=list(index) if not isinstance(index, list) else index,
+            )
 
         if mapper is not None:
             if inplace:
@@ -1284,18 +1326,27 @@ class Series:
                     self._index = [mapper(idx) for idx in self._index]
                 return self
             if self._index is not None:
-                return Series(list(self.values), name=self.name, dtype=self._dtype_str, index=[mapper(idx) for idx in self._index])
+                return Series(
+                    list(self.values),
+                    name=self.name,
+                    dtype=self._dtype_str,
+                    index=[mapper(idx) for idx in self._index],
+                )
             return self.copy()
 
         if isinstance(index, str):
             if inplace:
                 self.name = index
                 return self
-            return Series(list(self.values), name=index, dtype=self._dtype_str, index=self._index)
+            return Series(
+                list(self.values), name=index, dtype=self._dtype_str, index=self._index
+            )
 
         return self.copy()
 
-    def rename_axis(self, mapper=None, axis: int = 0, copy: bool = True, inplace: bool = False) -> _PySeries:
+    def rename_axis(
+        self, mapper=None, axis: int = 0, copy: bool = True, inplace: bool = False
+    ) -> _PySeries:
         """重命名索引轴。"""
         # Series 只有一个轴，这里简化处理
         return self.rename(mapper=mapper, axis=axis, copy=copy, inplace=inplace)
@@ -1334,8 +1385,10 @@ class Series:
 
     def divmod(self, other, level=None, fill_value=None, axis: int = 0) -> tuple:
         """同时返回整除和取模的结果。"""
-        return (self.floordiv(other, level=level, fill_value=fill_value, axis=axis),
-                self.mod(other, level=level, fill_value=fill_value, axis=axis))
+        return (
+            self.floordiv(other, level=level, fill_value=fill_value, axis=axis),
+            self.mod(other, level=level, fill_value=fill_value, axis=axis),
+        )
 
     def compress(self, condition) -> _PySeries:
         """按条件过滤元素。
@@ -1346,7 +1399,9 @@ class Series:
             condition = condition.values
         out_values = [v for v, c in zip(self.values, condition) if c]
         out_index = [i for i, c in zip(self._index or range(len(self)), condition) if c]
-        return Series(out_values, name=self.name, dtype=self._dtype_str, index=out_index)
+        return Series(
+            out_values, name=self.name, dtype=self._dtype_str, index=out_index
+        )
 
     # ---------- 聚合 ----------
 
@@ -1463,7 +1518,7 @@ class Series:
         std_val = self._inner.std()
         n = self._inner.count()
         if n is not None and n > 0:
-            return std_val / (n ** 0.5) if std_val is not None else None
+            return std_val / (n**0.5) if std_val is not None else None
         return None
 
     def median(
@@ -1629,7 +1684,9 @@ class Series:
             if inplace:
                 self._inner = _PySeries(values, self.name, dtype=self._dtype_str)
                 return self
-            return Series(values, name=self.name, dtype=self._dtype_str, index=self._index)
+            return Series(
+                values, name=self.name, dtype=self._dtype_str, index=self._index
+            )
 
         # 标准值填充
         if value is None:
@@ -1682,6 +1739,7 @@ class Series:
 
         # 计数
         from collections import Counter
+
         counter = Counter(values_list)
 
         # 构建 (值, 计数) 列表
@@ -1736,7 +1794,10 @@ class Series:
             indexed = [(v, i) for i, v in enumerate(values)]
 
         # 排序
-        indexed.sort(key=lambda x: (x[0] is None, x[0]) if na_option == "keep" else x[0], reverse=not ascending)
+        indexed.sort(
+            key=lambda x: (x[0] is None, x[0]) if na_option == "keep" else x[0],
+            reverse=not ascending,
+        )
 
         ranks = [None] * n
         if not indexed:
@@ -2264,7 +2325,11 @@ class Series:
 
         if len(self) != len(other_vals):
             raise ValueError("lengths must match")
-        return sum(a * b for a, b in zip(self.values, other_vals) if a is not None and b is not None)
+        return sum(
+            a * b
+            for a, b in zip(self.values, other_vals)
+            if a is not None and b is not None
+        )
 
     def autocorr(self, lag: int = 1) -> float:
         """自相关系数。
@@ -2313,22 +2378,27 @@ class Series:
         :param inplace: 是否原地修改
         """
         if drop:
-            new_s = Series(
-                list(self.values), name=self.name, dtype=self._dtype_str
-            )
+            new_s = Series(list(self.values), name=self.name, dtype=self._dtype_str)
         else:
             # 将索引作为新列返回（对于 Series，转为 DataFrame 更合适）
             # pandas 行为：返回 DataFrame，包含 index 列和原 Series 列
             from .dataframe import DataFrame
+
             index_name = "index"
             col_name = self.name if self.name else "0"
             new_data = {
-                index_name: list(self._index) if self._index is not None else list(range(len(self))),
+                index_name: (
+                    list(self._index)
+                    if self._index is not None
+                    else list(range(len(self)))
+                ),
                 col_name: list(self.values),
             }
             df = DataFrame(new_data)
             if inplace:
-                raise TypeError("Cannot use inplace=True when reset_index returns a DataFrame")
+                raise TypeError(
+                    "Cannot use inplace=True when reset_index returns a DataFrame"
+                )
             return df
 
         if inplace:
@@ -2345,8 +2415,8 @@ class Series:
         if self._index is not None and item in self._index:
             pos = self._index.index(item)
             val = self.values[pos]
-            new_values = self.values[:pos] + self.values[pos + 1:]
-            new_index = self._index[:pos] + self._index[pos + 1:]
+            new_values = self.values[:pos] + self.values[pos + 1 :]
+            new_index = self._index[:pos] + self._index[pos + 1 :]
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return val
@@ -2403,7 +2473,9 @@ class Series:
             mask.append(ok)
         new_values = [v for v, m in zip(self.values, mask) if m]
         new_index = [i for i, m in zip(index, mask) if m]
-        return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def add_prefix(self, prefix: str) -> _PySeries:
         """给索引添加前缀。
@@ -2412,7 +2484,9 @@ class Series:
         """
         index = self._index if self._index is not None else list(range(len(self)))
         new_index = [f"{prefix}{i}" for i in index]
-        return Series(list(self.values), name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            list(self.values), name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def add_suffix(self, suffix: str) -> _PySeries:
         """给索引添加后缀。
@@ -2421,7 +2495,9 @@ class Series:
         """
         index = self._index if self._index is not None else list(range(len(self)))
         new_index = [f"{i}{suffix}" for i in index]
-        return Series(list(self.values), name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            list(self.values), name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def squeeze(self):
         """压缩维度：1 元素 Series 返回标量，否则返回自身。"""
@@ -2466,7 +2542,9 @@ class Series:
 
         new_values = [values[i] for i in indices]
         new_index = [index[i] for i in indices]
-        return Series(new_values, name=self.name, dtype=self._dtype_str, index=new_index)
+        return Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        )
 
     def argsort(self, ascending: bool = True, kind: str = "quicksort") -> _PySeries:
         """返回排序后的索引位置。
@@ -3841,6 +3919,7 @@ class CatAccessor:
 # DatetimeAccessor  - 日期时间访问器
 # ==============================================================================
 
+
 class DatetimeAccessor:
     """Series 的 dt 访问器，提供日期时间操作。"""
 
@@ -3850,57 +3929,62 @@ class DatetimeAccessor:
     @property
     def year(self) -> Series:
         """返回年份。"""
-        return self._s.apply(lambda x: x.year if hasattr(x, 'year') else None)
+        return self._s.apply(lambda x: x.year if hasattr(x, "year") else None)
 
     @property
     def month(self) -> Series:
         """返回月份。"""
-        return self._s.apply(lambda x: x.month if hasattr(x, 'month') else None)
+        return self._s.apply(lambda x: x.month if hasattr(x, "month") else None)
 
     @property
     def day(self) -> Series:
         """返回日期。"""
-        return self._s.apply(lambda x: x.day if hasattr(x, 'day') else None)
+        return self._s.apply(lambda x: x.day if hasattr(x, "day") else None)
 
     @property
     def hour(self) -> Series:
         """返回小时。"""
-        return self._s.apply(lambda x: x.hour if hasattr(x, 'hour') else None)
+        return self._s.apply(lambda x: x.hour if hasattr(x, "hour") else None)
 
     @property
     def minute(self) -> Series:
         """返回分钟。"""
-        return self._s.apply(lambda x: x.minute if hasattr(x, 'minute') else None)
+        return self._s.apply(lambda x: x.minute if hasattr(x, "minute") else None)
 
     @property
     def second(self) -> Series:
         """返回秒。"""
-        return self._s.apply(lambda x: x.second if hasattr(x, 'second') else None)
+        return self._s.apply(lambda x: x.second if hasattr(x, "second") else None)
 
     @property
     def date(self) -> Series:
         """返回日期部分。"""
-        return self._s.apply(lambda x: x.date() if hasattr(x, 'date') else None)
+        return self._s.apply(lambda x: x.date() if hasattr(x, "date") else None)
 
     @property
     def time(self) -> Series:
         """返回时间部分。"""
-        return self._s.apply(lambda x: x.time() if hasattr(x, 'time') else None)
+        return self._s.apply(lambda x: x.time() if hasattr(x, "time") else None)
 
     @property
     def day_name(self) -> Series:
         """返回星期名称。"""
-        return self._s.apply(lambda x: x.strftime('%A') if hasattr(x, 'strftime') else None)
+        return self._s.apply(
+            lambda x: x.strftime("%A") if hasattr(x, "strftime") else None
+        )
 
     @property
     def month_name(self) -> Series:
         """返回月份名称。"""
-        return self._s.apply(lambda x: x.strftime('%B') if hasattr(x, 'strftime') else None)
+        return self._s.apply(
+            lambda x: x.strftime("%B") if hasattr(x, "strftime") else None
+        )
 
 
 # ==============================================================================
 # SeriesGroupBy  - Series 分组操作
 # ==============================================================================
+
 
 class SeriesGroupBy:
     """Series 的 groupby 操作。"""
@@ -3969,22 +4053,22 @@ class SeriesGroupBy:
             if vals:
                 if callable(func):
                     result[key] = func(vals, *args, **kwargs)
-                elif func == 'sum':
+                elif func == "sum":
                     result[key] = sum(vals)
-                elif func == 'mean':
+                elif func == "mean":
                     result[key] = sum(vals) / len(vals)
-                elif func == 'min':
+                elif func == "min":
                     result[key] = min(vals)
-                elif func == 'max':
+                elif func == "max":
                     result[key] = max(vals)
-                elif func == 'count':
+                elif func == "count":
                     result[key] = len(vals)
-                elif func == 'std':
+                elif func == "std":
                     n = len(vals)
                     if n > 1:
                         m = sum(vals) / n
                         variance = sum((x - m) ** 2 for x in vals) / (n - 1)
-                        result[key] = variance ** 0.5
+                        result[key] = variance**0.5
                     else:
                         result[key] = None
                 else:
@@ -4018,27 +4102,27 @@ class SeriesGroupBy:
 
     def sum(self) -> Series:
         """分组求和。"""
-        return self.agg('sum')
+        return self.agg("sum")
 
     def mean(self) -> Series:
         """分组求均值。"""
-        return self.agg('mean')
+        return self.agg("mean")
 
     def min(self) -> Series:
         """分组求最小值。"""
-        return self.agg('min')
+        return self.agg("min")
 
     def max(self) -> Series:
         """分组求最大值。"""
-        return self.agg('max')
+        return self.agg("max")
 
     def count(self) -> Series:
         """分组计数。"""
-        return self.agg('count')
+        return self.agg("count")
 
     def std(self) -> Series:
         """分组标准差。"""
-        return self.agg('std')
+        return self.agg("std")
 
     def transform(self, func, axis: int = 0, *args, **kwargs) -> Series:
         """对每个分组应用函数并返回原始长度的 Series。

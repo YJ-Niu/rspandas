@@ -191,9 +191,18 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
     return _Series(result, name=None)
 
 
-def merge(left, right, how: str = "inner", on=None, left_on=None, right_on=None,
-           left_index: bool = False, right_index: bool = False,
-           sort: bool = False, suffixes=("_x", "_y")) -> "DataFrame":
+def merge(
+    left,
+    right,
+    how: str = "inner",
+    on=None,
+    left_on=None,
+    right_on=None,
+    left_index: bool = False,
+    right_index: bool = False,
+    sort: bool = False,
+    suffixes=("_x", "_y"),
+) -> "DataFrame":
     """合并两个 DataFrame。
 
     :param left: 左侧 DataFrame
@@ -209,12 +218,22 @@ def merge(left, right, how: str = "inner", on=None, left_on=None, right_on=None,
     """
     if not isinstance(left, DataFrame) or not isinstance(right, DataFrame):
         raise TypeError("merge requires DataFrame inputs")
-    return left.merge(right, how=how, on=on, left_on=left_on,
-                      right_on=right_on, left_index=left_index,
-                      right_index=right_index, sort=sort, suffixes=suffixes)
+    return left.merge(
+        right,
+        how=how,
+        on=on,
+        left_on=left_on,
+        right_on=right_on,
+        left_index=left_index,
+        right_index=right_index,
+        sort=sort,
+        suffixes=suffixes,
+    )
 
 
-def concat(objs, axis: int = 0, join: str = "outer", ignore_index: bool = False) -> "Series":
+def concat(
+    objs, axis: int = 0, join: str = "outer", ignore_index: bool = False
+) -> "Series":
     """拼接多个 Series 或 DataFrame。
 
     :param objs: 要拼接的对象列表
@@ -299,7 +318,9 @@ def unique(values):
     raise TypeError("unique requires Series or list")
 
 
-def value_counts(values, normalize: bool = False, sort: bool = True, ascending: bool = False) -> _Series:
+def value_counts(
+    values, normalize: bool = False, sort: bool = True, ascending: bool = False
+) -> _Series:
     """统计值出现次数。"""
     if isinstance(values, _Series):
         return values.value_counts()
