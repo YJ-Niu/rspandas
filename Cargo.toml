@@ -1,6 +1,6 @@
 [package]
 name = "rspandas"
-version = "2.0.5"
+version = "2.0.6"
 edition = "2024"
 
 [lib]
@@ -15,11 +15,12 @@ default = ["extension-module"]
 pyo3 = { version = "0.29.0" }
 csv = "1.4.0"
 rayon = "1.12.0"
-calamine = "0.36.0"
+calamine = "0.36.1"
 rust_xlsxwriter = "0.96.0"
 
 [profile.release]
-opt-level = 2          # 通常 opt-level=2 已经足够，3 可能带来边际收益而时间翻倍
-lto = "thin"           # 用 ThinLTO 代替 fat LTO，编译速度和内存占用大幅改善，性能损失极小
-codegen-units = 16     # ThinLTO 允许并行，设置合理数量（如 CPU 核心数）
-strip = true           # 或 "symbols"，效果相同
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
