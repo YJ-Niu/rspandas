@@ -44,8 +44,11 @@ rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析�
 ### 5. 代码风格
 
 - Rust 代码: 遵循 `rustfmt` 和 `clippy` 规范（构建脚本会自动检查）
-- Python 代码: 遵循 PEP 8 规范
-- 提交前确保 `cargo fmt --all -- --check` 和 `cargo clippy --all-targets -- -D warnings` 通过
+- Python 代码: 遵循 PEP 8 规范，使用 `black` 进行格式化（目标版本 `py313`）
+- 提交前确保以下检查全部通过：
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --all-targets -- -D warnings`
+  - `black --check --target-version py313 python/`
 - edition 2024 要求：`unsafe fn` 内的 unsafe 操作仍须显式 `unsafe {}` 块（unsafe_op_in_unsafe_fn）
 
 ### 6. 修复后的构建与测试
