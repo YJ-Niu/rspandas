@@ -191,7 +191,125 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
     return _Series(result, name=None)
 
 
-__version__ = "2.0.5"
+def merge(left, right, how: str = "inner", on=None, left_on=None, right_on=None,
+           left_index: bool = False, right_index: bool = False,
+           sort: bool = False, suffixes=("_x", "_y")) -> "DataFrame":
+    """合并两个 DataFrame。
+
+    :param left: 左侧 DataFrame
+    :param right: 右侧 DataFrame
+    :param how: 合并方式 ('inner'/'outer'/'left'/'right')
+    :param on: 合并键列
+    :param left_on: 左侧合并键
+    :param right_on: 右侧合并键
+    :param left_index: 是否使用左侧索引
+    :param right_index: 是否使用右侧索引
+    :param sort: 是否排序
+    :param suffixes: 重复列的后缀
+    """
+    if not isinstance(left, DataFrame) or not isinstance(right, DataFrame):
+        raise TypeError("merge requires DataFrame inputs")
+    return left.merge(right, how=how, on=on, left_on=left_on,
+                      right_on=right_on, left_index=left_index,
+                      right_index=right_index, sort=sort, suffixes=suffixes)
+
+
+def concat(objs, axis: int = 0, join: str = "outer", ignore_index: bool = False) -> "Series":
+    """拼接多个 Series 或 DataFrame。
+
+    :param objs: 要拼接的对象列表
+    :param axis: 拼接轴 (0=纵向, 1=横向)
+    :param join: 连接方式 ('outer'/'inner')
+    :param ignore_index: 是否忽略索引
+    """
+    from .series import Series as _Series
+
+    if not objs:
+        return _Series([])
+
+    if all(isinstance(o, _Series) for o in objs):
+        all_values = []
+        all_index = []
+        for s in objs:
+            all_values.extend(list(s.values))
+            if not ignore_index:
+                idx = s._index if s._index else list(range(len(s)))
+                all_index.extend(idx)
+        return _Series(all_values, index=all_index if not ignore_index else None)
+
+    if all(isinstance(o, DataFrame) for o in objs):
+        all_data = {}
+        all_columns = set()
+        for df in objs:
+            all_columns.update(df._columns)
+        for col in all_columns:
+            col_values = []
+            for df in objs:
+                if col in df._columns:
+                    col_values.extend(list(df._inner.get_column(col).values))
+                else:
+                    col_values.extend([None] * df._nrows)
+            all_data[col] = col_values
+        return DataFrame(all_data)
+
+    raise TypeError("concat requires all objects of the same type")
+
+
+def isnull(obj):
+    """检测缺失值 (None)。"""
+    if isinstance(obj, _Series):
+        return obj.isnull()
+    elif isinstance(obj, DataFrame):
+        return obj.isnull()
+    elif isinstance(obj, list):
+        return [v is None for v in obj]
+    else:
+        return obj is None
+
+
+def notnull(obj):
+    """检测非缺失值。"""
+    if isinstance(obj, _Series):
+        return obj.notnull()
+    elif isinstance(obj, DataFrame):
+        return obj.notnull()
+    elif isinstance(obj, list):
+        return [v is not None for v in obj]
+    else:
+        return obj is not None
+
+
+# isna / notna 别名
+isna = isnull
+notna = notnull
+
+
+def unique(values):
+    """返回唯一值。"""
+    if isinstance(values, _Series):
+        return values.unique()
+    elif isinstance(values, list):
+        seen = set()
+        result = []
+        for v in values:
+            if v not in seen:
+                seen.add(v)
+                result.append(v)
+        return result
+    raise TypeError("unique requires Series or list")
+
+
+def value_counts(values, normalize: bool = False, sort: bool = True, ascending: bool = False) -> _Series:
+    """统计值出现次数。"""
+    if isinstance(values, _Series):
+        return values.value_counts()
+    elif isinstance(values, list):
+        s = _Series(values)
+        return s.value_counts()
+    raise TypeError("value_counts requires Series or list")
+
+
+__version__ = "2.0.6"
 __all__ = [
     "Series",
     "DataFrame",
@@ -229,6 +347,14 @@ __all__ = [
     "get_option",
     "reset_option",
     "to_numeric",
+    "merge",
+    "concat",
+    "isnull",
+    "notnull",
+    "isna",
+    "notna",
+    "unique",
+    "value_counts",
     "_Series",
     "_DataFrame",
     "__version__",
