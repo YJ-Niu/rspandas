@@ -26,7 +26,7 @@ def _infer_dtype(values: list) -> str:
     has_non_null = False
     all_bool = True
     all_int = True
-    all_float = True
+    all_float_or_int = True  # int 或 float 混合时仍视为 float64
     all_str = True
 
     for v in values:
@@ -36,25 +36,26 @@ def _infer_dtype(values: list) -> str:
         # bool 优先于 int（True/False is int in Python）
         if isinstance(v, bool):
             all_int = False
-            all_float = False
+            all_float_or_int = False
             all_str = False
         elif isinstance(v, int):
             all_bool = False
-            all_float = False
             all_str = False
+            # all_int 保持 True，但 all_float_or_int 也保持 True（int 可被 float 兼容）
         elif isinstance(v, float):
             all_bool = False
             all_int = False
             all_str = False
+            # all_float_or_int 保持 True
         elif isinstance(v, str):
             all_bool = False
             all_int = False
-            all_float = False
+            all_float_or_int = False
         else:
             # 不支持类型 -> object
             all_bool = False
             all_int = False
-            all_float = False
+            all_float_or_int = False
             all_str = False
             return "object"
 
@@ -65,7 +66,7 @@ def _infer_dtype(values: list) -> str:
         return "bool"
     if all_int:
         return "int64"
-    if all_float:
+    if all_float_or_int:
         return "float64"
     if all_str:
         return "object"
@@ -161,7 +162,17 @@ class Series:
         elif isinstance(data, dict) and index is None:
             values, index = _to_python_list_and_index(data)
         else:
-            values = _to_python_list(data)
+            # 检查是否为标量输入（int/float/str/bool），如果是且有 index，则广播
+            if index is not None and not isinstance(
+                data, (list, tuple, _PySeries, Series, dict)
+            ):
+                # 标量广播到 index 长度
+                index_len = (
+                    len(index) if hasattr(index, "__len__") else len(list(index))
+                )
+                values = [data] * index_len
+            else:
+                values = _to_python_list(data)
 
         # 推断 dtype
         if dtype is None:
@@ -3391,8 +3402,30 @@ class Series:
         raise NotImplementedError("Series.sparse only available for SparseDtype")
 
     def _format_repr(self) -> str:
-        # 字符串化每个值
-        strs = [str(v) if v is not None else "NaN" for v in self.values]
+        # 字符串化每个值，float64 类型显示一位小数（对齐 pandas 行为）
+        dtype_str = self._dtype_str
+        if dtype_str == "float64":
+            strs = [
+                (
+                    f"{v:.1f}"
+                    if v is not None and not (isinstance(v, float) and v != v)
+                    else "NaN"
+                )
+                for v in self.values
+            ]
+            # 正确处理 NaN
+            strs = []
+            for v in self.values:
+                if v is None:
+                    strs.append("NaN")
+                elif isinstance(v, float) and v != v:  # NaN check
+                    strs.append("NaN")
+                else:
+                    strs.append(f"{float(v):.1f}")
+        elif dtype_str == "int64":
+            strs = [str(int(v)) if v is not None else "NaN" for v in self.values]
+        else:
+            strs = [str(v) if v is not None else "NaN" for v in self.values]
 
         n = len(strs)
 
@@ -3420,9 +3453,12 @@ class Series:
             for s, idx_s in zip(strs, idx_strs)
         ]
 
-        col_name = self.name if self.name is not None else ""
         body = "\n".join(lines)
-        return f"{body}\nName: {col_name}, dtype: {self._dtype_str}"
+        # 对齐 pandas: name 为 None 时不显示 Name 行
+        if self.name is not None and self.name != "":
+            return f"{body}\nName: {self.name}, dtype: {dtype_str}"
+        else:
+            return f"{body}\ndtype: {dtype_str}"
 
     # ----------------------------------------------------------------
     # 扩展功能（pandas 之外的增强）

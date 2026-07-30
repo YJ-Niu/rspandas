@@ -54,6 +54,9 @@ def _parse_iso(s: str) -> datetime:
         "%Y/%m/%d",
         "%m/%d/%Y",
         "%d/%m/%Y",
+        "%Y%m%d",
+        "%Y%m%d%H%M%S",
+        "%Y%m%d%H%M%S.%f",
         "%H:%M:%S",
         "%H:%M",
     ]
