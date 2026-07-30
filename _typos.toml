@@ -1,0 +1,12 @@
+# typos 拼写检查配置
+# 文档: https://github.com/crate-ci/typos
+
+[default]
+extend-identifiers = [
+    # SPSS 文件扩展名
+    "sav",
+]
+
+[default.extend-words]
+# SPSS 数据文件格式
+sav = "sav"

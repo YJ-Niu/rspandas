@@ -2,17 +2,35 @@
 
 ## 项目概述
 
-rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析库，提供与 **Pandas pandas** 兼容的 API 接口。
+rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析库，提供与 **pandas** 兼容的 API 接口。
 
-- **Rust 层** (`src/`): 负责底层核心实现。
+- **Rust 层** (`src/`): 负责底层核心实现，包括 `PySeries` 和 `PyDataFrame` 两个核心类，以及 CSV/Excel IO 操作。
 - **Python 层** (`python/rspandas/`): 负责公开 API 接口，方法参数默认值要全面，代理调用 Rust 底层实现。
-- **构建工具**: 使用 `maturin` 构建 wheel，通过 `build_wheel.sh` 脚本构建并安装到 `.venv`
+- **构建工具**: 使用 `maturin` 构建 wheel，通过 `build_wheel.sh` 脚本构建并安装到 `.venv`。
+- **依赖关系**: rspandas 与 rsnumpy 协同工作——rsnumpy 提供底层 ndarray 支持，rspandas 在其上构建 Series/DataFrame。rsnumpy 是 rspandas 的**必选依赖**（在 `pyproject.toml` 的 `dependencies` 中声明），Python 层通过 `import rsnumpy as rnp` 直接引用。
 
 ## 开发环境
 
 - Python 虚拟环境: `.venv` (使用 uv 创建)
-- 构建命令: `./build_wheel.sh` (release 模式)
-- Rust 工具链: 由 `rust-toolchain.toml` 固定为 stable，当前为 edition 2024
+- Python 版本要求: `>=3.10` (pyproject.toml 声明)
+- 构建命令: `./build_wheel.sh` (默认 release 模式，支持 `--debug` 参数)
+- Rust 工具链: 由 `rust-toolchain.toml` 固定为 stable channel
+- Rust edition: 2024 (在 `Cargo.toml` 中声明)
+
+### Rust 依赖
+
+| 依赖 | 版本 | 用途 |
+|---|---|---|
+| `pyo3` | 0.29.0 | Python 绑定 |
+| `csv` | 1.4.0 | CSV 读写 |
+| `rayon` | 1.12.0 | 并行计算 |
+| `calamine` | 0.36.1 | Excel 读取 |
+| `rust_xlsxwriter` | 0.96.0 | Excel 写入 |
+
+### 构建优化
+
+`Cargo.toml` 的 release profile 配置：
+- `opt-level = 3` / `lto = "fat"` / `codegen-units = 1` / `strip = "symbols"` / `panic = "abort"`
 
 ## 关键约定
 
@@ -20,12 +38,12 @@ rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析�
 
 - 所有调试、分析、验证、测试代码及生成的结果必须放在 `/Users/user/Desktop/rust_project/rspandas/debug/` 目录中
 - 禁止在项目根目录或其他位置创建零散的测试文件
-- 调试时，添加一些debug信息，如打印数组形状、dtype、内存布局等，也要判断数据是否正确加载
+- 调试时，添加一些 debug 信息，如打印数组形状、dtype、内存布局等，也要判断数据是否正确加载
 
 ### 2. 代码修改范围
 
-- **可以修改**: `rspandas` 项目内的代码 (`src/`, `python/rspandas/`, `pyproject.toml`, `Cargo.toml`, `test/test_rf/networkx`, `test/test_rf/scipy` 等)
-- **禁止修改**: 用户测试代码、`.venv` 环境中的任何代码
+- **可以修改**: `rspandas` 项目内的代码 (`src/`, `python/rspandas/`, `pyproject.toml`, `Cargo.toml`, `test/test_rf/` 等)
+- **禁止修改**: 用户测试代码（如 `test/lotus/`）、`.venv` 环境中的任何代码
 - 修改后使用 `build_wheel.sh` 构建并安装到 `.venv` 进行测试
 
 ### 3. 修复优先级
@@ -38,29 +56,40 @@ rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析�
 
 - **禁止**安装 `numpy` 或其他第三方 Python 数值库（如 `scipy` 的核心功能）
 - 项目自身即为 pandas 兼容库，应完善自身实现而非引入 pandas
-- 如何需要使用pandas来测试或验证功能与rspandas进行对比，验证完后，及时删除或注释掉相关代码，确保rspandas里没有引用的pandas代码
-- `test/test_rf/` 目录下的 networkx/scipy 用于测试兼容层，可按需更新
+- 如需使用 pandas 来测试或验证功能与 rspandas 进行对比，验证完后，及时删除或注释掉相关代码，确保 rspandas 里没有引用的 pandas 代码
+- `test/test_rf/` 目录下的 scipy 用于测试兼容层，可按需更新
 
 ### 5. 代码风格
 
 - Rust 代码: 遵循 `rustfmt` 和 `clippy` 规范（构建脚本会自动检查）
-- Python 代码: 遵循 PEP 8 规范
-- 提交前确保 `cargo fmt --all -- --check` 和 `cargo clippy --all-targets -- -D warnings` 通过
+- Python 代码: 遵循 PEP 8 规范，使用 `black` 进行格式化（目标版本 `py313`）
+- 提交前确保以下检查全部通过：
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --all-targets -- -D warnings`
+  - `black --check --target-version py313 python/`
 - edition 2024 要求：`unsafe fn` 内的 unsafe 操作仍须显式 `unsafe {}` 块（unsafe_op_in_unsafe_fn）
+- **注意**: `build_wheel.sh` 仅包含 `cargo fmt` 和 `cargo clippy` 检查；`black` 检查在 CI 中执行，本地修改 Python 文件后需手动运行 `black --target-version py313 python/` 格式化
 
-### 6. 修复后的构建与测试
+### 6. 构建与测试
 
-- 每次修改后，立即执行 `./build_wheel.sh` 重新构建并安装。
-- 运行项目提供的测试用例（`python test/run_test.py`、`python test/run_test2.py`）确保修复有效。若测试失败，继续修改直到通过。
+- `build_wheel.sh` 执行流程：
+  1. 从 `Cargo.toml` 读取版本号，同步到 `pyproject.toml` 和 `__init__.py`
+  2. 运行 `cargo fmt --all -- --check`（失败则中止）
+  3. 运行 `cargo clippy --all-targets -- -D warnings`（失败则中止）
+  4. 使用 `maturin build` 构建 wheel（优先使用 PATH 上的 maturin，否则通过 Python 模块调用）
+  5. 安装到 `.venv`（优先使用 `uv pip install`，否则回退到 `pip install`）
+- 每次修改后，立即执行 `./build_wheel.sh` 重新构建并安装
+- 运行项目测试确保修复有效，若测试失败，继续修改直到通过
 
 ### 7. 长期优化原则（非强制）
 
 - 当发现性能瓶颈来自 Python 层循环时，应评估将其迁移到 Rust 实现的可行性，但**本次修复不必强制执行**。
 - 优先释放 GIL（`Python::allow_threads`）以提升并行计算性能。
+- `Cargo.toml` 已启用 `rayon` 并行计算库，可在 Rust 层利用多核加速。
 
-### 8. 缓冲协议架构
+### 8. 缓冲协议架构（rsnumpy 层）
 
-rspandas 通过双层缓冲协议实现零拷贝数据共享，同时保证 dtype 精度：
+rspandas 依赖 rsnumpy 提供底层 ndarray 支持。rsnumpy 通过双层缓冲协议实现零拷贝数据共享，同时保证 dtype 精度：
 
 - **内层 Rust 层** (`_core.ndarray`)：实现 PEP 3118 的 `__getbuffer__`/`__releasebuffer__`，直接暴露底层 `Array<f64, IxDyn>` 的连续内存，支持 shape/strides/format='d'/readonly。
 
@@ -72,15 +101,16 @@ rspandas 通过双层缓冲协议实现零拷贝数据共享，同时保证 dtyp
 
 ### 9. 已知限制
 
-- **f64 唯一存储**：底层数组恒为 `Array<f64, IxDyn>`，int64/bool/datetime64 等 dtype 仅在 Python 层通过 `_dtype` 追踪。
+- **f64 唯一存储**：rsnumpy 底层数组恒为 `Array<f64, IxDyn>`，int64/bool/datetime64 等 dtype 仅在 Python 层通过 `_dtype` 追踪。
 - **int64 精度丢失**：大于 `2^53` 的整数会因 f64 存储限制而丢失精度，即使 `typestr` 报 `<i8`。
 - **datetime64/timedelta64**：内部存储为 f64 纪元值，`dtype.kind` 返回 `'f'`，日期零拷贝需未来引入独立整型存储。
+- **rsnumpy 必选依赖**：rspandas 的 `pyproject.toml` 声明 `dependencies = ["rsnumpy"]`，Python 层通过 `import rsnumpy as rnp` 直接引用，使用 `isinstance(data, rnp.ndarray)` 进行类型检测。
 
 ### 10. 测试规范
 
-- **新增功能必须附带测试**：Rust 层新增公共函数应在其模块内增加 `#[cfg(test)]` 单元测试；Python 层新增 API 应在 `test/` 目录补充对应测试用例。
+- **新增功能必须附带测试**：Rust 层新增公共函数应在其模块内增加 `#[cfg(test)]` 单元测试；Python 层新增 API 应在 `debug/` 或 `test/` 目录补充对应测试用例。
 - **测试数据隔离**：测试用例使用的临时文件、随机种子必须固定或清理，避免跨测试污染。
-- **兼容性测试**：若修改涉及与 numpy/pandas 的交互行为（如 `__array_ufunc__`、`__array_function__`），需同步验证 `test/test_rf/` 下的 networkx/scipy 兼容层是否仍通过。
+- **兼容性测试**：若修改涉及与 numpy/pandas 的交互行为（如 `__array_ufunc__`、`__array_function__`），需同步验证 `test/test_rf/` 下的 scipy 兼容层是否仍通过。
 - **禁止在测试代码中引入 pandas 依赖**：功能验证应优先使用 rspandas 自身 API，若必须与 pandas 对比，对比完成后及时删除或注释相关引入代码。
 
 ### 11. 错误处理与异常映射
@@ -105,55 +135,55 @@ rspandas 通过双层缓冲协议实现零拷贝数据共享，同时保证 dtyp
 
 ```
 rspandas/
-├── src/                    # Rust 源码
-│   ├── lib.rs              # 库入口，PyO3 模块注册，NdArray 定义及缓冲协议
-│   ├── arithmetic/         # 算术运算（加减乘除、幂、取模等）
-│   ├── bitwise/            # 位运算
-│   ├── buffer/             # 缓冲互操作（bytes↔数组、__array_interface__）
-│   ├── creation/           # 数组创建（array、zeros、ones、empty 等）
-│   ├── fft.rs              # FFT 变换
-│   ├── formatting/         # 数组格式化输出
-│   ├── indexing.rs         # 索引操作
-│   ├── io.rs               # IO 操作（npz 读写）
-│   ├── linalg.rs           # 线性代数（matmul、solve、inv、eig 等）
-│   ├── logic/              # 逻辑运算
-│   ├── manipulation/       # 数组操作（reshape、transpose、concatenate 等）
-│   ├── mathematics/        # 数学函数（sin、cos、exp、log 等）
-│   ├── poly/               # 多项式
-│   ├── random.rs           # 随机数
-│   ├── searching/          # 搜索操作
-│   ├── setops/             # 集合操作
-│   ├── sorting/            # 排序操作
-│   └── statistics/         # 统计函数（mean、std、sum、min、max 等）
-├── python/                 # Python 源码
-│   └── rspandas/           # Python 包
-│       ├── __init__.py     # 包入口，导出核心 API，公开 ndarray 类
-│       ├── _core/          # 内部模块
-│       ├── _dtypes.py      # dtype 定义
-│       ├── _extra.py       # 额外功能
-│       ├── array_methods.py # 数组方法
-│       ├── array_ops.py    # 数组操作
-│       ├── char.py         # 字符操作
-│       ├── exceptions.py   # 异常定义
-│       ├── io.py           # IO 接口
-│       ├── ma.py           # 掩码数组
-│       ├── math_functions.py # 数学函数
-│       ├── matlib.py       # 矩阵库
-│       ├── rec.py          # 记录数组
-│       ├── statistics.py   # 统计接口
-│       ├── fft/            # FFT 模块
-│       ├── lib/            # 库模块（recfunctions）
-│       ├── linalg/         # 线性代数模块
-│       ├── polynomial/     # 多项式模块
-│       ├── random/         # 随机数模块
-│       └── typing/         # 类型定义
-├── test/                   # 测试目录
-│   ├── run_test.py         # 主测试脚本
-│   ├── run_test2.py        # 辅助测试脚本
-│   └── test_rf/            # 兼容测试（networkx、scipy）
-├── build_wheel.sh          # 构建脚本（含 fmt/clippy 门禁）
-├── pyproject.toml          # 项目配置
-├── Cargo.toml              # Rust 配置（含 macOS Accelerate BLAS）
-├── rust-toolchain.toml     # Rust 工具链固定
-└── README.md               # 项目文档
+├── src/                        # Rust 源码
+│   ├── lib.rs                  # 库入口，PyO3 模块注册
+│   └── core/                   # 核心模块
+│       ├── mod.rs              # 模块声明
+│       ├── series.rs           # PySeries 实现（Rust 端 Series）
+│       ├── dataframe.rs        # PyDataFrame 实现（Rust 端 DataFrame）
+│       ├── dtype.rs            # dtype 处理
+│       ├── csv_io.rs           # CSV 读写（read_csv_string/write_csv_string 等）
+│       └── xlsx_io.rs          # Excel 读写（read_xlsx/write_xlsx 等）
+├── python/                     # Python 源码
+│   └── rspandas/               # Python 包
+│       ├── __init__.py         # 包入口，导出核心 API，全局选项配置
+│       ├── series.py           # Series 类及辅助类（Rolling/Expanding/EWM/Resampler/
+│       │                       #   StringAccessor/CatAccessor/DatetimeAccessor/SeriesGroupBy）
+│       ├── dataframe.py        # DataFrame 类及辅助类（DataFrameGroupBy/_LocIndexer/_ILocIndexer）
+│       ├── indexes.py          # 索引类型（Index/RangeIndex/MultiIndex）及分箱函数（cut/qcut/crosstab）
+│       ├── _datetime.py        # 日期时间函数（to_datetime/date_range/to_timedelta 等）
+│       ├── io.py               # IO 接口（read_csv/read_json/read_excel/read_parquet 等）
+│       ├── offsets.py          # 时间偏移量
+│       ├── rspandas_api.pyi    # 类型存根文件
+│       └── api/                # API 子模块
+│           ├── __init__.py     # API 模块入口
+│           └── types.py        # 类型检查函数（is_numeric_dtype/is_string_dtype 等）
+├── test/                       # 测试目录
+│   ├── lotus/                  # Lotus 校准测试（用户测试代码，禁止修改）
+│   └── test_rf/                # 兼容测试
+│       └── scipy/              # scipy 兼容层
+├── debug/                      # 调试/验证代码（所有调试代码放在此目录）
+├── build_wheel.sh              # 构建脚本（含 fmt/clippy 门禁）
+├── pyproject.toml              # 项目配置（maturin 构建后端）
+├── Cargo.toml                  # Rust 配置（release profile 优化）
+├── rust-toolchain.toml         # Rust 工具链固定（stable）
+└── README.md                   # 项目文档
 ```
+
+## Rust 模块注册
+
+`lib.rs` 通过 `#[pymodule]` 注册以下符号：
+
+| 类型/函数 | 来源模块 | 说明 |
+|---|---|---|
+| `PySeries` | `core::series` | Rust 端 Series 类 |
+| `PyDataFrame` | `core::dataframe` | Rust 端 DataFrame 类 |
+| `read_csv_string` | `core::csv_io` | 从字符串读取 CSV |
+| `write_csv_string` | `core::csv_io` | 写入 CSV 为字符串 |
+| `read_csv_path` | `core::csv_io` | 从文件路径读取 CSV |
+| `write_csv_path` | `core::csv_io` | 写入 CSV 到文件路径 |
+| `factorize` | `core::series` | 因子编码 |
+| `read_xlsx` | `core::xlsx_io` | 读取 Excel 文件 |
+| `write_xlsx` | `core::xlsx_io` | 写入 Excel 文件 |
+| `write_xlsx_multi` | `core::xlsx_io` | 写入多 sheet Excel |
+| `xlsx_sheet_names` | `core::xlsx_io` | 获取 Excel sheet 名列表 |

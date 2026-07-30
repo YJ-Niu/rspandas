@@ -12,6 +12,7 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::core::csv_io::write_csv_string, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::csv_io::read_csv_path, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::csv_io::write_csv_path, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::core::csv_io::read_csv_chunks, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::series::factorize, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::xlsx_io::read_xlsx, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::xlsx_io::write_xlsx, m)?)?;

@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import rsnumpy as rnp
+
 from .series import Series
 from rspandas.rspandas import _DataFrame as _PyDataFrame  # type: ignore
 from rspandas.rspandas import _Series as _PySeries
 from rspandas.rspandas import (
     read_csv_path,
     read_csv_string,
-    write_csv_path,
-    write_csv_string,
 )
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    from .io import StreamDataFrame
+    from .lazyframe import LazyFrame
 
 
 def _is_ndarray(data: Any) -> bool:
-    """检查对象是否为 rsnumpy ndarray（通过特征属性判断，避免强依赖）。"""
-    return hasattr(data, '_array') and hasattr(data, '_dtype')
+    """检查对象是否为 rsnumpy ndarray。"""
+    return isinstance(data, rnp.ndarray)
 
 
 def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, list]:
@@ -357,13 +361,13 @@ class DataFrame:
         return DataFrame(new_data)
 
     def sort_values(
-        self, 
-        by, 
-        axis: int = 0, 
-        ascending: bool = True, 
-        inplace: bool = False, 
-        kind: str = "quicksort", 
-        na_position: str = "last"
+        self,
+        by,
+        axis: int = 0,
+        ascending: bool = True,
+        inplace: bool = False,
+        kind: str = "quicksort",
+        na_position: str = "last",
     ) -> "DataFrame":
         """按 by 列排序。
 
@@ -379,26 +383,48 @@ class DataFrame:
         for c in by:
             if c not in self._columns:
                 raise KeyError(f"column not found: {c}")
+
+        # 尝试调用 Rust 层加速
+        # 限制条件：
+        # 1. 索引为默认 RangeIndex（Rust 层不处理索引同步）
+        # 2. na_position 与 Rust 行为一致（ascending=True 对应 'last'，
+        #    ascending=False 对应 'first'）
+        # 3. Rust 层仅使用 by 的第一列排序，多列排序需保留 Python 实现
+        rust_na_match = (ascending and na_position == "last") or (
+            not ascending and na_position == "first"
+        )
+        is_default_idx = list(self._index) == list(range(self._nrows))
+        if rust_na_match and is_default_idx:
+            try:
+                by_indices = [self._columns.index(c) for c in by]
+                new_inner = self._inner.sort_values(by=by_indices, ascending=ascending)
+                new_nrows = new_inner.nrows
+                if inplace:
+                    self._inner = new_inner
+                    self._nrows = new_nrows
+                    self._index = list(range(new_nrows))
+                    return self
+                new_df = DataFrame._from_inner(new_inner)
+                return new_df
+            except Exception:
+                pass
+
+        # 回退到原 Python 实现（自定义索引、多列排序、na_position 不匹配或 Rust 失败时）
         n = self._nrows
-        
+
         # 取出 by 列用于排序
         sort_keys = [
             [self._inner.get_column(c).values[i] for c in by] for i in range(n)
         ]
 
-        # 根据 na_position 分离 None 行和非 None 行
-        none_indices = []
-        non_none_indices = []
-        for i in range(n):
-            if any(v is None for v in sort_keys[i]):
-                none_indices.append(i)
-            else:
-                non_none_indices.append(i)
+        # 根据 na_position 分离 None 行和非 None 行 - 使用列表推导式
+        none_indices = [i for i in range(n) if any(v is None for v in sort_keys[i])]
+        non_none_indices = [
+            i for i in range(n) if all(v is not None for v in sort_keys[i])
+        ]
 
         try:
-            non_none_indices.sort(
-                key=lambda i: sort_keys[i], reverse=not ascending
-            )
+            non_none_indices.sort(key=lambda i: sort_keys[i], reverse=not ascending)
         except TypeError:
             raise TypeError("cannot sort mixed types")
 
@@ -406,28 +432,29 @@ class DataFrame:
             order = none_indices + non_none_indices
         else:  # "last"
             order = non_none_indices + none_indices
-        
+
         new_data = {
             c: [self._inner.get_column(c).values[i] for i in order]
             for c in self._columns
         }
         new_index = [self._index[i] for i in order]
-        
+
         if inplace:
             self._reload(new_data)
             self._index = new_index
             return self
-        
+
         return DataFrame(new_data, index=new_index)
 
     def filter_rows(self, mask: list) -> "DataFrame":
         if len(mask) != self._nrows:
             raise ValueError(f"mask length {len(mask)} != nrows {self._nrows}")
-        cols = self._columns
-        new_data = {}
-        for c in cols:
-            ser = self._inner.get_column(c)
-            new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
+        # 使用字典推导式替代显式 for 循环
+        bool_mask = [bool(x) for x in mask]
+        new_data = {
+            c: list(self._inner.get_column(c).filter(bool_mask).values)
+            for c in self._columns
+        }
         return DataFrame(new_data)
 
     def merge(
@@ -460,6 +487,34 @@ class DataFrame:
         :param indicator: 是否添加 _merge 指示列
         :param validate: 验证方式 ('one_to_one'/'1:1'/'one_to_many'/'1:m'/'many_to_one'/'m:1'/'many_to_many'/'m:m')
         """
+        # 优先调用 Rust 层（仅支持单列连接、无 indicator/validate/left_index/right_index）
+        if (
+            isinstance(on, str)
+            and left_on is None
+            and right_on is None
+            and not left_index
+            and not right_index
+            and not indicator
+            and validate is None
+            and how in ("inner", "left", "right", "outer")
+            and on in self._columns
+            and on in right._columns
+        ):
+            try:
+                # 检查列名冲突（右表非键列与左表列名冲突时不调用 Rust 层）
+                right_non_key_cols = [c for c in right._columns if c != on]
+                conflict = [c for c in right_non_key_cols if c in self._columns]
+                if not conflict:
+                    left_idx = self._columns.index(on)
+                    right_idx = right._columns.index(on)
+                    result_inner = self._inner.merge(
+                        right._inner, left_idx, right_idx, how
+                    )
+                    return DataFrame._from_inner(result_inner)
+            except Exception:
+                pass
+
+        # 回退到 Python 实现
         # 确定连接键
         other = right  # 兼容性
         if left_on is not None or right_on is not None:
@@ -486,14 +541,17 @@ class DataFrame:
             left_keys = left_index if isinstance(left_index, list) else [left_index]
             right_keys = right_index if isinstance(right_index, list) else [right_index]
         else:
-            raise ValueError("on, left_on, right_on, or left_index/right_index must be specified")
+            raise ValueError(
+                "on, left_on, right_on, or left_index/right_index must be specified"
+            )
 
-        for k in left_keys:
-            if k not in self._columns:
-                raise KeyError(f"column {k!r} not in left")
-        for k in right_keys:
-            if k not in other._columns:
-                raise KeyError(f"column {k!r} not in right")
+        # 使用列表推导式校验键是否存在，替代显式 for 循环
+        missing_left = [k for k in left_keys if k not in self._columns]
+        if missing_left:
+            raise KeyError(f"column {missing_left[0]!r} not in left")
+        missing_right = [k for k in right_keys if k not in other._columns]
+        if missing_right:
+            raise KeyError(f"column {missing_right[0]!r} not in right")
 
         # 验证 (validate 参数)
         if validate is not None:
@@ -506,14 +564,18 @@ class DataFrame:
             for i in range(other._nrows):
                 key = tuple(other._inner.get_column(k).values[i] for k in right_keys)
                 right_counts[key] = right_counts.get(key, 0) + 1
-            
-            if validate in ('one_to_one', '1:1'):
-                if any(c > 1 for c in left_counts.values()) or any(c > 1 for c in right_counts.values()):
-                    raise ValueError("Merge keys are not unique in one or both datasets")
-            elif validate in ('one_to_many', '1:m'):
+
+            if validate in ("one_to_one", "1:1"):
+                if any(c > 1 for c in left_counts.values()) or any(
+                    c > 1 for c in right_counts.values()
+                ):
+                    raise ValueError(
+                        "Merge keys are not unique in one or both datasets"
+                    )
+            elif validate in ("one_to_many", "1:m"):
                 if any(c > 1 for c in left_counts.values()):
                     raise ValueError("Left merge keys are not unique")
-            elif validate in ('many_to_one', 'm:1'):
+            elif validate in ("many_to_one", "m:1"):
                 if any(c > 1 for c in right_counts.values()):
                     raise ValueError("Right merge keys are not unique")
             # many_to_many / m:m 无需验证
@@ -538,107 +600,82 @@ class DataFrame:
 
         merged_rows: List[dict] = []
         merge_indicators: List[str] = []  # for indicator parameter
-        
+
         if how == "inner":
             common = set(left_keys_map) & set(right_keys_map)
-            for k in common:
-                lv = left[left_keys_map[k]][1]
-                rv = right[right_keys_map[k]][1]
-                row = {}
-                for c, v in lv.items():
-                    row[c] = v
-                for c, v in rv.items():
-                    row[c] = v
-                merged_rows.append(row)
-                if indicator:
-                    merge_indicators.append('both')
+            # 使用列表推导式 + 字典合并替代嵌套 for 循环
+            merged_rows = [
+                {**left[left_keys_map[k]][1], **right[right_keys_map[k]][1]}
+                for k in common
+            ]
+            if indicator:
+                merge_indicators = ["both"] * len(merged_rows)
         elif how == "left":
             right_only = [c for c in other._columns if c not in self._columns]
-            for lk, lv in left:
-                rv = right[right_keys_map[lk]][1] if lk in right_keys_map else None
-                row = {}
-                for c, v in lv.items():
-                    row[c] = v
-                if rv is None:
-                    for c in right_only:
-                        row[c] = None
-                    if indicator:
-                        merge_indicators.append('left_only')
-                else:
-                    for c, v in rv.items():
-                        row[c] = v
-                    if indicator:
-                        merge_indicators.append('both')
-                merged_rows.append(row)
+            right_fill = {c: None for c in right_only}
+            # 使用列表推导式替代显式 for 循环
+            pairs = [
+                (lv, right[right_keys_map[lk]][1] if lk in right_keys_map else None)
+                for lk, lv in left
+            ]
+            merged_rows = [
+                {**lv, **(rv if rv is not None else right_fill)} for lv, rv in pairs
+            ]
+            if indicator:
+                merge_indicators = [
+                    "both" if rv is not None else "left_only" for _, rv in pairs
+                ]
         elif how == "right":
             left_only = [c for c in self._columns if c not in other._columns]
-            for rk, rv in right:
-                lv = left[left_keys_map[rk]][1] if rk in left_keys_map else None
-                row = {}
-                if lv is None:
-                    for c in left_only:
-                        row[c] = None
-                    if indicator:
-                        merge_indicators.append('right_only')
-                else:
-                    for c, v in lv.items():
-                        row[c] = v
-                    if indicator:
-                        merge_indicators.append('both')
-                for c, v in rv.items():
-                    row[c] = v
-                merged_rows.append(row)
+            left_fill = {c: None for c in left_only}
+            # 使用列表推导式替代显式 for 循环
+            pairs = [
+                (left[left_keys_map[rk]][1] if rk in left_keys_map else None, rv)
+                for rk, rv in right
+            ]
+            merged_rows = [
+                {**(lv if lv is not None else left_fill), **rv} for lv, rv in pairs
+            ]
+            if indicator:
+                merge_indicators = [
+                    "both" if lv is not None else "right_only" for lv, _ in pairs
+                ]
         elif how == "outer":
             right_only = [c for c in other._columns if c not in self._columns]
             left_only = [c for c in self._columns if c not in other._columns]
-            seen_l = set()
-            for lk, lv in left:
-                seen_l.add(lk)
-                rv = right[right_keys_map[lk]][1] if lk in right_keys_map else None
-                row = {}
-                for c, v in lv.items():
-                    row[c] = v
-                if rv is None:
-                    for c in right_only:
-                        row[c] = None
-                    if indicator:
-                        merge_indicators.append('left_only')
-                else:
-                    for c, v in rv.items():
-                        row[c] = v
-                    if indicator:
-                        merge_indicators.append('both')
-                merged_rows.append(row)
-            for rk, rv in right:
-                if rk in seen_l:
-                    continue
-                lv = left[left_keys_map[rk]][1] if rk in left_keys_map else None
-                row = {}
-                if lv is None:
-                    for c in left_only:
-                        row[c] = None
-                    if indicator:
-                        merge_indicators.append('right_only')
-                else:
-                    for c, v in lv.items():
-                        row[c] = v
-                    if indicator:
-                        merge_indicators.append('both')
-                for c, v in rv.items():
-                    row[c] = v
-                merged_rows.append(row)
+            right_fill = {c: None for c in right_only}
+            left_fill = {c: None for c in left_only}
+            # 左侧行 + 匹配的右侧行
+            left_pairs = [
+                (lv, right[right_keys_map[lk]][1] if lk in right_keys_map else None)
+                for lk, lv in left
+            ]
+            seen_l = {lk for lk, _ in left}
+            # 仅右侧的行
+            right_only_pairs = [
+                (left[left_keys_map[rk]][1] if rk in left_keys_map else None, rv)
+                for rk, rv in right
+                if rk not in seen_l
+            ]
+            merged_rows = [
+                {**lv, **(rv if rv is not None else right_fill)}
+                for lv, rv in left_pairs
+            ] + [
+                {**(lv if lv is not None else left_fill), **rv}
+                for lv, rv in right_only_pairs
+            ]
+            if indicator:
+                merge_indicators = [
+                    "both" if rv is not None else "left_only" for _, rv in left_pairs
+                ] + [
+                    "both" if lv is not None else "right_only"
+                    for lv, _ in right_only_pairs
+                ]
         elif how == "cross":
-            # 笛卡尔积
-            for lk, lv in left:
-                for rk, rv in right:
-                    row = {}
-                    for c, v in lv.items():
-                        row[c] = v
-                    for c, v in rv.items():
-                        row[c] = v
-                    merged_rows.append(row)
-                    if indicator:
-                        merge_indicators.append('both')
+            # 笛卡尔积 - 使用列表推导式替代嵌套 for 循环
+            merged_rows = [{**lv, **rv} for _, lv in left for _, rv in right]
+            if indicator:
+                merge_indicators = ["both"] * len(merged_rows)
         else:
             raise ValueError(f"unsupported how: {how}")
 
@@ -654,35 +691,39 @@ class DataFrame:
 
         # 添加 indicator 列
         if indicator:
-            all_cols.append('_merge')
+            all_cols.append("_merge")
 
         col_data: Dict[str, list] = {c: [] for c in all_cols}
-        for row in merged_rows:
-            for c in all_cols:
-                if c == '_merge':
-                    continue
-                base_c = c
-                if c.endswith(suffixes[0]):
-                    base_c = c[:-len(suffixes[0])]
-                    val = row.get(base_c)
-                    col_data[c].append(val)
-                elif c.endswith(suffixes[1]):
-                    base_c = c[:-len(suffixes[1])]
-                    val = row.get(base_c)
-                    col_data[c].append(val)
-                else:
-                    col_data[c].append(row.get(c))
-        
+        # 预计算每个列名对应的基础列名，避免循环内重复字符串切片
+        col_base_map = {}
+        for c in all_cols:
+            if c == "_merge":
+                continue
+            if c.endswith(suffixes[0]):
+                col_base_map[c] = c[: -len(suffixes[0])]
+            elif c.endswith(suffixes[1]):
+                col_base_map[c] = c[: -len(suffixes[1])]
+            else:
+                col_base_map[c] = c
+        # 使用列表推导式替代嵌套 for 循环
+        for c in all_cols:
+            if c == "_merge":
+                continue
+            base_c = col_base_map[c]
+            col_data[c] = [row.get(base_c) for row in merged_rows]
+
         # 添加 merge indicator 数据
         if indicator:
-            col_data['_merge'] = merge_indicators
-        
+            col_data["_merge"] = merge_indicators
+
         result_df = DataFrame(col_data)
-        
+
         # 排序
         if sort:
-            result_df = result_df.sort_values(by=left_keys if left_keys else self._columns[0])
-        
+            result_df = result_df.sort_values(
+                by=left_keys if left_keys else self._columns[0]
+            )
+
         return result_df
 
     @staticmethod
@@ -691,29 +732,27 @@ class DataFrame:
         if not frames:
             return DataFrame({})
         if axis == 0:
-            all_cols: List[str] = []
-            for f in frames:
-                for c in f._columns:
-                    if c not in all_cols:
-                        all_cols.append(c)
+            # 使用 dict.fromkeys 保持顺序去重，替代显式 for 循环
+            all_cols: List[str] = list(
+                dict.fromkeys(c for f in frames for c in f._columns)
+            )
             col_data: Dict[str, list] = {c: [] for c in all_cols}
             for f in frames:
+                f_cols = set(f._columns)
                 for c in all_cols:
-                    if c in f._columns:
+                    if c in f_cols:
                         col_data[c].extend(f._inner.get_column(c).values)
                     else:
                         col_data[c].extend([None] * f._nrows)
             return DataFrame(col_data)
         elif axis == 1:
             nrows = frames[0]._nrows
-            for f in frames[1:]:
-                if f._nrows != nrows:
-                    raise ValueError("all frames must have the same number of rows")
-            all_cols: List[str] = []
-            for f in frames:
-                for c in f._columns:
-                    if c not in all_cols:
-                        all_cols.append(c)
+            if any(f._nrows != nrows for f in frames[1:]):
+                raise ValueError("all frames must have the same number of rows")
+            # 使用 dict.fromkeys 保持顺序去重，替代显式 for 循环
+            all_cols: List[str] = list(
+                dict.fromkeys(c for f in frames for c in f._columns)
+            )
             col_data: Dict[str, list] = {c: [] for c in all_cols}
             for f in frames:
                 for c in f._columns:
@@ -722,7 +761,14 @@ class DataFrame:
         else:
             raise ValueError(f"axis must be 0 or 1, got {axis}")
 
-    def dropna(self, axis: int = 0, how: str = "any", thresh=None, subset=None, inplace: bool = False) -> "DataFrame":
+    def dropna(
+        self,
+        axis: int = 0,
+        how: str = "any",
+        thresh=None,
+        subset=None,
+        inplace: bool = False,
+    ) -> "DataFrame":
         """删除缺失值。
 
         :param axis: 0=按行删除, 1=按列删除
@@ -735,22 +781,32 @@ class DataFrame:
             # 按行删除
             cols_to_check = subset if subset is not None else self._columns
             n = self._nrows
-            keep_mask = []
 
-            for i in range(n):
-                row_values = [self._inner.get_column(c).values[i] for c in cols_to_check]
+            def _keep_row(row_values):
+                """判断单行是否保留。"""
                 non_null_count = sum(1 for v in row_values if v is not None)
-
                 if thresh is not None:
-                    keep_mask.append(non_null_count >= thresh)
+                    return non_null_count >= thresh
                 elif how == "any":
-                    keep_mask.append(all(v is not None for v in row_values))
+                    return all(v is not None for v in row_values)
                 elif how == "all":
-                    keep_mask.append(any(v is not None for v in row_values))
-                else:
-                    raise ValueError(f"invalid how: {how}")
+                    return any(v is not None for v in row_values)
+                raise ValueError(f"invalid how: {how}")
 
-            new_data = {c: [self._inner.get_column(c).values[i] for i in range(n) if keep_mask[i]] for c in self._columns}
+            # 使用列表推导式替代显式 for 循环（保持原行为：空表时不校验 how）
+            keep_mask = [
+                _keep_row([self._inner.get_column(c).values[i] for c in cols_to_check])
+                for i in range(n)
+            ]
+
+            new_data = {
+                c: [
+                    self._inner.get_column(c).values[i]
+                    for i in range(n)
+                    if keep_mask[i]
+                ]
+                for c in self._columns
+            }
             new_index = [self._index[i] for i in range(n) if keep_mask[i]]
 
             if inplace:
@@ -762,22 +818,23 @@ class DataFrame:
 
         elif axis == 1:
             # 按列删除
-            keep_cols = []
-            for c in self._columns:
-                col_values = list(self._inner.get_column(c).values)
+            def _keep_col(col_values):
+                """判断单列是否保留。"""
                 non_null_count = sum(1 for v in col_values if v is not None)
-
                 if thresh is not None:
-                    if non_null_count >= thresh:
-                        keep_cols.append(c)
+                    return non_null_count >= thresh
                 elif how == "any":
-                    if all(v is not None for v in col_values):
-                        keep_cols.append(c)
+                    return all(v is not None for v in col_values)
                 elif how == "all":
-                    if any(v is not None for v in col_values):
-                        keep_cols.append(c)
-                else:
-                    raise ValueError(f"invalid how: {how}")
+                    return any(v is not None for v in col_values)
+                raise ValueError(f"invalid how: {how}")
+
+            # 使用列表推导式替代显式 for 循环（保持原行为：空表时不校验 how）
+            keep_cols = [
+                c
+                for c in self._columns
+                if _keep_col(list(self._inner.get_column(c).values))
+            ]
 
             new_data = {c: list(self._inner.get_column(c).values) for c in keep_cols}
 
@@ -791,13 +848,13 @@ class DataFrame:
             raise ValueError(f"axis must be 0 or 1, got {axis}")
 
     def fillna(
-        self, 
-        value=None, 
-        method=None, 
-        axis=None, 
-        inplace: bool = False, 
-        limit=None, 
-        downcast=None
+        self,
+        value=None,
+        method=None,
+        axis=None,
+        inplace: bool = False,
+        limit=None,
+        downcast=None,
     ) -> "DataFrame":
         """填充整个 DataFrame 中所有列的缺失值。
 
@@ -810,35 +867,38 @@ class DataFrame:
         """
         if method is not None:
             # 使用 ffill/bfill
-            if method == 'ffill':
+            if method == "ffill":
                 return self.ffill(limit=limit)
-            elif method == 'bfill':
+            elif method == "bfill":
                 return self.bfill(limit=limit)
             else:
                 raise ValueError(f"Unsupported method: {method}")
-        
+
         if isinstance(value, dict):
-            # 按列填充
-            new_data: Dict[str, list] = {}
-            for c in self._columns:
-                ser = self._inner.get_column(c)
-                fill_val = value.get(c)
-                if fill_val is None:
-                    new_data[c] = list(ser.values)
-                else:
-                    new_data[c] = [fill_val if v is None else v for v in ser.values]
-            
+            # 按列填充 - 使用字典推导式替代显式 for 循环
+            new_data: Dict[str, list] = {
+                c: (
+                    list(self._inner.get_column(c).values)
+                    if value.get(c) is None
+                    else [
+                        value.get(c) if v is None else v
+                        for v in self._inner.get_column(c).values
+                    ]
+                )
+                for c in self._columns
+            }
+
             if inplace:
                 self._reload(new_data)
                 return self
             return DataFrame(new_data)
-        
+
         # 标量: 对每列单独调用 fillna
-        new_data: Dict[str, list] = {}
-        for c in self._columns:
-            ser = self._inner.get_column(c)
-            if limit is not None:
-                # 限制填充数量
+        if limit is not None:
+            # 限制填充数量 - 保持显式循环（涉及 fill_count 状态）
+            new_data: Dict[str, list] = {}
+            for c in self._columns:
+                ser = self._inner.get_column(c)
                 filled_vals = []
                 fill_count = 0
                 for v in ser.values:
@@ -848,10 +908,13 @@ class DataFrame:
                     else:
                         filled_vals.append(v)
                 new_data[c] = filled_vals
-            else:
-                filled = ser.fillna(value)
-                new_data[c] = list(filled.values)
-        
+        else:
+            # 无 limit - 使用字典推导式替代显式 for 循环
+            new_data: Dict[str, list] = {
+                c: list(self._inner.get_column(c).fillna(value).values)
+                for c in self._columns
+            }
+
         if inplace:
             self._reload(new_data)
             return self
@@ -867,7 +930,7 @@ class DataFrame:
         """
         if func is None:
             return self
-        
+
         # 简化实现：支持字符串和列表
         if isinstance(func, str):
             # 单个聚合函数
@@ -914,7 +977,7 @@ class DataFrame:
             return Series(result)
         else:
             raise TypeError(f"Unsupported func type: {type(func)}")
-    
+
     aggregate = agg  # 别名
 
     def apply(self, func, axis: int = 0) -> "Series":
@@ -923,32 +986,32 @@ class DataFrame:
         :param axis: 0=按列 (每列传入 Series); 1=按行 (每行传入 dict)
         """
         if axis == 0:
-            results = []
-            for c in self._columns:
-                ser = self[c]
-                res = func(ser)
-                if isinstance(res, Series):
-                    results.append(res._inner)
-                else:
-                    results.append(res)
+            # 使用列表推导式 + 辅助函数替代显式 for 循环
+            def _apply_col(c):
+                """对单列应用 func。"""
+                res = func(self[c])
+                return res._inner if isinstance(res, Series) else res
+
+            results = [_apply_col(c) for c in self._columns]
             return Series(results, index=list(self._columns))
         else:  # axis == 1
-            results = []
-            for i in range(self._nrows):
+            # 使用列表推导式 + 辅助函数替代显式 for 循环
+            def _apply_row(i):
+                """对单行应用 func。"""
                 row = {c: self._inner.get_column(c).values[i] for c in self._columns}
                 res = func(row)
-                if isinstance(res, Series):
-                    results.append(res._inner)
-                else:
-                    results.append(res)
+                return res._inner if isinstance(res, Series) else res
+
+            results = [_apply_row(i) for i in range(self._nrows)]
             return Series(results, index=list(range(self._nrows)))
 
     def applymap(self, func) -> "DataFrame":
         """对每个元素应用 func。"""
-        new_data: Dict[str, list] = {}
-        for c in self._columns:
-            ser = self[c]
-            new_data[c] = [None if v is None else func(v) for v in ser.values]
+        # 使用字典推导式替代显式 for 循环
+        new_data: Dict[str, list] = {
+            c: [None if v is None else func(v) for v in self[c].values]
+            for c in self._columns
+        }
         return DataFrame(new_data)
 
     def map(self, func) -> "DataFrame":
@@ -957,10 +1020,11 @@ class DataFrame:
 
     def abs(self) -> "DataFrame":
         """返回绝对值的 DataFrame。"""
-        new_data: Dict[str, list] = {}
-        for c in self._columns:
-            ser = self[c]
-            new_data[c] = [None if v is None else abs(v) for v in ser.values]
+        # 使用字典推导式替代显式 for 循环
+        new_data: Dict[str, list] = {
+            c: [None if v is None else abs(v) for v in self[c].values]
+            for c in self._columns
+        }
         return DataFrame(new_data)
 
     def copy(self, deep: bool = True) -> "DataFrame":
@@ -969,25 +1033,27 @@ class DataFrame:
         :param deep: True=深拷贝, False=浅拷贝
         """
         if deep:
-            new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+            new_data = {
+                c: list(self._inner.get_column(c).values) for c in self._columns
+            }
             new_index = list(self._index) if self._index is not None else None
             return DataFrame(new_data, index=new_index)
         return DataFrame._from_inner(self._inner)
 
     def isna(self) -> "DataFrame":
         """返回布尔 DataFrame，True 表示该位置是 None。"""
-        new_data: Dict[str, list] = {}
-        for c in self._columns:
-            ser = self[c]
-            new_data[c] = [v is None for v in ser.values]
+        # 使用字典推导式替代显式 for 循环
+        new_data: Dict[str, list] = {
+            c: [v is None for v in self[c].values] for c in self._columns
+        }
         return DataFrame(new_data)
 
     def notna(self) -> "DataFrame":
         """返回布尔 DataFrame，True 表示该位置不是 None。"""
-        new_data: Dict[str, list] = {}
-        for c in self._columns:
-            ser = self[c]
-            new_data[c] = [v is not None for v in ser.values]
+        # 使用字典推导式替代显式 for 循环
+        new_data: Dict[str, list] = {
+            c: [v is not None for v in self[c].values] for c in self._columns
+        }
         return DataFrame(new_data)
 
     def isnull(self) -> "DataFrame":
@@ -1010,18 +1076,26 @@ class DataFrame:
         if isinstance(columns, str):
             columns = [columns]
 
-        # 按指定列排序
-        sort_keys = []
-        for c in columns:
-            if c not in self._columns:
-                raise KeyError(f"column not found: {c}")
-            sort_keys.append([self._inner.get_column(c).values[i] for i in range(self._nrows)])
+        # 按指定列排序 - 使用列表推导式替代显式 for 循环
+        missing = [c for c in columns if c not in self._columns]
+        if missing:
+            raise KeyError(f"column not found: {missing[0]}")
+        sort_keys = [
+            [self._inner.get_column(c).values[i] for i in range(self._nrows)]
+            for c in columns
+        ]
 
         def key_func(i):
-            return tuple((1 if sort_keys[j][i] is None else 0, sort_keys[j][i]) for j in range(len(columns)))
+            return tuple(
+                (1 if sort_keys[j][i] is None else 0, sort_keys[j][i])
+                for j in range(len(columns))
+            )
 
         order = sorted(range(self._nrows), key=key_func, reverse=True)[:n]
-        new_data = {c: [self._inner.get_column(c).values[i] for i in order] for c in self._columns}
+        new_data = {
+            c: [self._inner.get_column(c).values[i] for i in order]
+            for c in self._columns
+        }
         return DataFrame(new_data)
 
     def nsmallest(self, n: int = 5, columns=None, keep: str = "first") -> "DataFrame":
@@ -1036,17 +1110,26 @@ class DataFrame:
         if isinstance(columns, str):
             columns = [columns]
 
-        sort_keys = []
-        for c in columns:
-            if c not in self._columns:
-                raise KeyError(f"column not found: {c}")
-            sort_keys.append([self._inner.get_column(c).values[i] for i in range(self._nrows)])
+        # 使用列表推导式替代显式 for 循环
+        missing = [c for c in columns if c not in self._columns]
+        if missing:
+            raise KeyError(f"column not found: {missing[0]}")
+        sort_keys = [
+            [self._inner.get_column(c).values[i] for i in range(self._nrows)]
+            for c in columns
+        ]
 
         def key_func(i):
-            return tuple((1 if sort_keys[j][i] is None else 0, sort_keys[j][i]) for j in range(len(columns)))
+            return tuple(
+                (1 if sort_keys[j][i] is None else 0, sort_keys[j][i])
+                for j in range(len(columns))
+            )
 
         order = sorted(range(self._nrows), key=key_func)[:n]
-        new_data = {c: [self._inner.get_column(c).values[i] for i in order] for c in self._columns}
+        new_data = {
+            c: [self._inner.get_column(c).values[i] for i in order]
+            for c in self._columns
+        }
         return DataFrame(new_data)
 
     def corr(self, method: str = "pearson", min_periods: int = 1) -> "DataFrame":
@@ -1055,66 +1138,93 @@ class DataFrame:
         :param method: 相关系数方法 ('pearson'/'kendall'/'spearman')
         :param min_periods: 最少非空值数
         """
-        numeric_cols = [c for c in self._columns if self._inner.get_column(c).dtype in ("int64", "float64")]
+        numeric_cols = [
+            c
+            for c in self._columns
+            if self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
         n = len(numeric_cols)
-        corr_data: Dict[str, list] = {c: [] for c in numeric_cols}
+        # 预取所有数值列的值，避免循环内重复取值
+        col_values = {c: list(self._inner.get_column(c).values) for c in numeric_cols}
 
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    corr_data[numeric_cols[i]].append(1.0)
-                else:
-                    col_i = self._inner.get_column(numeric_cols[i]).values
-                    col_j = self._inner.get_column(numeric_cols[j]).values
-                    pairs = [(a, b) for a, b in zip(col_i, col_j) if a is not None and b is not None]
-                    
-                    if len(pairs) < min_periods or len(pairs) < 2:
-                        corr_data[numeric_cols[i]].append(None)
-                    else:
-                        if method == "pearson":
-                            ma = sum(a for a, _ in pairs) / len(pairs)
-                            mb = sum(b for _, b in pairs) / len(pairs)
-                            num = sum((a - ma) * (b - mb) for a, b in pairs)
-                            da = (sum((a - ma) ** 2 for a, _ in pairs)) ** 0.5
-                            db = (sum((b - mb) ** 2 for _, b in pairs)) ** 0.5
-                            if da == 0 or db == 0:
-                                corr_data[numeric_cols[i]].append(None)
-                            else:
-                                corr_data[numeric_cols[i]].append(num / (da * db))
-                        elif method == "spearman":
-                            # 简化实现：秩相关
-                            ranks_i = sorted(range(len(pairs)), key=lambda k: pairs[k][0])
-                            ranks_j = sorted(range(len(pairs)), key=lambda k: pairs[k][1])
-                            rank_i = {k: i for i, k in enumerate(ranks_i)}
-                            rank_j = {k: i for i, k in enumerate(ranks_j)}
-                            d2 = sum((rank_i[k] - rank_j[k]) ** 2 for k in range(len(pairs)))
-                            n_pairs = len(pairs)
-                            rho = 1 - (6 * d2) / (n_pairs * (n_pairs ** 2 - 1))
-                            corr_data[numeric_cols[i]].append(rho)
-                        elif method == "kendall":
-                            # 简化实现：Kendall's tau
-                            # 统计 concordant 和 discordant 对
-                            concordant = 0
-                            discordant = 0
-                            for k1 in range(len(pairs)):
-                                for k2 in range(k1 + 1, len(pairs)):
-                                    a1, b1 = pairs[k1]
-                                    a2, b2 = pairs[k2]
-                                    if (a1 < a2 and b1 < b2) or (a1 > a2 and b1 > b2):
-                                        concordant += 1
-                                    elif (a1 < a2 and b1 > b2) or (a1 > a2 and b1 < b2):
-                                        discordant += 1
-                            n_pairs = len(pairs)
-                            total = n_pairs * (n_pairs - 1) / 2
-                            if total == 0:
-                                corr_data[numeric_cols[i]].append(None)
-                            else:
-                                tau = (concordant - discordant) / total
-                                corr_data[numeric_cols[i]].append(tau)
-                        else:
-                            raise ValueError(f"Unsupported method: {method}")
+        def _pearson(pairs):
+            """计算 pearson 相关系数。"""
+            ma = sum(a for a, _ in pairs) / len(pairs)
+            mb = sum(b for _, b in pairs) / len(pairs)
+            num = sum((a - ma) * (b - mb) for a, b in pairs)
+            da = (sum((a - ma) ** 2 for a, _ in pairs)) ** 0.5
+            db = (sum((b - mb) ** 2 for _, b in pairs)) ** 0.5
+            if da == 0 or db == 0:
+                return None
+            return num / (da * db)
+
+        def _spearman(pairs):
+            """计算 spearman 秩相关系数。"""
+            ranks_i = sorted(range(len(pairs)), key=lambda k: pairs[k][0])
+            ranks_j = sorted(range(len(pairs)), key=lambda k: pairs[k][1])
+            rank_i = {k: i for i, k in enumerate(ranks_i)}
+            rank_j = {k: i for i, k in enumerate(ranks_j)}
+            d2 = sum((rank_i[k] - rank_j[k]) ** 2 for k in range(len(pairs)))
+            n_pairs = len(pairs)
+            return 1 - (6 * d2) / (n_pairs * (n_pairs**2 - 1))
+
+        def _kendall(pairs):
+            """计算 kendall tau 相关系数。"""
+            n_pairs = len(pairs)
+            total = n_pairs * (n_pairs - 1) / 2
+            if total == 0:
+                return None
+            # 使用 sum + 生成器表达式替代嵌套 for 循环
+            concordant = sum(
+                1
+                for k1 in range(n_pairs)
+                for k2 in range(k1 + 1, n_pairs)
+                if (pairs[k1][0] < pairs[k2][0] and pairs[k1][1] < pairs[k2][1])
+                or (pairs[k1][0] > pairs[k2][0] and pairs[k1][1] > pairs[k2][1])
+            )
+            discordant = sum(
+                1
+                for k1 in range(n_pairs)
+                for k2 in range(k1 + 1, n_pairs)
+                if (pairs[k1][0] < pairs[k2][0] and pairs[k1][1] > pairs[k2][1])
+                or (pairs[k1][0] > pairs[k2][0] and pairs[k1][1] < pairs[k2][1])
+            )
+            return (concordant - discordant) / total
+
+        def _calc(a_vals, b_vals):
+            """计算两列之间的相关系数。"""
+            pairs = [
+                (a, b)
+                for a, b in zip(a_vals, b_vals)
+                if a is not None and b is not None
+            ]
+            if len(pairs) < min_periods or len(pairs) < 2:
+                return None
+            if method == "pearson":
+                return _pearson(pairs)
+            elif method == "spearman":
+                return _spearman(pairs)
+            elif method == "kendall":
+                return _kendall(pairs)
+            raise ValueError(f"Unsupported method: {method}")
+
+        # 使用字典推导式 + 列表推导式替代嵌套 for 循环
+        corr_data: Dict[str, list] = {
+            numeric_cols[i]: [
+                (
+                    1.0
+                    if i == j
+                    else _calc(col_values[numeric_cols[i]], col_values[numeric_cols[j]])
+                )
+                for j in range(n)
+            ]
+            for i in range(n)
+        }
 
         return DataFrame(corr_data)
+
+    # corr_matrix 作为 corr 的别名（扩展功能命名）
+    corr_matrix = corr
 
     def cov(self, min_periods: int = 1, ddof: int = 1) -> "DataFrame":
         """计算列之间的协方差矩阵。
@@ -1122,22 +1232,36 @@ class DataFrame:
         :param min_periods: 最少非空值数
         :param ddof: 自由度修正值
         """
-        numeric_cols = [c for c in self._columns if self._inner.get_column(c).dtype in ("int64", "float64")]
+        numeric_cols = [
+            c
+            for c in self._columns
+            if self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
         n = len(numeric_cols)
-        cov_data: Dict[str, list] = {c: [] for c in numeric_cols}
+        # 预取所有数值列的值，避免循环内重复取值
+        col_values = {c: list(self._inner.get_column(c).values) for c in numeric_cols}
 
-        for i in range(n):
-            for j in range(n):
-                col_i = self._inner.get_column(numeric_cols[i]).values
-                col_j = self._inner.get_column(numeric_cols[j]).values
-                pairs = [(a, b) for a, b in zip(col_i, col_j) if a is not None and b is not None]
-                if len(pairs) < min_periods or len(pairs) < 2:
-                    cov_data[numeric_cols[i]].append(None)
-                else:
-                    ma = sum(a for a, _ in pairs) / len(pairs)
-                    mb = sum(b for _, b in pairs) / len(pairs)
-                    cov_val = sum((a - ma) * (b - mb) for a, b in pairs) / (len(pairs) - ddof)
-                    cov_data[numeric_cols[i]].append(cov_val)
+        def _cov(a_vals, b_vals):
+            """计算两列之间的协方差。"""
+            pairs = [
+                (a, b)
+                for a, b in zip(a_vals, b_vals)
+                if a is not None and b is not None
+            ]
+            if len(pairs) < min_periods or len(pairs) < 2:
+                return None
+            ma = sum(a for a, _ in pairs) / len(pairs)
+            mb = sum(b for _, b in pairs) / len(pairs)
+            return sum((a - ma) * (b - mb) for a, b in pairs) / (len(pairs) - ddof)
+
+        # 使用字典推导式 + 列表推导式替代嵌套 for 循环
+        cov_data: Dict[str, list] = {
+            numeric_cols[i]: [
+                _cov(col_values[numeric_cols[i]], col_values[numeric_cols[j]])
+                for j in range(n)
+            ]
+            for i in range(n)
+        }
 
         return DataFrame(cov_data)
 
@@ -1148,59 +1272,67 @@ class DataFrame:
         :param axis: 0=按列计算
         :param drop: 是否丢弃缺失值
         """
+
+        def _pearson(pairs):
+            """计算 pearson 相关系数。"""
+            if len(pairs) < 2:
+                return None
+            ma = sum(a for a, _ in pairs) / len(pairs)
+            mb = sum(b for _, b in pairs) / len(pairs)
+            num = sum((a - ma) * (b - mb) for a, b in pairs)
+            da = (sum((a - ma) ** 2 for a, _ in pairs)) ** 0.5
+            db = (sum((b - mb) ** 2 for _, b in pairs)) ** 0.5
+            if da == 0 or db == 0:
+                return None
+            return num / (da * db)
+
+        def _pairs(a_vals, b_vals):
+            """构造非空值对。"""
+            return [
+                (a, b)
+                for a, b in zip(a_vals, b_vals)
+                if a is not None and b is not None
+            ]
+
         if isinstance(other, DataFrame):
-            results = {}
-            for c in self._columns:
-                if c in other._columns:
-                    col_i = self._inner.get_column(c).values
-                    col_j = other._inner.get_column(c).values
-                    pairs = [(a, b) for a, b in zip(col_i, col_j) if a is not None and b is not None]
-                    if len(pairs) < 2:
-                        results[c] = None
-                    else:
-                        ma = sum(a for a, _ in pairs) / len(pairs)
-                        mb = sum(b for _, b in pairs) / len(pairs)
-                        num = sum((a - ma) * (b - mb) for a, b in pairs)
-                        da = (sum((a - ma) ** 2 for a, _ in pairs)) ** 0.5
-                        db = (sum((b - mb) ** 2 for _, b in pairs)) ** 0.5
-                        if da == 0 or db == 0:
-                            results[c] = None
-                        else:
-                            results[c] = num / (da * db)
-                elif not drop:
-                    results[c] = None
+            # 使用字典推导式替代显式 for 循环
+            results = {
+                c: (
+                    _pearson(
+                        _pairs(
+                            self._inner.get_column(c).values,
+                            other._inner.get_column(c).values,
+                        )
+                    )
+                    if c in other._columns
+                    else (None if not drop else None)
+                )
+                for c in self._columns
+            }
+            # drop=False 时保留不在 other 中的列（值为 None）
+            if drop:
+                results = {c: v for c, v in results.items() if v is not None}
             return Series(list(results.values()), index=list(results.keys()))
         elif isinstance(other, Series):
-            results = {}
-            for c in self._columns:
-                col_i = self._inner.get_column(c).values
-                col_j = other.values
-                pairs = [(a, b) for a, b in zip(col_i, col_j) if a is not None and b is not None]
-                if len(pairs) < 2:
-                    results[c] = None
-                else:
-                    ma = sum(a for a, _ in pairs) / len(pairs)
-                    mb = sum(b for _, b in pairs) / len(pairs)
-                    num = sum((a - ma) * (b - mb) for a, b in pairs)
-                    da = (sum((a - ma) ** 2 for a, _ in pairs)) ** 0.5
-                    db = (sum((b - mb) ** 2 for _, b in pairs)) ** 0.5
-                    if da == 0 or db == 0:
-                        results[c] = None
-                    else:
-                        results[c] = num / (da * db)
+            other_vals = other.values
+            # 使用字典推导式替代显式 for 循环
+            results = {
+                c: _pearson(_pairs(self._inner.get_column(c).values, other_vals))
+                for c in self._columns
+            }
             return Series(list(results.values()), index=list(results.keys()))
         else:
             raise TypeError("other must be DataFrame or Series")
 
     def sort_index(
-        self, 
-        axis: int = 0, 
-        level=None, 
-        ascending: bool = True, 
-        inplace: bool = False, 
-        kind: str = "quicksort", 
-        na_position: str = "last", 
-        sort_remaining: bool = True
+        self,
+        axis: int = 0,
+        level=None,
+        ascending: bool = True,
+        inplace: bool = False,
+        kind: str = "quicksort",
+        na_position: str = "last",
+        sort_remaining: bool = True,
     ) -> "DataFrame":
         """按索引排序。
 
@@ -1213,23 +1345,61 @@ class DataFrame:
         :param sort_remaining: 是否对剩余级别排序（暂不支持）
         """
         if axis == 0:
+            # 尝试调用 Rust 层加速（仅在默认 RangeIndex 时）
+            # Rust 层 sort_index: ascending=True 保持原顺序，ascending=False 反转
+            # 对默认 RangeIndex 而言，按索引值排序等价于保持/反转原顺序
+            is_default_idx = list(self._index) == list(range(self._nrows))
+            if is_default_idx:
+                try:
+                    new_inner = self._inner.sort_index(ascending=ascending)
+                    new_nrows = new_inner.nrows
+                    if inplace:
+                        self._inner = new_inner
+                        self._nrows = new_nrows
+                        self._index = (
+                            list(range(new_nrows))
+                            if ascending
+                            else list(range(new_nrows - 1, -1, -1))
+                        )
+                        return self
+                    new_df = DataFrame._from_inner(new_inner)
+                    if not ascending:
+                        new_df._index = list(range(new_nrows - 1, -1, -1))
+                    return new_df
+                except Exception:
+                    pass
+
+            # 回退到原 Python 实现（自定义索引或 Rust 调用失败时）
             if self._index is None:
                 return self.copy()
-            
+
             # 处理 NaN 索引
             indexed = [(v, i) for i, v in enumerate(self._index)]
-            
+
             if na_position == "first":
-                indexed.sort(key=lambda x: (0 if x[0] is None else 1, x[0] if x[0] is not None else ""), 
-                            reverse=not ascending)
+                indexed.sort(
+                    key=lambda x: (
+                        0 if x[0] is None else 1,
+                        x[0] if x[0] is not None else "",
+                    ),
+                    reverse=not ascending,
+                )
             else:  # "last"
-                indexed.sort(key=lambda x: (1 if x[0] is None else 0, x[0] if x[0] is not None else ""), 
-                            reverse=not ascending)
-            
+                indexed.sort(
+                    key=lambda x: (
+                        1 if x[0] is None else 0,
+                        x[0] if x[0] is not None else "",
+                    ),
+                    reverse=not ascending,
+                )
+
             order = [i for _, i in indexed]
-            new_data = {c: [self._inner.get_column(c).values[i] for i in order] for c in self._columns}
+            new_data = {
+                c: [self._inner.get_column(c).values[i] for i in order]
+                for c in self._columns
+            }
             new_index = [self._index[i] for i in order]
-            
+
             if inplace:
                 self._reload(new_data)
                 self._index = new_index
@@ -1262,21 +1432,27 @@ class DataFrame:
         if index is not None:
             if not isinstance(index, list):
                 index = list(index)
-            old_index_map = {}
-            for i, idx in enumerate(self._index or range(self._nrows)):
-                old_index_map[idx] = i
+            # 使用字典推导式替代显式 for 循环
+            old_index_map = {
+                idx: i for i, idx in enumerate(self._index or range(self._nrows))
+            }
             new_order = [old_index_map.get(label) for label in index]
         else:
             new_order = list(range(self._nrows))
             index = self._index or list(range(self._nrows))
 
-        new_data = {}
-        for c in new_cols:
-            if c in self._columns:
-                col_values = self._inner.get_column(c).values
-                new_data[c] = [col_values[i] if i is not None else None for i in new_order]
-            else:
-                new_data[c] = [None] * len(new_order)
+        # 使用字典推导式替代显式 for 循环
+        new_data = {
+            c: (
+                [
+                    self._inner.get_column(c).values[i] if i is not None else None
+                    for i in new_order
+                ]
+                if c in self._columns
+                else [None] * len(new_order)
+            )
+            for c in new_cols
+        }
 
         return DataFrame(new_data, index=index)
 
@@ -1285,15 +1461,19 @@ class DataFrame:
     def assign(self, **kwargs) -> "DataFrame":
         """添加新列 (链式调用友好)。"""
         new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
-        for name, value in kwargs.items():
+
+        def _resolve(value):
+            """解析列值为列表。"""
             if isinstance(value, Series):
-                new_data[name] = list(value.values)
-            else:
-                try:
-                    iter(value)
-                    new_data[name] = list(value)
-                except TypeError:
-                    new_data[name] = [value] * self._nrows
+                return list(value.values)
+            try:
+                iter(value)
+                return list(value)
+            except TypeError:
+                return [value] * self._nrows
+
+        # 使用字典推导式 + 辅助函数替代显式 for 循环
+        new_data.update({name: _resolve(value) for name, value in kwargs.items()})
         return DataFrame(new_data)
 
     def eval(self, expr: str, inplace: bool = False):
@@ -1304,11 +1484,11 @@ class DataFrame:
         """
         local_vars = {c: self._inner.get_column(c).values for c in self._columns}
         result = eval(expr, {}, local_vars)
-        
+
         # 如果是赋值表达式，更新列
-        if inplace and '=' in expr:
+        if inplace and "=" in expr:
             # 简化实现：解析简单赋值如 "new_col = col1 + col2"
-            parts = expr.split('=')
+            parts = expr.split("=")
             if len(parts) == 2:
                 new_col = parts[0].strip()
                 if isinstance(result, Series):
@@ -1316,7 +1496,7 @@ class DataFrame:
                 else:
                     self[new_col] = [result] * self._nrows
                 return self
-        
+
         return result
 
     def query(self, expr: str, inplace: bool = False) -> "DataFrame":
@@ -1325,23 +1505,61 @@ class DataFrame:
         :param expr: 表达式字符串
         :param inplace: 是否原地修改
         """
-        mask = []
-        for i in range(self._nrows):
-            local_vars = {c: self._inner.get_column(c).values[i] for c in self._columns}
-            mask.append(bool(eval(expr, {}, local_vars)))
-        
+        # 优先尝试用 Rust 层 query_filter 处理简单比较表达式（如 "col > 5"）
+        try:
+            import re
+
+            simple = re.match(
+                r"^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*([+-]?\d+\.?\d*)\s*$", expr
+            )
+            if simple:
+                col_name, op, val_str = simple.groups()
+                if col_name in self._columns:
+                    col_idx = self._columns.index(col_name)
+                    value = float(val_str)
+                    inner = self._inner.query_filter(col_idx, op, value)
+                    new_df = DataFrame.__new__(DataFrame)
+                    new_df._inner = inner
+                    new_df._columns = list(self._columns)
+                    new_df._nrows = inner.nrows()
+                    new_df._index = list(range(new_df._nrows))
+                    if inplace:
+                        self._inner = inner
+                        self._nrows = new_df._nrows
+                        self._index = new_df._index
+                        return self
+                    return new_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现：使用列表推导式替代显式 for 循环
+        mask = [
+            bool(
+                eval(
+                    expr,
+                    {},
+                    {c: self._inner.get_column(c).values[i] for c in self._columns},
+                )
+            )
+            for i in range(self._nrows)
+        ]
+
         new_data = {
-            c: [self._inner.get_column(c).values[i] for i in range(self._nrows) if mask[i]]
+            c: [
+                self._inner.get_column(c).values[i]
+                for i in range(self._nrows)
+                if mask[i]
+            ]
             for c in self._columns
         }
         new_index = [self._index[i] for i in range(self._nrows) if mask[i]]
-        
+
         if inplace:
             self._reload(new_data)
             self._index = new_index
             self._nrows = len(new_index)
             return self
-        
+
         return DataFrame(new_data, index=new_index)
 
     def pipe(self, func, *args, **kwargs):
@@ -1357,7 +1575,7 @@ class DataFrame:
         :param kwargs: 关键字参数
         """
         new_data: Dict[str, list] = {}
-        
+
         if isinstance(func, list):
             # 多个函数：生成多列
             for f in func:
@@ -1370,7 +1588,7 @@ class DataFrame:
                             result = f
                     else:
                         result = f(ser, *args, **kwargs)
-                    
+
                     if isinstance(result, Series):
                         new_data[f"{c}_{f}"] = list(result.values)
                     else:
@@ -1386,22 +1604,22 @@ class DataFrame:
                         result = func
                 else:
                     result = func(ser, *args, **kwargs)
-                
+
                 if isinstance(result, Series):
                     new_data[c] = list(result.values)
                 else:
                     new_data[c] = [result] * self._nrows
-        
+
         return DataFrame(new_data)
 
     def replace(
-        self, 
-        to_replace=None, 
-        value=None, 
-        inplace: bool = False, 
-        limit=None, 
-        regex: bool = False, 
-        method: str = 'pad'
+        self,
+        to_replace=None,
+        value=None,
+        inplace: bool = False,
+        limit=None,
+        regex: bool = False,
+        method: str = "pad",
     ) -> "DataFrame":
         """替换 DataFrame 中的值。
 
@@ -1412,41 +1630,68 @@ class DataFrame:
         :param regex: 是否正则表达式
         :param method: 填充方法（已弃用）
         """
-        new_data: Dict[str, list] = {}
-        
-        for c in self._columns:
-            ser = self[c]
-            col_vals = list(ser.values)
-            replaced_vals = []
-            replace_count = 0
-            
-            for v in col_vals:
-                if limit is not None and replace_count >= limit:
-                    replaced_vals.append(v)
-                    continue
-                
-                if regex and isinstance(to_replace, str) and isinstance(v, str):
-                    import re
-                    if re.search(to_replace, v):
-                        replaced_vals.append(value)
-                        replace_count += 1
-                    else:
-                        replaced_vals.append(v)
-                elif isinstance(to_replace, dict):
-                    # 字典映射
-                    if v in to_replace:
-                        replaced_vals.append(to_replace[v])
-                        replace_count += 1
-                    else:
-                        replaced_vals.append(v)
-                elif v == to_replace:
-                    replaced_vals.append(value)
-                    replace_count += 1
+        # 先将 to_replace 形式归一化，避免每列重复判断类型
+        if isinstance(to_replace, dict):
+            to_map = to_replace
+            new_data: Dict[str, list] = {}
+            for c in self._columns:
+                col_vals = list(self[c].values)
+                if limit is not None:
+                    # 有 limit 状态依赖 -> 保持循环但用 enumerate 内联
+                    replaced, rc = [], 0
+                    for v in col_vals:
+                        if rc >= limit:
+                            replaced.append(v)
+                        elif v in to_map:
+                            replaced.append(to_map[v])
+                            rc += 1
+                        else:
+                            replaced.append(v)
+                    new_data[c] = replaced
                 else:
-                    replaced_vals.append(v)
-            
-            new_data[c] = replaced_vals
-        
+                    new_data[c] = [to_map.get(v, v) for v in col_vals]
+        elif regex and isinstance(to_replace, str):
+            import re
+
+            pattern = re.compile(to_replace)
+            new_data = {}
+            for c in self._columns:
+                col_vals = list(self[c].values)
+                if limit is not None:
+                    replaced, rc = [], 0
+                    for v in col_vals:
+                        if rc >= limit:
+                            replaced.append(v)
+                        elif isinstance(v, str) and pattern.search(v):
+                            replaced.append(value)
+                            rc += 1
+                        else:
+                            replaced.append(v)
+                    new_data[c] = replaced
+                else:
+                    new_data[c] = [
+                        value if isinstance(v, str) and pattern.search(v) else v
+                        for v in col_vals
+                    ]
+        else:
+            # 标量 to_replace 形式
+            new_data = {}
+            for c in self._columns:
+                col_vals = list(self[c].values)
+                if limit is not None:
+                    replaced, rc = [], 0
+                    for v in col_vals:
+                        if rc >= limit:
+                            replaced.append(v)
+                        elif v == to_replace:
+                            replaced.append(value)
+                            rc += 1
+                        else:
+                            replaced.append(v)
+                    new_data[c] = replaced
+                else:
+                    new_data[c] = [value if v == to_replace else v for v in col_vals]
+
         if inplace:
             self._reload(new_data)
             return self
@@ -1458,23 +1703,21 @@ class DataFrame:
             subset = self._columns
         elif isinstance(subset, str):
             subset = [subset]
-        # 取每行的 key tuple
+        # 取每行的 key tuple - 使用列表推导式替代显式 for 循环
         n = self._nrows
-        row_keys = []
-        for i in range(n):
-            key = tuple(self._inner.get_column(c).values[i] for c in subset)
-            row_keys.append(key)
-        seen = set()
-        mark = []
+        row_keys = [
+            tuple(self._inner.get_column(c).values[i] for c in subset) for i in range(n)
+        ]
+        seen: set = set()
         if keep == "first":
-            for k in row_keys:
-                mark.append(k in seen)
-                seen.add(k)
+            # 使用 seen.add 副作用技巧替代显式 for 循环
+            mark = [k in seen or (seen.add(k), False)[1] for k in row_keys]
         elif keep == "last":
-            for k in reversed(row_keys):
-                mark.append(k in seen)
-                seen.add(k)
-            mark.reverse()
+            # 反向遍历检测重复，再反转结果
+            rev_mark = [
+                k in seen or (seen.add(k), False)[1] for k in reversed(row_keys)
+            ]
+            mark = list(reversed(rev_mark))
         elif keep is False:
             from collections import Counter
 
@@ -1495,31 +1738,37 @@ class DataFrame:
         row_keys = [
             tuple(self._inner.get_column(c).values[i] for c in subset) for i in range(n)
         ]
-        seen = set()
-        keep_idx = []
+        seen: set = set()
         if keep == "first":
-            for i, k in enumerate(row_keys):
-                if k not in seen:
-                    keep_idx.append(i)
-                    seen.add(k)
+            # 使用 seen.add 副作用技巧替代显式 for 循环
+            keep_idx = [
+                i for i, k in enumerate(row_keys) if k not in seen and not seen.add(k)
+            ]
         elif keep == "last":
-            for i, k in reversed(list(enumerate(row_keys))):
-                if k not in seen:
-                    keep_idx.append(i)
-                    seen.add(k)
-            keep_idx.reverse()
-        new_data: Dict[str, list] = {}
-        for c in self._columns:
-            vals = self._inner.get_column(c).values
-            new_data[c] = [vals[i] for i in keep_idx]
+            # 反向遍历保留最后一次出现
+            rev_keep = [
+                i
+                for i, k in reversed(list(enumerate(row_keys)))
+                if k not in seen and not seen.add(k)
+            ]
+            keep_idx = list(reversed(rev_keep))
+        else:
+            # keep=False: 丢弃所有重复行（仅保留唯一值）
+            from collections import Counter
+
+            counts = Counter(row_keys)
+            keep_idx = [i for i, k in enumerate(row_keys) if counts[k] == 1]
+        # 使用字典推导式替代显式 for 循环
+        new_data: Dict[str, list] = {
+            c: [self._inner.get_column(c).values[i] for i in keep_idx]
+            for c in self._columns
+        }
         return DataFrame(new_data)
 
     def nunique(self) -> "Series":
         """每列不同值数量。"""
-        out = {}
-        for c in self._columns:
-            ser = self[c]
-            out[c] = ser.nunique()
+        # 使用字典推导式替代显式 for 循环
+        out = {c: self[c].nunique() for c in self._columns}
         return Series(out, name=None, index=list(self._columns))
 
     def to_pandas(self):
@@ -1549,26 +1798,25 @@ class DataFrame:
         }
         return cls(data)
 
-    def to_numpy(self):
-        """转换为 numpy 二维数组。"""
-        try:
-            import numpy as np  # type: ignore
-        except ImportError:
-            raise ImportError("numpy is required for to_numpy()")
+    def to_numpy(self, dtype=None):
+        """转换为 rsnumpy 二维数组。
+
+        :param dtype: 目标 dtype
+        """
         cols = list(self._columns)
         data = [
             [self._inner.get_column(c).values[i] for c in cols]
             for i in range(self._nrows)
         ]
-        return np.array(data)
+        return rnp.array(data, dtype=dtype) if dtype else rnp.array(data)
 
     @classmethod
     def from_numpy(cls, arr, columns=None, index=None, dtype=None) -> "DataFrame":
-        """从 numpy 二维数组构造 DataFrame。
+        """从 rsnumpy 二维数组构造 DataFrame。
 
         Parameters
         ----------
-        arr : numpy.ndarray
+        arr : rsnumpy.ndarray
             二维输入数组。
         columns : list[str], optional
             列名。
@@ -1581,12 +1829,8 @@ class DataFrame:
         -------
         DataFrame
         """
-        try:
-            import numpy as np  # type: ignore
-        except ImportError:
-            raise ImportError("numpy is required for from_numpy()")
-        if not isinstance(arr, np.ndarray):
-            raise TypeError("expected numpy.ndarray")
+        if not isinstance(arr, rnp.ndarray):
+            raise TypeError(f"expected rsnumpy.ndarray, got {type(arr).__name__}")
         if arr.ndim == 1:
             arr = arr.reshape(-1, 1)
         data = arr.tolist()
@@ -1772,15 +2016,18 @@ class DataFrame:
             labels = [labels]
 
         if axis == 0:
-            # 删除行
-            keep_idx = []
-            for i in range(self._nrows):
-                label = self._index[i] if self._index else i
-                if label not in labels:
-                    keep_idx.append(i)
+            # 删除行 - 使用列表推导式替代显式 for 循环
+            label_set = set(labels)
+            keep_idx = [
+                i
+                for i in range(self._nrows)
+                if (self._index[i] if self._index else i) not in label_set
+            ]
 
             if errors == "raise":
-                missing = [l for l in labels if l not in (self._index or range(len(self)))]
+                missing = [
+                    l_ for l_ in labels if l_ not in (self._index or range(len(self)))
+                ]
                 if missing:
                     raise KeyError(f"labels {missing} not found in axis")
 
@@ -1793,7 +2040,7 @@ class DataFrame:
         else:
             # 删除列
             if errors == "raise":
-                missing = [l for l in labels if l not in self._columns]
+                missing = [l_ for l_ in labels if l_ not in self._columns]
                 if missing:
                     raise KeyError(f"labels {missing} not found in axis")
             new_cols = [c for c in self._columns if c not in labels]
@@ -1845,9 +2092,7 @@ class DataFrame:
             # 默认行为：若 mapper 为 dict 且无 axis，尝试推断
             index = mapper
 
-        new_data = {
-            c: list(self._inner.get_column(c).values) for c in self._columns
-        }
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
         new_index = list(self._index) if self._index else None
         new_cols = list(self._columns)
 
@@ -2038,20 +2283,20 @@ class DataFrame:
         """
         # 兼容 path 参数
         path = path_or_buf
-        
+
         # 选择列
         if columns is None:
             selected_columns = list(self._columns)
         else:
             selected_columns = list(columns)
-        
+
         # 构建数据
         series_list = [self._inner.get_column(c) for c in selected_columns]
 
         # 处理索引列
         if index and self._index:
             from .rspandas import _Series as _PySeries
-            
+
             idx_series = _PySeries(self._index, index_label if index_label else "")
             columns_to_write = [index_label if index_label else ""] + selected_columns
             series_to_write = [idx_series] + series_list
@@ -2061,7 +2306,7 @@ class DataFrame:
 
         # 生成 CSV 内容（带参数处理）
         content_lines = []
-        
+
         # 表头
         if header:
             if isinstance(header, list):
@@ -2069,27 +2314,28 @@ class DataFrame:
                 content_lines.append(sep.join([str(h) for h in header]))
             else:
                 content_lines.append(sep.join([str(c) for c in columns_to_write]))
-        
-        # 数据行
+
+        # 数据行 - 使用辅助函数 + 列表推导式替代嵌套 for 循环
+        def _format_value(val):
+            """格式化单个值为 CSV 字段。"""
+            if val is None:
+                return na_rep
+            if float_format is not None and isinstance(val, float):
+                return float_format % val
+            if date_format is not None and hasattr(val, "strftime"):
+                return val.strftime(date_format)
+            if decimal != "." and isinstance(val, float):
+                return str(val).replace(".", decimal)
+            return str(val)
+
+        # 预取所有列的值列表，避免循环内重复访问
+        cols_values = [list(ser.values) for ser in series_to_write]
         n_rows = self._nrows
-        for i in range(n_rows):
-            row_values = []
-            for ser in series_to_write:
-                val = ser.values[i]
-                if val is None:
-                    row_values.append(na_rep)
-                elif float_format is not None and isinstance(val, float):
-                    row_values.append(float_format % val)
-                elif date_format is not None and hasattr(val, 'strftime'):
-                    row_values.append(val.strftime(date_format))
-                else:
-                    # 处理浮点数小数点
-                    if decimal != "." and isinstance(val, float):
-                        row_values.append(str(val).replace(".", decimal))
-                    else:
-                        row_values.append(str(val))
-            content_lines.append(sep.join(row_values))
-        
+        content_lines.extend(
+            sep.join(_format_value(col_vals[i]) for col_vals in cols_values)
+            for i in range(n_rows)
+        )
+
         content = "\n".join(content_lines)
         if lineterminator is not None:
             content = lineterminator.join(content_lines)
@@ -2099,11 +2345,12 @@ class DataFrame:
 
         # 处理压缩
         import os
+
         if compression == "infer":
-            if isinstance(path, str) and path.endswith('.gz'):
-                compression = 'gzip'
-            elif isinstance(path, str) and path.endswith('.bz2'):
-                compression = 'bz2'
+            if isinstance(path, str) and path.endswith(".gz"):
+                compression = "gzip"
+            elif isinstance(path, str) and path.endswith(".bz2"):
+                compression = "bz2"
             else:
                 compression = None
 
@@ -2118,13 +2365,15 @@ class DataFrame:
                 if not content.endswith("\n"):
                     content += "\n"
 
-            if compression == 'gzip':
+            if compression == "gzip":
                 import gzip
-                with gzip.open(path, mode + 't', encoding=encoding, errors=errors) as f:
+
+                with gzip.open(path, mode + "t", encoding=encoding, errors=errors) as f:
                     f.write(content)
-            elif compression == 'bz2':
+            elif compression == "bz2":
                 import bz2
-                with bz2.open(path, mode + 't', encoding=encoding, errors=errors) as f:
+
+                with bz2.open(path, mode + "t", encoding=encoding, errors=errors) as f:
                     f.write(content)
             else:
                 with open(path, mode, encoding=encoding, errors=errors) as f:
@@ -2132,7 +2381,7 @@ class DataFrame:
         else:
             # path_or_buf 是文件对象
             path.write(content)
-        
+
         return None
 
     def to_dict(self, orient: str = "dict", into=dict) -> dict:
@@ -2141,69 +2390,70 @@ class DataFrame:
         :param orient: 方向格式 ('dict'/'list'/'records'/'index'/'columns'/'split'/'tight')
         :param into: 用于构建结果的映射类型 (默认 dict)
         """
+        # 预取所有列的值和索引，避免循环内重复访问
+        cols_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        idx_list = (
+            list(self._index) if self._index is not None else list(range(self._nrows))
+        )
+
         if orient == "dict":
-            result = into()
-            for c in self._columns:
-                result[c] = into()
-                col_vals = list(self._inner.get_column(c).values)
-                for i, v in enumerate(col_vals):
-                    key = self._index[i] if self._index and i < len(self._index) else i
-                    result[c][key] = v
-            return result
+            # 使用嵌套字典推导式替代显式 for 循环
+            return into(
+                (
+                    c,
+                    into((idx_list[i], col_vals[i]) for i in range(self._nrows)),
+                )
+                for c, col_vals in cols_values.items()
+            )
         elif orient == "list":
-            result = into()
-            for c in self._columns:
-                result[c] = list(self._inner.get_column(c).values)
-            return result
+            # 使用字典推导式替代显式 for 循环
+            return into((c, list(col_vals)) for c, col_vals in cols_values.items())
         elif orient == "records":
-            result = []
-            for i in range(self._nrows):
-                row = into()
-                for c in self._columns:
-                    row[c] = self._inner.get_column(c).values[i]
-                result.append(row)
-            return result
+            # 使用列表推导式替代显式 for 循环
+            return [
+                into((c, cols_values[c][i]) for c in self._columns)
+                for i in range(self._nrows)
+            ]
         elif orient == "index":
-            result = into()
-            for i in range(self._nrows):
-                key = self._index[i] if self._index and i < len(self._index) else i
-                row = into()
-                for c in self._columns:
-                    row[c] = self._inner.get_column(c).values[i]
-                result[key] = row
-            return result
+            # 使用字典推导式替代显式 for 循环
+            return into(
+                (
+                    idx_list[i],
+                    into((c, cols_values[c][i]) for c in self._columns),
+                )
+                for i in range(self._nrows)
+            )
         elif orient == "columns":
-            result = into()
-            for c in self._columns:
-                col_data = into()
-                col_vals = list(self._inner.get_column(c).values)
-                for i, v in enumerate(col_vals):
-                    key = self._index[i] if self._index and i < len(self._index) else i
-                    col_data[key] = v
-                result[c] = col_data
-            return result
+            # 与 'dict' 方向相同（按列存储，键为索引）
+            return into(
+                (
+                    c,
+                    into((idx_list[i], col_vals[i]) for i in range(self._nrows)),
+                )
+                for c, col_vals in cols_values.items()
+            )
         elif orient == "split":
             return into(
-                index=list(self._index) if self._index else list(range(self._nrows)),
+                index=idx_list,
                 columns=list(self._columns),
                 data=[
-                    [self._inner.get_column(c).values[i] for c in self._columns]
+                    [cols_values[c][i] for c in self._columns]
                     for i in range(self._nrows)
-                ]
+                ],
             )
         elif orient == "tight":
             return into(
-                index=list(self._index) if self._index else list(range(self._nrows)),
+                index=idx_list,
                 columns=list(self._columns),
                 data=[
-                    [self._inner.get_column(c).values[i] for c in self._columns]
+                    [cols_values[c][i] for c in self._columns]
                     for i in range(self._nrows)
                 ],
-                index_names=[None] if self._index else [None],
-                column_names=[None] * len(self._columns)
+                data_headers=list(self._columns),
+                index_names=[None],
             )
         else:
-            raise ValueError(f"Unknown orient: {orient}")
+            raise ValueError(f"Unsupported orient: {orient}")
 
     # ---------- IO 扩展 (v1.2.0) ----------
 
@@ -2404,90 +2654,109 @@ class DataFrame:
             percentiles = [0.25, 0.5, 0.75]
         else:
             percentiles = list(percentiles)
-        
+
         # 确定要分析的列
-        if include == 'all':
+        if include == "all":
             cols_to_analyze = self._columns
         elif include is not None:
             if isinstance(include, str):
                 include = [include]
-            cols_to_analyze = []
-            for c in self._columns:
-                dtype = self._inner.get_column(c).dtype
-                if dtype in include or dtype in [str(t) for t in include]:
-                    cols_to_analyze.append(c)
+            # 使用列表推导式 + 辅助函数替代显式 for 循环
+            include_strs = [str(t) for t in include]
+
+            def _include_match(c):
+                """判断列 dtype 是否匹配 include 条件。"""
+                dt = self._inner.get_column(c).dtype
+                return dt in include or dt in include_strs
+
+            cols_to_analyze = [c for c in self._columns if _include_match(c)]
         else:
             # 默认仅数值列
             cols_to_analyze = [
-                c for c in self._columns 
+                c
+                for c in self._columns
                 if self._inner.get_column(c).dtype in ("int64", "float64")
             ]
-        
+
         # 排除列
         if exclude is not None:
             if isinstance(exclude, str):
                 exclude = [exclude]
             cols_to_analyze = [
-                c for c in cols_to_analyze 
+                c
+                for c in cols_to_analyze
                 if self._inner.get_column(c).dtype not in exclude
                 and self._inner.get_column(c).dtype not in [str(t) for t in exclude]
             ]
-        
+
         # 构建统计指标
-        stat_names = ["count", "mean", "std", "min"] + \
-                     [f"{int(p*100)}%" for p in percentiles] + ["max"]
-        
-        out: Dict[str, list] = {s: [] for s in stat_names}
-        
-        for c in cols_to_analyze:
-            ser = self._get_column_as_series(c)
-            vals = [v for v in ser.values if v is not None and isinstance(v, (int, float))]
-            
-            out["count"].append(len(vals))
-            
+        stat_names = (
+            ["count", "mean", "std", "min"]
+            + [f"{int(p*100)}%" for p in percentiles]
+            + ["max"]
+        )
+
+        # 预取列数据，避免循环内重复访问
+        cols_data = {
+            c: [
+                v
+                for v in self._inner.get_column(c).values
+                if v is not None and isinstance(v, (int, float))
+            ]
+            for c in cols_to_analyze
+        }
+
+        def _col_stats(vals):
+            """计算单列的统计指标。"""
             if not vals:
-                out["mean"].append(None)
-                out["std"].append(None)
-                out["min"].append(None)
-                for p_name in [f"{int(p*100)}%" for p in percentiles]:
-                    out[p_name].append(None)
-                out["max"].append(None)
-                continue
-            
-            # 均值
+                return {
+                    "count": 0,
+                    "mean": None,
+                    "std": None,
+                    "min": None,
+                    "max": None,
+                    **{f"{int(p*100)}%": None for p in percentiles},
+                }
             mean_val = sum(vals) / len(vals)
-            out["mean"].append(mean_val)
-            
-            # 标准差
-            if len(vals) > 1:
-                var = sum((v - mean_val) ** 2 for v in vals) / (len(vals) - 1)
-                out["std"].append(var ** 0.5)
-            else:
-                out["std"].append(None)
-            
-            # 最小值/最大值
-            out["min"].append(min(vals))
-            out["max"].append(max(vals))
-            
-            # 分位数
+            std_val = (
+                (sum((v - mean_val) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
+                if len(vals) > 1
+                else None
+            )
             sorted_vals = sorted(vals)
+            quantiles = {}
             for p in percentiles:
-                p_name = f"{int(p*100)}%"
                 pos = p * (len(sorted_vals) - 1)
                 lo = int(pos)
                 hi = min(lo + 1, len(sorted_vals) - 1)
                 frac = pos - lo
-                quantile_val = sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
-                out[p_name].append(quantile_val)
-        
+                quantiles[f"{int(p*100)}%"] = (
+                    sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+                )
+            return {
+                "count": len(vals),
+                "mean": mean_val,
+                "std": std_val,
+                "min": min(vals),
+                "max": max(vals),
+                **quantiles,
+            }
+
+        # 使用列表推导式 + 辅助函数替代显式 for 循环
+        all_stats = [_col_stats(cols_data[c]) for c in cols_to_analyze]
+
+        out: Dict[str, list] = {s: [stat[s] for stat in all_stats] for s in stat_names}
+
         # 添加列名作为第一列
         out[""] = cols_to_analyze
-        
+
         return DataFrame(out)
 
     # ---------- 统计方法 ----------
 
-    def sum(self, axis=None, skipna=True, level=None, numeric_only=None, min_count=0) -> "Series":
+    def sum(
+        self, axis=None, skipna=True, level=None, numeric_only=None, min_count=0
+    ) -> "Series":
         """按列求和。
 
         :param axis: 轴方向（None/0=按列）
@@ -2496,19 +2765,17 @@ class DataFrame:
         :param numeric_only: 是否仅计算数值列
         :param min_count: 最少非空值数
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            vals = [v for v in ser.values if v is not None] if skipna else ser.values
-            if min_count > 0 and len(vals) < min_count:
-                result[c] = None
-            else:
-                result[c] = sum(v for v in vals if isinstance(v, (int, float)))
-        return Series(result)
+        # 确定要计算的列 - 使用列表推导式
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+
+        # 使用 Rust 层实现：逐列调用 _get_column_as_series(c).sum()
+        return Series({c: self._get_column_as_series(c).sum() for c in target_cols})
 
     def mean(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求均值。
@@ -2518,15 +2785,15 @@ class DataFrame:
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            result[c] = ser.mean()
-        return Series(result)
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).mean() for c in target_cols})
 
     def min(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求最小值。
@@ -2536,15 +2803,15 @@ class DataFrame:
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            result[c] = ser.min()
-        return Series(result)
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).min() for c in target_cols})
 
     def max(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求最大值。
@@ -2554,25 +2821,24 @@ class DataFrame:
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            result[c] = ser.max()
-        return Series(result)
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).max() for c in target_cols})
 
     def count(self, axis: int = 0) -> "Series":
         """按列计数 (非空值)。"""
-        result = {}
-        for c in self._columns:
-            ser = self._get_column_as_series(c)
-            result[c] = ser.count()
-        return Series(result)
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).count() for c in self._columns})
 
-    def std(self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None) -> "Series":
+    def std(
+        self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None
+    ) -> "Series":
         """按列求标准差。
 
         :param axis: 轴方向（None/0=按列）
@@ -2581,23 +2847,33 @@ class DataFrame:
         :param ddof: 自由度修正值
         :param numeric_only: 是否仅计算数值列
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            vals = [v for v in ser.values if v is not None and isinstance(v, (int, float))]
-            if len(vals) < 2:
-                result[c] = None
-            else:
-                m = sum(vals) / len(vals)
-                var = sum((v - m) ** 2 for v in vals) / (len(vals) - ddof)
-                result[c] = var ** 0.5
-        return Series(result)
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
 
-    def var(self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None) -> "Series":
+        def _std_col(c):
+            """计算单列的标准差。"""
+            vals = [
+                v
+                for v in self._inner.get_column(c).values
+                if v is not None and isinstance(v, (int, float))
+            ]
+            if len(vals) < 2:
+                return None
+            m = sum(vals) / len(vals)
+            var = sum((v - m) ** 2 for v in vals) / (len(vals) - ddof)
+            return var**0.5
+
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: _std_col(c) for c in target_cols})
+
+    def var(
+        self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None
+    ) -> "Series":
         """按列求方差。
 
         :param axis: 轴方向（None/0=按列）
@@ -2606,21 +2882,28 @@ class DataFrame:
         :param ddof: 自由度修正值
         :param numeric_only: 是否仅计算数值列
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            vals = [v for v in ser.values if v is not None and isinstance(v, (int, float))]
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+
+        def _var_col(c):
+            """计算单列的方差。"""
+            vals = [
+                v
+                for v in self._inner.get_column(c).values
+                if v is not None and isinstance(v, (int, float))
+            ]
             if len(vals) < 2:
-                result[c] = None
-            else:
-                m = sum(vals) / len(vals)
-                var = sum((v - m) ** 2 for v in vals) / (len(vals) - ddof)
-                result[c] = var
-        return Series(result)
+                return None
+            m = sum(vals) / len(vals)
+            return sum((v - m) ** 2 for v in vals) / (len(vals) - ddof)
+
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: _var_col(c) for c in target_cols})
 
     def median(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求中位数。
@@ -2630,31 +2913,25 @@ class DataFrame:
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
-        result = {}
-        for c in self._columns:
-            if numeric_only is not None:
-                dtype = self._inner.get_column(c).dtype
-                if numeric_only and dtype not in ("int64", "float64"):
-                    continue
-            ser = self._get_column_as_series(c)
-            result[c] = ser.median()
-        return Series(result)
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).median() for c in target_cols})
 
     def any(self, axis: int = 0, skipna: bool = True) -> "Series":
         """按列判断是否有真值。"""
-        result = {}
-        for c in self._columns:
-            ser = self._get_column_as_series(c)
-            result[c] = ser.any()
-        return Series(result)
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).any() for c in self._columns})
 
     def all(self, axis: int = 0, skipna: bool = True) -> "Series":
         """按列判断是否全为真值。"""
-        result = {}
-        for c in self._columns:
-            ser = self._get_column_as_series(c)
-            result[c] = ser.all()
-        return Series(result)
+        # 使用字典推导式替代显式 for 循环
+        return Series({c: self._get_column_as_series(c).all() for c in self._columns})
 
     # ---------- 显示 ----------
 
@@ -2728,13 +3005,7 @@ class DataFrame:
         :param observed: 是否仅使用观察到的分类值（暂不支持）
         :param dropna: 是否删除 NaN 组
         """
-        return DataFrameGroupBy(
-            self, 
-            by, 
-            as_index=as_index, 
-            sort=sort, 
-            dropna=dropna
-        )
+        return DataFrameGroupBy(self, by, as_index=as_index, sort=sort, dropna=dropna)
 
     def melt(
         self,
@@ -2789,6 +3060,31 @@ class DataFrame:
         if not value_vars:
             raise ValueError("value_vars cannot be empty")
 
+        # 优先调用 Rust 层
+        try:
+            id_indices = [self._columns.index(c) for c in id_vars]
+            value_indices = [self._columns.index(c) for c in value_vars]
+            result_inner = self._inner.melt(id_indices, value_indices)
+            result_df = DataFrame._from_inner(result_inner)
+            # Rust 层输出列名固定为 "variable" 和 "value"，按需重命名
+            if var_name != "variable" or value_name != "value":
+                rename_map = {}
+                if var_name != "variable":
+                    rename_map["variable"] = var_name
+                if value_name != "value":
+                    rename_map["value"] = value_name
+                result_df = result_df.rename(columns=rename_map)
+            # ignore_index=True 时 _from_inner 默认 RangeIndex 已满足；False 时保留原索引
+            if not ignore_index:
+                # 还原原索引（每行重复 len(value_vars) 次）
+                result_df._index = [
+                    self._index[i // len(value_vars)] for i in range(result_df._nrows)
+                ]
+            return result_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现
         # 构造结果
         new_data: Dict[str, list] = {c: [] for c in id_vars}
         new_data[var_name] = []
@@ -2847,6 +3143,24 @@ class DataFrame:
         for c in [columns] + values + index:
             if c not in self._columns:
                 raise KeyError(f"column not found: {c}")
+
+        # 优先调用 Rust 层（仅支持单一 index/columns/values，且数据无重复）
+        if len(index) == 1 and len(values) == 1 and isinstance(columns, str):
+            try:
+                # 检查数据无重复（每个 (index, columns) 组合唯一）
+                idx_vals = self._inner.get_column(index[0]).values
+                col_vals = self._inner.get_column(columns).values
+                if len(set(zip(idx_vals, col_vals))) == self._nrows:
+                    index_idx = self._columns.index(index[0])
+                    columns_idx = self._columns.index(columns)
+                    values_idx = self._columns.index(values[0])
+                    # pivot 不聚合，数据无重复时 sum 等于取值本身
+                    result_inner = self._inner.pivot(
+                        index_idx, columns_idx, values_idx, "sum"
+                    )
+                    return DataFrame._from_inner(result_inner)
+            except Exception:
+                pass
 
         n = self._nrows
         # 取出关键列
@@ -2970,6 +3284,26 @@ class DataFrame:
             if c not in self._columns:
                 raise KeyError(f"column key not found: {c}")
 
+        # 优先调用 Rust 层（仅支持单一 index/columns/values，且 aggfunc 在 Rust 支持列表中）
+        if (
+            len(index_cols) == 1
+            and len(col_cols) == 1
+            and len(values) == 1
+            and aggfunc in ("sum", "mean", "count", "min", "max")
+            and fill_value is None
+            and not margins
+        ):
+            try:
+                index_idx = self._columns.index(index_cols[0])
+                columns_idx = self._columns.index(col_cols[0])
+                values_idx = self._columns.index(values[0])
+                result_inner = self._inner.pivot(
+                    index_idx, columns_idx, values_idx, aggfunc
+                )
+                return DataFrame._from_inner(result_inner)
+            except Exception:
+                pass
+
         n = self._nrows
         idx_tuples = [
             tuple(self._inner.get_column(c).values[i] for c in index_cols)
@@ -3048,7 +3382,8 @@ class DataFrame:
                                 col_data.append(nums[len(nums) // 2])
                             else:
                                 col_data.append(
-                                    (nums[len(nums) // 2 - 1] + nums[len(nums) // 2]) / 2
+                                    (nums[len(nums) // 2 - 1] + nums[len(nums) // 2])
+                                    / 2
                                 )
                         elif aggfunc == "std":
                             nums = [x for x in vals if x is not None]
@@ -3066,17 +3401,33 @@ class DataFrame:
 
     def stack(self, level: int = -1) -> "DataFrame":
         """将列堆叠为行 (v1.0.0)。"""
-        # 简化版: 仅支持单层
+        # 优先调用 Rust 层 stack
+        try:
+            inner = self._inner.stack(level)
+            new_df = DataFrame.__new__(DataFrame)
+            new_df._inner = inner
+            # Rust 层 stack 固定返回 ["index", "variable", "value"] 三列
+            new_df._columns = ["index", "variable", "value"]
+            new_df._nrows = inner.nrows()
+            new_df._index = list(range(new_df._nrows))
+            return new_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现
         n = self._nrows
-        new_data: Dict[str, list] = {self._index_name or "index": []}
-        # 取所有列名作为 stack 后的变量
-        new_data["variable"] = []
-        new_data["value"] = []
-        for i in range(n):
-            for c in self._columns:
-                new_data[self._index_name or "index"].append(i)
-                new_data["variable"].append(c)
-                new_data["value"].append(self._inner.get_column(c).values[i])
+        idx_name = self._index_name or "index"
+        # 使用列表推导式替代嵌套显式 for 循环
+        pairs = [
+            (i, c, self._inner.get_column(c).values[i])
+            for i in range(n)
+            for c in self._columns
+        ]
+        new_data: Dict[str, list] = {
+            idx_name: [p[0] for p in pairs],
+            "variable": [p[1] for p in pairs],
+            "value": [p[2] for p in pairs],
+        }
         return DataFrame(new_data)
 
     @property
@@ -3086,7 +3437,32 @@ class DataFrame:
 
     def unstack(self) -> "DataFrame":
         """stack 的反操作 (v1.0.0) - 简化版。"""
-        # 如果 DataFrame 包含 'variable' 和 'value' 列, 尝试 pivot
+        # 优先调用 Rust 层 unstack（要求包含 variable/value 列）
+        try:
+            if "variable" in self._columns and "value" in self._columns:
+                other_cols = [
+                    c for c in self._columns if c not in ("variable", "value")
+                ]
+                if other_cols:
+                    index_col = self._columns.index(other_cols[0])
+                    var_col = self._columns.index("variable")
+                    value_col = self._columns.index("value")
+                    inner = self._inner.unstack(index_col, var_col, value_col)
+                    new_df = DataFrame.__new__(DataFrame)
+                    new_df._inner = inner
+                    # 从 inner 获取列名
+                    try:
+                        cols = inner.columns()
+                        new_df._columns = list(cols)
+                    except Exception:
+                        new_df._columns = []
+                    new_df._nrows = inner.nrows()
+                    new_df._index = list(range(new_df._nrows))
+                    return new_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现：如果 DataFrame 包含 'variable' 和 'value' 列, 尝试 pivot
         if "variable" in self._columns and "value" in self._columns:
             other_cols = [c for c in self._columns if c not in ("variable", "value")]
             if other_cols:
@@ -3162,12 +3538,12 @@ class DataFrame:
             return False
         if self._columns != other._columns:
             return False
-        for c in self._columns:
-            self_vals = list(self._inner.get_column(c).values)
-            other_vals = list(other._inner.get_column(c).values)
-            if self_vals != other_vals:
-                return False
-        return True
+        # 使用 all() + 生成器表达式替代显式 for 循环（保持短路求值）
+        return all(
+            list(self._inner.get_column(c).values)
+            == list(other._inner.get_column(c).values)
+            for c in self._columns
+        )
 
     # ---------- v2.0.0: pop / insert ----------
 
@@ -3317,14 +3693,17 @@ class DataFrame:
         include_set = _to_dtype_set(include)
         exclude_set = _to_dtype_set(exclude)
 
-        cols = []
-        for c in self._columns:
+        def _match(c):
+            """判断单列是否匹配 include/exclude 条件。"""
             dt = self._inner.get_column(c).dtype
             if include_set and dt not in include_set:
-                continue
+                return False
             if exclude_set and dt in exclude_set:
-                continue
-            cols.append(c)
+                return False
+            return True
+
+        # 使用列表推导式 + 辅助函数替代显式 for 循环
+        cols = [c for c in self._columns if _match(c)]
 
         new_data = {c: list(self._inner.get_column(c).values) for c in cols}
         return DataFrame(new_data)
@@ -3346,12 +3725,11 @@ class DataFrame:
     def transpose(self) -> "DataFrame":
         """转置 DataFrame (v0.2.0)。"""
         n = self._nrows
-        new_data: Dict[str, list] = {}
-        # 每行变成一列
-        for i in range(n):
-            new_data[str(i)] = [
-                self._inner.get_column(c).values[i] for c in self._columns
-            ]
+        # 使用字典推导式替代显式 for 循环：每行变成一列
+        new_data: Dict[str, list] = {
+            str(i): [self._inner.get_column(c).values[i] for c in self._columns]
+            for i in range(n)
+        }
         return DataFrame(new_data)
 
     def take(self, indices, axis: int = 0) -> "DataFrame":
@@ -3525,7 +3903,8 @@ class DataFrame:
                 indices = [
                     i
                     for i in range(self._nrows)
-                    if isinstance(self._index[i], (int, float)) and self._index[i] <= end
+                    if isinstance(self._index[i], (int, float))
+                    and self._index[i] <= end
                 ]
             else:
                 end = max(times)
@@ -3533,7 +3912,8 @@ class DataFrame:
                 indices = [
                     i
                     for i in range(self._nrows)
-                    if isinstance(self._index[i], (int, float)) and self._index[i] >= start
+                    if isinstance(self._index[i], (int, float))
+                    and self._index[i] >= start
                 ]
 
         new_data = {
@@ -3565,7 +3945,8 @@ class DataFrame:
                     i
                     for i in indices
                     if not (
-                        isinstance(self._index[i], type(before)) and self._index[i] < before
+                        isinstance(self._index[i], type(before))
+                        and self._index[i] < before
                     )
                 ]
             if after is not None:
@@ -3580,7 +3961,8 @@ class DataFrame:
                     i
                     for i in indices
                     if not (
-                        isinstance(self._index[i], type(after)) and self._index[i] > after
+                        isinstance(self._index[i], type(after))
+                        and self._index[i] > after
                     )
                 ]
             new_data = {
@@ -3786,13 +4168,15 @@ class DataFrame:
 
             tzinfo = self._parse_timezone(tz)
 
-            # 转换时区
-            new_index = []
-            for v in self._index:
-                if isinstance(v, datetime) and v.tzinfo is not None:
-                    new_index.append(v.astimezone(tzinfo))
-                else:
-                    new_index.append(v)
+            # 转换时区 - 使用列表推导式替代显式 for 循环
+            new_index = [
+                (
+                    v.astimezone(tzinfo)
+                    if isinstance(v, datetime) and v.tzinfo is not None
+                    else v
+                )
+                for v in self._index
+            ]
 
             new_data = {
                 c: list(self._inner.get_column(c).values) for c in self._columns
@@ -3968,18 +4352,10 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         if axis == 0:
-            new_data = {}
-            for c in self._columns:
-                vals = list(self._inner.get_column(c).values)
-                result = []
-                acc = 0
-                for v in vals:
-                    if v is None:
-                        result.append(None if not skipna else acc)
-                    else:
-                        acc = v + (acc if isinstance(v, (int, float)) else 0)
-                        result.append(acc)
-                new_data[c] = result
+            # 复用 Series.cumsum 的优化实现，避免重复循环
+            new_data = {
+                c: list(self[c].cumsum(skipna=skipna).values) for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             return self.T.cumsum(axis=0).T
@@ -3991,18 +4367,9 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         if axis == 0:
-            new_data = {}
-            for c in self._columns:
-                vals = list(self._inner.get_column(c).values)
-                result = []
-                acc = 1
-                for v in vals:
-                    if v is None:
-                        result.append(None if not skipna else acc)
-                    else:
-                        acc = v * (acc if isinstance(v, (int, float)) else 1)
-                        result.append(acc)
-                new_data[c] = result
+            new_data = {
+                c: list(self[c].cumprod(skipna=skipna).values) for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             return self.T.cumprod(axis=0).T
@@ -4014,16 +4381,9 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         if axis == 0:
-            new_data = {}
-            for c in self._columns:
-                vals = list(self._inner.get_column(c).values)
-                result = []
-                acc = None
-                for v in vals:
-                    if v is not None:
-                        acc = v if acc is None else max(acc, v)
-                    result.append(acc)
-                new_data[c] = result
+            new_data = {
+                c: list(self[c].cummax(skipna=skipna).values) for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             return self.T.cummax(axis=0).T
@@ -4035,16 +4395,9 @@ class DataFrame:
         :param skipna: 是否跳过 NaN
         """
         if axis == 0:
-            new_data = {}
-            for c in self._columns:
-                vals = list(self._inner.get_column(c).values)
-                result = []
-                acc = None
-                for v in vals:
-                    if v is not None:
-                        acc = v if acc is None else min(acc, v)
-                    result.append(acc)
-                new_data[c] = result
+            new_data = {
+                c: list(self[c].cummin(skipna=skipna).values) for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             return self.T.cummin(axis=0).T
@@ -4098,18 +4451,8 @@ class DataFrame:
         :param axis: 0=列方向, 1=行方向
         """
         if axis == 0:
-            new_data = {}
-            for c in self._columns:
-                vals = list(self._inner.get_column(c).values)
-                result = []
-                for i in range(len(vals)):
-                    if i < periods:
-                        result.append(None)
-                    elif vals[i] is None or vals[i - periods] is None:
-                        result.append(None)
-                    else:
-                        result.append(vals[i] - vals[i - periods])
-                new_data[c] = result
+            # 复用 Series.diff 的优化实现（切片 + 列表推导式）
+            new_data = {c: list(self[c].diff(periods).values) for c in self._columns}
             return DataFrame(new_data)
         else:
             return self.T.diff(periods, axis=0).T
@@ -4119,18 +4462,7 @@ class DataFrame:
 
         :param periods: 差分步数
         """
-        new_data = {}
-        for c in self._columns:
-            vals = list(self._inner.get_column(c).values)
-            result = []
-            for i in range(len(vals)):
-                if i < periods or vals[i - periods] is None or vals[i - periods] == 0:
-                    result.append(None)
-                elif vals[i] is None:
-                    result.append(None)
-                else:
-                    result.append((vals[i] - vals[i - periods]) / vals[i - periods])
-            new_data[c] = result
+        new_data = {c: list(self[c].pct_change(periods).values) for c in self._columns}
         return DataFrame(new_data)
 
     # ---------- v2.0.0: 统计方法 ----------
@@ -4193,7 +4525,8 @@ class DataFrame:
                     group_start = 0
                     for j in range(1, len(indexed) + 1):
                         if (
-                            j == len(indexed) or indexed[j][0] != indexed[group_start][0]
+                            j == len(indexed)
+                            or indexed[j][0] != indexed[group_start][0]
                         ):
                             n = j - group_start
                             avg_rank = group_start + 1 + (n - 1) / 2.0
@@ -4215,21 +4548,29 @@ class DataFrame:
 
         if axis == 0:
             q_list = [q] if not isinstance(q, (list, tuple)) else list(q)
-            new_data = {}
-            for c in self._columns:
-                vals = [v for v in self._inner.get_column(c).values if v is not None]
+
+            def _interp(qv, vals):
+                """线性插值计算单个分位数。"""
+                pos = qv * (len(vals) - 1)
+                lo = int(pos)
+                hi = min(lo + 1, len(vals) - 1)
+                return vals[lo] + (vals[hi] - vals[lo]) * (pos - lo)
+
+            def _quantiles(vals):
+                """计算 vals 在 q_list 各分位数的值。"""
                 if not vals:
-                    new_data[c] = [None] * len(q_list)
-                    continue
+                    return [None] * len(q_list)
                 vals.sort()
-                col_quants = []
-                for qv in q_list:
-                    pos = qv * (len(vals) - 1)
-                    lo = int(pos)
-                    hi = min(lo + 1, len(vals) - 1)
-                    frac = pos - lo
-                    col_quants.append(vals[lo] + (vals[hi] - vals[lo]) * frac)
-                new_data[c] = col_quants
+                # 使用列表推导式替代内层显式 for 循环
+                return [_interp(qv, vals) for qv in q_list]
+
+            # 使用字典推导式替代外层显式 for 循环
+            new_data = {
+                c: _quantiles(
+                    [v for v in self._inner.get_column(c).values if v is not None]
+                )
+                for c in self._columns
+            }
             if len(q_list) == 1:
                 return Series({c: new_data[c][0] for c in self._columns})
             return DataFrame(dict((c, new_data[c]) for c in self._columns))
@@ -4420,24 +4761,151 @@ class DataFrame:
         :param axis: 0=列方向, 1=行方向
         """
         if axis == 0:
-            new_data = {}
-            for c in self._columns:
-                vals = list(self._inner.get_column(c).values)
-                clipped = []
-                for v in vals:
-                    if v is None:
-                        clipped.append(None)
-                    else:
-                        result = v
-                        if lower is not None and result < lower:
-                            result = lower
-                        if upper is not None and result > upper:
-                            result = upper
-                        clipped.append(result)
-                new_data[c] = clipped
+
+            def _clip_val(v):
+                """单值裁剪：None 保持，否则按上下界裁剪。"""
+                if v is None:
+                    return None
+                result = v
+                if lower is not None and result < lower:
+                    result = lower
+                if upper is not None and result > upper:
+                    result = upper
+                return result
+
+            # 使用字典推导式 + 列表推导式替代嵌套显式 for 循环
+            new_data = {
+                c: [_clip_val(v) for v in self._inner.get_column(c).values]
+                for c in self._columns
+            }
             return DataFrame(new_data)
         else:
             return self.T.clip(lower, upper, axis=0).T
+
+    def where(
+        self,
+        cond,
+        other=None,
+        axis=None,
+        level=None,
+        errors: str = "raise",
+        try_cast: bool = False,
+    ) -> "DataFrame":
+        """条件取值：cond 为 True 保留原值，否则用 other 替换。
+
+        :param cond: bool DataFrame，或按列对齐的 bool 值容器
+        :param other: 替换值（标量、Series、DataFrame、可调用）
+        """
+        from .series import Series
+
+        if isinstance(cond, DataFrame):
+            # cond 是 DataFrame -> 按列对齐
+            cond_cols = {c: cond[c].values for c in cond._columns if c in self._columns}
+        elif hasattr(cond, "keys"):
+            cond_cols = {c: cond[c] for c in cond if c in self._columns}
+        else:
+            cond_cols = None  # 全表标量条件
+
+        # 处理 other 的 callable 情况
+        other_val = other(self) if callable(other) else other
+
+        # 按列用列表推导式替代显式 for 循环
+        if isinstance(other_val, DataFrame):
+            # 逐列对齐替换
+            new_data: Dict[str, list] = {}
+            for c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                if cond_cols is None:
+                    # cond 是可广播的 True/False 标量 -> 保持 cond 默认 True
+                    mask_col = [
+                        (
+                            bool(cond)
+                            if not hasattr(cond, "__len__")
+                            else (
+                                cond[i % len(cond)]
+                                if hasattr(cond, "__getitem__")
+                                else True
+                            )
+                        )
+                        for i in range(len(self_vals))
+                    ]
+                else:
+                    mask_col = cond_cols.get(c, [True] * len(self_vals))
+                other_vals = (
+                    list(other_val[c].values)
+                    if c in other_val._columns
+                    else [None] * len(self_vals)
+                )
+                new_data[c] = [
+                    v if m else ov for v, m, ov in zip(self_vals, mask_col, other_vals)
+                ]
+            return DataFrame(new_data, index=self._index)
+        elif isinstance(other_val, dict):
+            new_data = {}
+            for c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                mask_col = (
+                    cond_cols.get(c, [True] * len(self_vals))
+                    if cond_cols
+                    else [True] * len(self_vals)
+                )
+                fill_val = other_val.get(c, None)
+                new_data[c] = [
+                    v if m else fill_val for v, m in zip(self_vals, mask_col)
+                ]
+            return DataFrame(new_data, index=self._index)
+        else:
+            # 标量替换
+            new_data = {}
+            for c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                if cond_cols is None:
+                    if isinstance(cond, (Series, DataFrame)):
+                        mask_col = (
+                            list(cond.values)
+                            if isinstance(cond, Series)
+                            else list(cond._inner.get_column(cond._columns[0]).values)
+                        )
+                    else:
+                        mask_col = [True] * len(self_vals)
+                else:
+                    mask_col = cond_cols.get(c, [True] * len(self_vals))
+                new_data[c] = [
+                    v if m else other_val for v, m in zip(self_vals, mask_col)
+                ]
+            return DataFrame(new_data, index=self._index)
+
+    def mask(
+        self,
+        cond,
+        other=None,
+        axis=None,
+        level=None,
+        errors: str = "raise",
+        try_cast: bool = False,
+    ) -> "DataFrame":
+        """where 的反义：cond 为 True 时替换为 other，否则保留原值。"""
+        from .series import Series
+
+        def _invert(c):
+            """取反条件（支持 Series/DataFrame/list）。"""
+            if isinstance(c, DataFrame):
+                inv_data = {col: [not m for m in c[col].values] for col in c._columns}
+                return DataFrame(inv_data, index=c._index)
+            if isinstance(c, Series):
+                return Series([not m for m in c.values], index=c._index)
+            if isinstance(c, dict):
+                return {k: [not m for m in v] for k, v in c.items()}
+            return [not m for m in c]
+
+        return self.where(
+            _invert(cond),
+            other,
+            axis=axis,
+            level=level,
+            errors=errors,
+            try_cast=try_cast,
+        )
 
     def astype(self, dtype: str) -> "DataFrame":
         """转换每列的数据类型。
@@ -4473,15 +4941,14 @@ class DataFrame:
 
         import sys
 
-        result = {}
-        for c in self._columns:
-            total = 0
-            for v in self._inner.get_column(c).values:
-                if deep and isinstance(v, str):
-                    total += sys.getsizeof(v)
-                else:
-                    total += 8  # 指针大小估计
-            result[c] = total
+        # 使用字典推导式 + sum() 替代嵌套显式 for 循环
+        result = {
+            c: sum(
+                sys.getsizeof(v) if deep and isinstance(v, str) else 8
+                for v in self._inner.get_column(c).values
+            )
+            for c in self._columns
+        }
         if index:
             result["Index"] = len(self._index) * 8 if self._index else 0
         return Series(result)
@@ -4576,7 +5043,15 @@ class DataFrame:
         """交换多级索引的级别。"""
         return self.copy()
 
-    def join(self, other, on=None, how: str = "left", lsuffix: str = "", rsuffix: str = "", sort: bool = False) -> "DataFrame":
+    def join(
+        self,
+        other,
+        on=None,
+        how: str = "left",
+        lsuffix: str = "",
+        rsuffix: str = "",
+        sort: bool = False,
+    ) -> "DataFrame":
         """连接另一个 DataFrame。
 
         :param other: 另一个 DataFrame
@@ -4591,7 +5066,9 @@ class DataFrame:
 
         # 简化实现：按列拼接
         left_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
-        right_data = {c: list(other._inner.get_column(c).values) for c in other._columns}
+        right_data = {
+            c: list(other._inner.get_column(c).values) for c in other._columns
+        }
 
         # 处理重复列名
         for c in list(left_data.keys()):
@@ -4603,19 +5080,19 @@ class DataFrame:
         combined.update(left_data)
         combined.update(right_data)
 
-        # 按 index 对齐
+        # 按 index 对齐 - 使用字典推导式替代显式 for 循环
         n = max(len(self), len(other))
-        result_data = {}
-        for c, vals in combined.items():
-            if len(vals) >= n:
-                result_data[c] = vals[:n]
-            else:
-                result_data[c] = vals + [None] * (n - len(vals))
+        result_data = {
+            c: (vals[:n] if len(vals) >= n else vals + [None] * (n - len(vals)))
+            for c, vals in combined.items()
+        }
 
         return DataFrame(result_data)
 
     def itertuples(self, index: bool = True, name: str = "Pandas") -> list:
         """迭代行，返回 namedtuple。
+
+        优化：批量预取所有列的值列表（每列 1 次 FFI 调用），避免逐行 N*M 次跨 FFI 访问。
 
         :param index: 是否包含索引
         :param name: namedtuple 名称
@@ -4628,30 +5105,43 @@ class DataFrame:
         fields.extend([str(c) for c in self._columns])
 
         TupleClass = namedtuple(name, fields, rename=True)
-        result = []
-        for i in range(self._nrows):
-            values = []
-            if index:
-                values.append(self._index[i] if self._index and i < len(self._index) else i)
-            for c in self._columns:
-                values.append(self._inner.get_column(c).values[i])
-            result.append(TupleClass(*values))
-        return result
+        # 一次性预取所有列的值
+        col_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        idx = self._index if self._index else list(range(self._nrows))
+        # 使用列表推导式构建 namedtuple 列表
+        return [
+            TupleClass(
+                *(
+                    ([idx[i]] if index else [])
+                    + [col_values[c][i] for c in self._columns]
+                )
+            )
+            for i in range(self._nrows)
+        ]
 
     def to_records(self, index: bool = True) -> list:
         """转换为记录数组。
 
         :param index: 是否包含索引
         """
-        result = []
-        for i in range(self._nrows):
-            row = {}
-            if index:
-                row["index"] = self._index[i] if self._index and i < len(self._index) else i
-            for c in self._columns:
-                row[c] = self._inner.get_column(c).values[i]
-            result.append(row)
-        return result
+        # 使用列表推导式替代显式 for 循环
+        return [
+            {
+                **(
+                    {
+                        "index": (
+                            self._index[i]
+                            if self._index and i < len(self._index)
+                            else i
+                        )
+                    }
+                    if index
+                    else {}
+                ),
+                **{c: self._inner.get_column(c).values[i] for c in self._columns},
+            }
+            for i in range(self._nrows)
+        ]
 
     def to_string(self, index: bool = True, header: bool = True) -> str:
         """转换为字符串表示。
@@ -4666,7 +5156,9 @@ class DataFrame:
         for i in range(self._nrows):
             row = []
             if index:
-                row.append(str(self._index[i] if self._index and i < len(self._index) else i))
+                row.append(
+                    str(self._index[i] if self._index and i < len(self._index) else i)
+                )
             for c in self._columns:
                 v = self._inner.get_column(c).values[i]
                 row.append(str(v) if v is not None else "NaN")
@@ -4778,24 +5270,8 @@ class DataFrame:
 
         :param limit: 最大连续填充数量
         """
-        new_data = {}
-        for c in self._columns:
-            vals = list(self._inner.get_column(c).values)
-            result = []
-            last_valid = None
-            fill_count = 0
-            for v in vals:
-                if v is not None:
-                    result.append(v)
-                    last_valid = v
-                    fill_count = 0
-                else:
-                    if last_valid is not None and (limit is None or fill_count < limit):
-                        result.append(last_valid)
-                        fill_count += 1
-                    else:
-                        result.append(None)
-            new_data[c] = result
+        # 复用 Series.ffill 的实现，避免重复代码
+        new_data = {c: list(self[c].ffill(limit=limit).values) for c in self._columns}
         return DataFrame(new_data, index=self._index)
 
     def bfill(self, limit=None) -> "DataFrame":
@@ -4803,25 +5279,7 @@ class DataFrame:
 
         :param limit: 最大连续填充数量
         """
-        new_data = {}
-        for c in self._columns:
-            vals = list(self._inner.get_column(c).values)
-            n = len(vals)
-            result = [None] * n
-            next_valid = None
-            fill_count = 0
-            for i in range(n - 1, -1, -1):
-                if vals[i] is not None:
-                    result[i] = vals[i]
-                    next_valid = vals[i]
-                    fill_count = 0
-                else:
-                    if next_valid is not None and (limit is None or fill_count < limit):
-                        result[i] = next_valid
-                        fill_count += 1
-                    else:
-                        result[i] = None
-            new_data[c] = result
+        new_data = {c: list(self[c].bfill(limit=limit).values) for c in self._columns}
         return DataFrame(new_data, index=self._index)
 
     def pad(self, limit=None) -> "DataFrame":
@@ -4855,39 +5313,11 @@ class DataFrame:
         if method in ("backfill", "bfill"):
             return self.bfill(limit=limit)
 
-        new_data = {}
-        for c in self._columns:
-            vals = list(self._inner.get_column(c).values)
-            n = len(vals)
-            result = list(vals)
-            i = 0
-            while i < n:
-                if result[i] is not None:
-                    i += 1
-                    continue
-                j = i
-                while j < n and result[j] is None:
-                    j += 1
-                left_val = result[i - 1] if i > 0 and result[i - 1] is not None else None
-                right_val = result[j] if j < n and result[j] is not None else None
-
-                if left_val is not None and right_val is not None:
-                    gap = j - i
-                    for k in range(i, j):
-                        if limit is not None and (k - i) >= limit:
-                            break
-                        frac = (k - i + 1) / (gap + 1)
-                        result[k] = left_val + (right_val - left_val) * frac
-                elif left_val is not None:
-                    for k in range(i, j):
-                        if limit is not None and (k - i) >= limit:
-                            break
-                        result[k] = left_val
-                elif right_val is not None:
-                    for k in range(i, j):
-                        result[k] = right_val
-                i = j
-            new_data[c] = result
+        # 复用 Series.interpolate 的实现
+        new_data = {
+            c: list(self[c].interpolate(method=method, limit=limit).values)
+            for c in self._columns
+        }
 
         result_df = DataFrame(new_data, index=self._index)
         if inplace:
@@ -4897,42 +5327,44 @@ class DataFrame:
 
     # ---------- 聚合扩展 ----------
 
-    def prod(self, axis: int = 0, skipna: bool = True, numeric_only: bool = None) -> "Series":
+    def prod(
+        self, axis: int = 0, skipna: bool = True, numeric_only: bool = None
+    ) -> "Series":
         """返回每列的乘积。
 
         :param axis: 0=列方向, 1=行方向
         :param skipna: 是否跳过 None
         :param numeric_only: 是否仅计算数值列
         """
+        import math
+
         if axis == 0:
             result = {}
             for c in self._columns:
                 vals = list(self._inner.get_column(c).values)
-                nums = [v for v in vals if v is not None and isinstance(v, (int, float))]
+                nums = [
+                    v for v in vals if v is not None and isinstance(v, (int, float))
+                ]
                 if skipna:
-                    prod_val = 1
-                    for v in nums:
-                        prod_val *= v
-                    result[c] = prod_val if nums else 1
+                    # 使用 math.prod 替代显式循环
+                    result[c] = math.prod(nums) if nums else 1
                 else:
-                    prod_val = 1
-                    for v in vals:
-                        if v is None:
-                            result[c] = None
-                            break
-                        prod_val *= v
+                    # 遇到 None 立即返回 None
+                    if any(v is None for v in vals):
+                        result[c] = None
                     else:
-                        result[c] = prod_val
+                        result[c] = math.prod(
+                            v for v in vals if isinstance(v, (int, float))
+                        )
             return Series(result)
         else:
             result = []
             for i in range(self._nrows):
                 vals = [self._inner.get_column(c).values[i] for c in self._columns]
-                nums = [v for v in vals if v is not None and isinstance(v, (int, float))]
-                prod_val = 1
-                for v in nums:
-                    prod_val *= v
-                result.append(prod_val if nums else 1)
+                nums = [
+                    v for v in vals if v is not None and isinstance(v, (int, float))
+                ]
+                result.append(math.prod(nums) if nums else 1)
             return Series(result, index=self._index)
 
     product = prod
@@ -4945,7 +5377,14 @@ class DataFrame:
         new_data = {}
         for c in self._columns:
             vals = list(self._inner.get_column(c).values)
-            new_data[c] = [None if v is None else (round(v, decimals) if isinstance(v, (int, float)) else v) for v in vals]
+            new_data[c] = [
+                (
+                    None
+                    if v is None
+                    else (round(v, decimals) if isinstance(v, (int, float)) else v)
+                )
+                for v in vals
+            ]
         return DataFrame(new_data, index=self._index)
 
     def dot(self, other) -> Any:
@@ -4962,8 +5401,14 @@ class DataFrame:
                 col_vals = list(other._inner.get_column(j).values)
                 result_col = []
                 for i in range(self._nrows):
-                    row_vals = [self._inner.get_column(c).values[i] for c in self._columns]
-                    s = sum(a * b for a, b in zip(row_vals, col_vals) if a is not None and b is not None)
+                    row_vals = [
+                        self._inner.get_column(c).values[i] for c in self._columns
+                    ]
+                    s = sum(
+                        a * b
+                        for a, b in zip(row_vals, col_vals)
+                        if a is not None and b is not None
+                    )
                     result_col.append(s)
                 result[j] = result_col
             return DataFrame(result)
@@ -4974,7 +5419,11 @@ class DataFrame:
             result = []
             for i in range(self._nrows):
                 row_vals = [self._inner.get_column(c).values[i] for c in self._columns]
-                s = sum(a * b for a, b in zip(row_vals, other.values) if a is not None and b is not None)
+                s = sum(
+                    a * b
+                    for a, b in zip(row_vals, other.values)
+                    if a is not None and b is not None
+                )
                 result.append(s)
             return Series(result, index=self._index)
         elif isinstance(other, (list, tuple)):
@@ -4983,7 +5432,11 @@ class DataFrame:
             result = []
             for i in range(self._nrows):
                 row_vals = [self._inner.get_column(c).values[i] for c in self._columns]
-                s = sum(a * b for a, b in zip(row_vals, other) if a is not None and b is not None)
+                s = sum(
+                    a * b
+                    for a, b in zip(row_vals, other)
+                    if a is not None and b is not None
+                )
                 result.append(s)
             return Series(result, index=self._index)
         raise TypeError(f"unsupported type: {type(other).__name__}")
@@ -5000,11 +5453,15 @@ class DataFrame:
         return self.items()
 
     def iterrows(self):
-        """迭代 (索引, 行数据) 对。"""
+        """迭代 (索引, 行数据) 对。
+
+        优化：批量预取所有列的值，避免逐行调用 _inner.get_column().values[i] 造成的 N*M 次跨 FFI 访问。
+        """
+        # 一次性预取所有列的值列表（每列 1 次 FFI 调用，共 M 次）
+        col_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        index = self._index if self._index else list(range(self._nrows))
         for i in range(self._nrows):
-            idx = self._index[i] if self._index else i
-            row_data = {c: self._inner.get_column(c).values[i] for c in self._columns}
-            yield idx, row_data
+            yield index[i], {c: col_values[c][i] for c in self._columns}
 
     def keys(self) -> list:
         """返回列名列表。"""
@@ -5066,7 +5523,15 @@ class DataFrame:
 
     # ---------- 对齐 / 组合 ----------
 
-    def align(self, other, join: str = "outer", axis=None, level=None, copy: bool = True, fill_value=None):
+    def align(
+        self,
+        other,
+        join: str = "outer",
+        axis=None,
+        level=None,
+        copy: bool = True,
+        fill_value=None,
+    ):
         """对齐两个 DataFrame 的索引和列。
 
         :param other: 另一个 DataFrame
@@ -5100,45 +5565,98 @@ class DataFrame:
         if not isinstance(other, DataFrame):
             raise TypeError("combine_first requires DataFrame inputs")
 
-        new_data = {}
-        all_cols = list(self._columns)
-        for c in other._columns:
-            if c not in all_cols:
-                all_cols.append(c)
+        # 合并列名 - 使用 dict.fromkeys 保持顺序去重，替代显式 for 循环
+        all_cols = list(dict.fromkeys(list(self._columns) + list(other._columns)))
 
-        for c in all_cols:
-            self_vals = list(self._inner.get_column(c).values) if c in self._columns else [None] * self._nrows
-            other_vals = list(other._inner.get_column(c).values) if c in other._columns else [None] * other._nrows
-            combined = []
-            for i in range(max(len(self_vals), len(other_vals))):
-                sv = self_vals[i] if i < len(self_vals) else None
-                ov = other_vals[i] if i < len(other_vals) else None
-                combined.append(sv if sv is not None else ov)
-            new_data[c] = combined
+        def _combine_col(c):
+            """合并单列：self 优先，None 用 other 填充。"""
+            self_vals = (
+                list(self._inner.get_column(c).values)
+                if c in self._columns
+                else [None] * self._nrows
+            )
+            other_vals = (
+                list(other._inner.get_column(c).values)
+                if c in other._columns
+                else [None] * other._nrows
+            )
+            max_len = max(len(self_vals), len(other_vals))
+            # 使用列表推导式替代显式 for 循环
+            return [
+                (
+                    (self_vals[i] if i < len(self_vals) else None)
+                    if (i < len(self_vals) and self_vals[i] is not None)
+                    else (other_vals[i] if i < len(other_vals) else None)
+                )
+                for i in range(max_len)
+            ]
+
+        # 使用字典推导式替代显式 for 循环
+        new_data = {c: _combine_col(c) for c in all_cols}
         return DataFrame(new_data)
 
-    def update(self, other: "DataFrame") -> None:
+    def update(
+        self,
+        other: "DataFrame",
+        join: str = "left",
+        overwrite: bool = True,
+        filter_func=None,
+        errors: str = "ignore",
+    ) -> None:
         """用 other 的值原地更新 self 中的对应位置。
 
+        优化：按列处理，每列单次遍历同时考虑 other_vals/filter_func/overwrite 三种条件。
+
         :param other: 另一个 DataFrame
+        :param join: 连接方式 ('left'/'right')，目前仅支持 'left'
+        :param overwrite: 是否覆盖非 NA 值
+        :param filter_func: 过滤函数（接收索引位置，返回 bool）
+        :param errors: 错误处理 ('ignore'/'raise')
         """
         if not isinstance(other, DataFrame):
             raise TypeError("update requires DataFrame inputs")
+        if errors not in ("ignore", "raise"):
+            raise ValueError("errors must be 'ignore' or 'raise'")
 
-        new_data = {}
-        for c in self._columns:
+        # 预计算 filter_func 的有效位置集合（仅保留通过过滤的索引）
+        if filter_func is not None:
+            valid_idx_set = {i for i in range(self._nrows) if filter_func(i)}
+        else:
+            valid_idx_set = None
+
+        def _update_col(c):
+            """合并单列：用 other 中对应位置的非空值更新 self。"""
             vals = list(self._inner.get_column(c).values)
-            if c in other._columns:
-                other_vals = list(other._inner.get_column(c).values)
-                for i in range(min(len(vals), len(other_vals))):
-                    if other_vals[i] is not None:
-                        vals[i] = other_vals[i]
-            new_data[c] = vals
+            if c not in other._columns:
+                return vals
+            other_vals = list(other._inner.get_column(c).values)
+            n = min(len(vals), len(other_vals))
+
+            def _pick(i):
+                """返回位置 i 的最终值。"""
+                ov = other_vals[i]
+                # other 为空 → 保留原值
+                if ov is None:
+                    return vals[i]
+                # 过滤未通过 → 保留原值
+                if valid_idx_set is not None and i not in valid_idx_set:
+                    return vals[i]
+                # 原值非空且不覆盖 → 保留原值
+                if vals[i] is not None and not overwrite:
+                    return vals[i]
+                return ov
+
+            # 前 n 位走合并逻辑，超出部分保留原值
+            return [_pick(i) for i in range(n)] + vals[n:]
+
+        new_data = {c: _update_col(c) for c in self._columns}
         self._reload(new_data)
 
     # ---------- 重索引扩展 ----------
 
-    def reindex_like(self, other: "DataFrame", method: str = None, copy: bool = True) -> "DataFrame":
+    def reindex_like(
+        self, other: "DataFrame", method: str = None, copy: bool = True
+    ) -> "DataFrame":
         """将 self 的索引和列对齐到 other。
 
         :param other: 模板 DataFrame
@@ -5154,9 +5672,11 @@ class DataFrame:
 
         :param prefix: 前缀字符串
         """
-        new_data = {}
-        for c in self._columns:
-            new_data[f"{prefix}{c}"] = list(self._inner.get_column(c).values)
+        # 使用字典推导式替代显式 for 循环
+        new_data = {
+            f"{prefix}{c}": list(self._inner.get_column(c).values)
+            for c in self._columns
+        }
         return DataFrame(new_data, index=self._index)
 
     def add_suffix(self, suffix: str) -> "DataFrame":
@@ -5164,16 +5684,647 @@ class DataFrame:
 
         :param suffix: 后缀字符串
         """
-        new_data = {}
-        for c in self._columns:
-            new_data[f"{c}{suffix}"] = list(self._inner.get_column(c).values)
+        new_data = {
+            f"{c}{suffix}": list(self._inner.get_column(c).values)
+            for c in self._columns
+        }
         return DataFrame(new_data, index=self._index)
+
+    # ---------- v2.1.0: 标量索引 / 类型推断 / 属性扩展 ----------
+
+    @property
+    def at(self):
+        """标量标签索引访问器。"""
+        return _AtIndexer(self)
+
+    @property
+    def iat(self):
+        """标量位置索引访问器。"""
+        return _IatIndexer(self)
+
+    def append(
+        self,
+        other,
+        ignore_index: bool = False,
+        verify_integrity: bool = False,
+        sort: bool = False,
+    ) -> "DataFrame":
+        """追加行（pandas 已废弃，仍保留）。
+
+        :param other: DataFrame 或 dict 列表
+        :param ignore_index: 是否重置索引
+        :param verify_integrity: 是否校验索引唯一
+        :param sort: 是否排序列
+        """
+        if isinstance(other, dict):
+            other = DataFrame([other])
+        elif isinstance(other, list):
+            other = DataFrame(other)
+        elif not isinstance(other, DataFrame):
+            raise TypeError("append requires DataFrame or dict/list")
+
+        # 合并列
+        all_cols = list(self._columns)
+        for c in other._columns:
+            if c not in all_cols:
+                all_cols.append(c)
+
+        # 合并数据
+        new_data = {c: [] for c in all_cols}
+        for c in all_cols:
+            if c in self._columns:
+                new_data[c].extend(self[c].values)
+            else:
+                new_data[c].extend([None] * self._nrows)
+            if c in other._columns:
+                new_data[c].extend(other[c].values)
+            else:
+                new_data[c].extend([None] * other._nrows)
+
+        new_index = (
+            list(range(self._nrows + other._nrows))
+            if ignore_index
+            else list(self._index) + list(other._index)
+        )
+        if verify_integrity and not ignore_index:
+            seen = set()
+            for i in new_index:
+                if i in seen:
+                    raise ValueError(f"Indexes have overlapping values: {i}")
+                seen.add(i)
+
+        if sort:
+            all_cols = sorted(all_cols)
+            new_data = {c: new_data[c] for c in all_cols}
+
+        return DataFrame(new_data, index=new_index)
+
+    def merge_asof(
+        self,
+        right,
+        on=None,
+        left_on=None,
+        right_on=None,
+        left_index: bool = False,
+        right_index: bool = False,
+        by=None,
+        left_by=None,
+        right_by=None,
+        suffixes=("_x", "_y"),
+        tolerance=None,
+        allow_exact_matches: bool = True,
+        direction: str = "backward",
+    ) -> "DataFrame":
+        """近似合并（asof join）。"""
+        # 复用顶层 merge_asof 函数
+        from . import merge_asof as _merge_asof
+
+        return _merge_asof(
+            self,
+            right,
+            on=on,
+            left_on=left_on,
+            right_on=right_on,
+            left_index=left_index,
+            right_index=right_index,
+            by=by,
+            left_by=left_by,
+            right_by=right_by,
+            suffixes=suffixes,
+            tolerance=tolerance,
+            allow_exact_matches=allow_exact_matches,
+            direction=direction,
+        )
+
+    def wide_to_long(
+        self,
+        stubnames,
+        i,
+        j,
+        sep: str = "",
+        suffix: str = r"\d+",
+    ) -> "DataFrame":
+        """宽表转长表。"""
+        from . import wide_to_long as _wide_to_long
+
+        return _wide_to_long(self, stubnames, i, j, sep=sep, suffix=suffix)
+
+    def infer_objects(self, copy: bool = True) -> "DataFrame":
+        """推断对象 dtype 列的类型。"""
+        # 简化实现：对每列调用 Series.infer_objects
+        new_data = {
+            c: list(self[c].infer_objects(copy=copy).values) for c in self._columns
+        }
+        result = DataFrame(new_data, index=self._index)
+        return result if copy else self._reload_inplace(new_data)
+
+    def convert_dtypes(
+        self,
+        infer_objects: bool = True,
+        convert_string: bool = True,
+        convert_integer: bool = True,
+        convert_boolean: bool = True,
+        convert_floating: bool = True,
+    ) -> "DataFrame":
+        """将列转换为最佳可能的 dtype。"""
+        new_data = {
+            c: list(
+                self[c]
+                .convert_dtypes(
+                    infer_objects=infer_objects,
+                    convert_string=convert_string,
+                    convert_integer=convert_integer,
+                    convert_boolean=convert_boolean,
+                    convert_floating=convert_floating,
+                )
+                .values
+            )
+            for c in self._columns
+        }
+        return DataFrame(new_data, index=self._index)
+
+    def _reload_inplace(self, new_data) -> "DataFrame":
+        """原地重载数据（内部辅助）。"""
+        new_df = DataFrame(new_data, index=self._index)
+        self._inner = new_df._inner
+        self._columns = new_df._columns
+        self._index = new_df._index
+        self._nrows = new_df._nrows
+        return self
+
+    @property
+    def attrs(self) -> dict:
+        """全局属性字典。"""
+        if not hasattr(self, "_attrs"):
+            self._attrs = {}
+        return self._attrs
+
+    @attrs.setter
+    def attrs(self, value: dict):
+        if not isinstance(value, dict):
+            raise TypeError("attrs must be a dict")
+        self._attrs = value
+
+    @property
+    def flags(self) -> dict:
+        """标志字典。"""
+        return {"allows_duplicate_labels": True}
+
+    @property
+    def sparse(self):
+        """稀疏访问器（不支持，抛出 NotImplementedError）。"""
+        raise NotImplementedError("DataFrame.sparse not supported")
+
+    # ====================================================================
+    # 扩展功能：数据质量 / 清洗 / 高级统计（pandas 之外的增强）
+    # ====================================================================
+
+    def profile(self) -> "DataFrame":
+        """生成数据概览报告。
+
+        返回一个 DataFrame，每行对应原 DataFrame 的一列，包含：
+        - dtype: 列数据类型
+        - count: 非空值数
+        - missing: 缺失值数
+        - missing_rate: 缺失率（0~1）
+        - unique: 唯一值数
+        - sample: 前三个非空值样本
+        - mean / std / min / max: 数值列的统计指标（非数值列为 None）
+
+        Returns:
+            DataFrame: 概览报告
+
+        Examples:
+            >>> df = DataFrame({"a": [1, 2, None, 4], "b": ["x", "y", "z", None]})
+            >>> report = df.profile()
+            >>> list(report["a"].values)[0]  # dtype
+            'float64'
+        """
+        n = len(self)
+        # 利用辅助函数 + 列表推导式构建行数据
+        stats: List[Dict[str, Any]] = []
+
+        def _col_stats(col: str) -> Dict[str, Any]:
+            """计算单列的统计信息。"""
+            series = self._inner.get_column(col)
+            values = list(series.values)
+            non_null = [v for v in values if v is not None]
+            count = len(non_null)
+            missing = n - count
+            unique = len(set(non_null))
+            sample = non_null[:3]
+            # 数值列才计算统计指标
+            is_numeric = series.dtype in ("int64", "float64")
+            if is_numeric and non_null:
+                mean_v = sum(non_null) / count
+                std_v = (
+                    (sum((v - mean_v) ** 2 for v in non_null) / (count - 1)) ** 0.5
+                    if count > 1
+                    else None
+                )
+                min_v = min(non_null)
+                max_v = max(non_null)
+            else:
+                mean_v = std_v = min_v = max_v = None
+            return {
+                "column": col,
+                "dtype": series.dtype,
+                "count": count,
+                "missing": missing,
+                "missing_rate": missing / n if n > 0 else 0.0,
+                "unique": unique,
+                "sample": str(sample),
+                "mean": mean_v,
+                "std": std_v,
+                "min": min_v,
+                "max": max_v,
+            }
+
+        # 使用列表推导式替代显式 for 循环
+        stats = [_col_stats(c) for c in self._columns]
+        return DataFrame(stats)
+
+    def validate(self, schema: Dict[str, Dict[str, Any]]) -> List[str]:
+        """按模式校验数据。
+
+        Parameters:
+            schema: {列名: {规则: 值}}，支持的规则：
+                - dtype: 期望的 dtype 字符串
+                - non_null: True 表示不允许缺失
+                - min / max: 数值范围
+
+        Returns:
+            List[str]: 错误信息列表（空列表表示校验通过）
+
+        Examples:
+            >>> df = DataFrame({"a": [1, 2, None]})
+            >>> errors = df.validate({"a": {"non_null": True, "min": 0}})
+            >>> len(errors) > 0
+            True
+        """
+        errors: List[str] = []
+
+        def _check_one(col: str, rule: Dict[str, Any]) -> List[str]:
+            """校验单列，返回错误信息列表。"""
+            errs: List[str] = []
+            if col not in self._columns:
+                errs.append(f"列 '{col}' 不存在")
+                return errs
+            series = self._inner.get_column(col)
+            values = list(series.values)
+            # dtype 校验
+            if "dtype" in rule and series.dtype != rule["dtype"]:
+                errs.append(
+                    f"列 '{col}' dtype 不匹配: 期望 {rule['dtype']}, 实际 {series.dtype}"
+                )
+            # non_null 校验
+            if rule.get("non_null") and any(v is None for v in values):
+                null_count = sum(1 for v in values if v is None)
+                errs.append(f"列 '{col}' 存在 {null_count} 个空值，违反 non_null 规则")
+            # min / max 校验
+            if rule.get("min") is not None:
+                bad = [v for v in values if v is not None and v < rule["min"]]
+                if bad:
+                    errs.append(f"列 '{col}' 有 {len(bad)} 个值小于 min={rule['min']}")
+            if rule.get("max") is not None:
+                bad = [v for v in values if v is not None and v > rule["max"]]
+                if bad:
+                    errs.append(f"列 '{col}' 有 {len(bad)} 个值大于 max={rule['max']}")
+            return errs
+
+        # 使用列表推导式 + chain 展开校验结果
+        from itertools import chain
+
+        errors = list(
+            chain.from_iterable(_check_one(col, rule) for col, rule in schema.items())
+        )
+        return errors
+
+    def detect_outliers(
+        self, columns: Optional[List[str]] = None, method: str = "iqr"
+    ) -> "DataFrame":
+        """检测异常值。
+
+        Parameters:
+            columns: 要检测的列名列表，None 表示所有数值列
+            method: 检测方法，'iqr' (四分位距) 或 'zscore' (Z-score)
+
+        Returns:
+            DataFrame: 布尔类型 DataFrame，True 表示该位置是异常值
+
+        Examples:
+            >>> df = DataFrame({"a": [1, 2, 3, 100]})
+            >>> outliers = df.detect_outliers(method="iqr")
+            >>> outliers["a"].values[-1]
+            True
+        """
+        # 默认所有数值列
+        if columns is None:
+            columns = [
+                c
+                for c in self._columns
+                if self._inner.get_column(c).dtype in ("int64", "float64")
+            ]
+        if not columns:
+            return DataFrame({})
+
+        def _detect_col(col: str) -> List[bool]:
+            """检测单列的异常值。"""
+            values = list(self._inner.get_column(col).values)
+            non_null = [v for v in values if v is not None]
+            if len(non_null) < 4:
+                return [False] * len(values)
+
+            if method == "iqr":
+                sorted_vals = sorted(non_null)
+                q1 = sorted_vals[len(sorted_vals) // 4]
+                q3 = sorted_vals[3 * len(sorted_vals) // 4]
+                iqr = q3 - q1
+                lower = q1 - 1.5 * iqr
+                upper = q3 + 1.5 * iqr
+                return [(v is not None and (v < lower or v > upper)) for v in values]
+            elif method == "zscore":
+                mean_v = sum(non_null) / len(non_null)
+                std_v = (
+                    sum((v - mean_v) ** 2 for v in non_null) / len(non_null)
+                ) ** 0.5
+                if std_v == 0:
+                    return [False] * len(values)
+                # 工业标准：|z| > 2 视为异常值
+                return [
+                    (v is not None and abs((v - mean_v) / std_v) > 2) for v in values
+                ]
+            raise ValueError(f"Unsupported method: {method}")
+
+        # 使用字典推导式构建结果
+        result = {col: _detect_col(col) for col in columns}
+        return DataFrame(result)
+
+    def compare_with(self, other: "DataFrame", show_all: bool = False) -> "DataFrame":
+        """增强版对比，默认只展示差异行。
+
+        Parameters:
+            other: 另一个 DataFrame，需具有相同的列结构
+            show_all: True 表示展示所有行，False 只展示有差异的行
+
+        Returns:
+            DataFrame: 差异行 DataFrame
+
+        Examples:
+            >>> df1 = DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+            >>> df2 = DataFrame({"a": [1, 2, 9], "b": [4, 5, 7]})
+            >>> diff = df1.compare_with(df2)
+            >>> len(diff) == 1
+            True
+        """
+        if self._columns != other._columns:
+            raise ValueError("两 DataFrame 列结构不一致")
+
+        # 使用 zip + 列表推导式标记差异行
+        n = len(self)
+        diff_flags = [
+            any(self[c].values[i] != other[c].values[i] for c in self._columns)
+            for i in range(n)
+        ]
+        target_indices = (
+            list(range(n)) if show_all else [i for i, f in enumerate(diff_flags) if f]
+        )
+        # 收集差异行：每行包含每列的 _self 和 _other 两个版本
+        rows = []
+        for i in target_indices:
+            row = {}
+            for c in self._columns:
+                row[f"{c}_self"] = self[c].values[i]
+                row[f"{c}_other"] = other[c].values[i]
+            rows.append(row)
+        return DataFrame(rows)
+
+    def snapshot(self, path: str) -> None:
+        """保存当前状态快照（含索引、列名、dtype、数据）。
+
+        Parameters:
+            path: 快照文件路径（.json 格式）
+
+        Examples:
+            >>> import tempfile, os
+            >>> df = DataFrame({"a": [1, 2, 3]})
+            >>> with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+            ...     path = f.name
+            >>> df.snapshot(path)
+            >>> os.path.exists(path)
+            True
+        """
+        import json
+
+        state = {
+            "columns": list(self._columns),
+            "dtypes": {c: self._inner.get_column(c).dtype for c in self._columns},
+            "index": list(self._index) if self._index else None,
+            "data": [
+                {c: self[c].values[i] for c in self._columns} for i in range(len(self))
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, default=str)
+
+    @classmethod
+    def from_snapshot(cls, path: str) -> "DataFrame":
+        """从快照恢复 DataFrame。
+
+        Parameters:
+            path: 快照文件路径
+
+        Examples:
+            >>> df = DataFrame({"a": [1, 2, 3]})
+            >>> df.snapshot('/tmp/snap.json')  # doctest: +SKIP
+            >>> df2 = DataFrame.from_snapshot('/tmp/snap.json')  # doctest: +SKIP
+        """
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        df = cls(state["data"], columns=state["columns"])
+        if state.get("index"):
+            df._index = list(state["index"])
+        return df
+
+    def clean(self) -> "DataFrame":
+        """一键清洗：去重 / 去空行 / 类型推断 / 列名标准化。
+
+        Returns:
+            DataFrame: 清洗后的 DataFrame
+
+        Examples:
+            >>> df = DataFrame({"A ": [1, 1, None], "b": [4, None, 6]})
+            >>> cleaned = df.clean()
+            >>> 'A ' in cleaned.columns
+            False
+        """
+        # 1) 列名标准化（去空格 / 小写 / 替换特殊字符）
+        rename_map = {
+            c: c.strip().lower().replace(" ", "_").replace("-", "_")
+            for c in self._columns
+        }
+        df_renamed = self.rename(columns=rename_map)
+        # 2) 去重行
+        df_dedup = df_renamed.drop_duplicates()
+        # 3) 去除全空行
+        keep_indices = [
+            i
+            for i in range(len(df_dedup))
+            if any(df_dedup[c].values[i] is not None for c in df_dedup._columns)
+        ]
+        # 使用 iloc 选取行
+        if keep_indices:
+            return df_dedup.iloc[keep_indices]
+        return df_dedup
+
+    def standardize_names(self) -> "DataFrame":
+        """列名标准化（去空格 / 统一小写 / 特殊字符替换）。
+
+        Examples:
+            >>> df = DataFrame({"First Name": [1], "Last Name": [2]})
+            >>> df2 = df.standardize_names()
+            >>> list(df2.columns)
+            ['first_name', 'last_name']
+        """
+        rename_map = {
+            c: c.strip().lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+            for c in self._columns
+        }
+        return self.rename(columns=rename_map)
+
+    def normalize(
+        self,
+        columns: Optional[List[str]] = None,
+        method: str = "minmax",
+    ) -> "DataFrame":
+        """数值列归一化。
+
+        Parameters:
+            columns: 要归一化的列名列表，None 表示所有数值列
+            method: 归一化方法，'minmax' (默认) / 'zscore' / 'robust'
+
+        Returns:
+            DataFrame: 归一化后的 DataFrame（仅含目标列）
+
+        Examples:
+            >>> df = DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+            >>> norm = df.normalize(method="minmax")
+            >>> abs(norm["a"].values[0]) < 1e-9
+            True
+            >>> abs(norm["a"].values[2] - 1.0) < 1e-9
+            True
+        """
+        if columns is None:
+            columns = [
+                c
+                for c in self._columns
+                if self._inner.get_column(c).dtype in ("int64", "float64")
+            ]
+        if not columns:
+            return DataFrame({})
+
+        def _normalize_col(col: str) -> List[Optional[float]]:
+            """归一化单列。"""
+            values = list(self._inner.get_column(col).values)
+            non_null = [v for v in values if v is not None]
+            if not non_null:
+                return values
+
+            if method == "minmax":
+                lo = min(non_null)
+                hi = max(non_null)
+                rng = hi - lo
+                return [
+                    (None if v is None else (0.0 if rng == 0 else (v - lo) / rng))
+                    for v in values
+                ]
+            elif method == "zscore":
+                mean_v = sum(non_null) / len(non_null)
+                std_v = (
+                    sum((v - mean_v) ** 2 for v in non_null) / len(non_null)
+                ) ** 0.5
+                if std_v == 0:
+                    return [0.0 if v is not None else None for v in values]
+                return [(None if v is None else (v - mean_v) / std_v) for v in values]
+            elif method == "robust":
+                sorted_vals = sorted(non_null)
+                median = sorted_vals[len(sorted_vals) // 2]
+                q1 = sorted_vals[len(sorted_vals) // 4]
+                q3 = sorted_vals[3 * len(sorted_vals) // 4]
+                iqr = q3 - q1
+                if iqr == 0:
+                    return [0.0 if v is not None else None for v in values]
+                return [(None if v is None else (v - median) / iqr) for v in values]
+            raise ValueError(f"Unsupported method: {method}")
+
+        # 使用字典推导式构建归一化结果
+        result = {col: _normalize_col(col) for col in columns}
+        return DataFrame(result)
+
+    # ------------------------------------------------------------------
+    # 流式处理接口
+    # ------------------------------------------------------------------
+
+    def to_stream(self, chunk_size: int = 1000) -> "StreamDataFrame":
+        """将当前 DataFrame 转为流式对象，按 chunk_size 切分。
+
+        :param chunk_size: 每块行数（默认 1000）
+        :return: StreamDataFrame 流式对象
+
+        Examples:
+            >>> sdf = df.to_stream(chunk_size=100)
+            >>> result = sdf.filter(lambda c: c['x'].sum() > 0).collect()
+        """
+        from .io import StreamDataFrame
+
+        nrows = self._nrows
+        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
+        return StreamDataFrame(chunks)
+
+    def pipeline(self, *funcs):
+        """链式管道：依次对 DataFrame 应用 funcs 中的每个函数。
+
+        :param funcs: 一组接受 DataFrame 并返回 DataFrame 的函数
+        :return: 处理后的 DataFrame
+
+        Examples:
+            >>> result = df.pipeline(
+            ...     lambda d: d[d['x'] > 0],
+            ...     lambda d: d.assign(y=d['x'] * 2),
+            ... )
+        """
+        result = self
+        for func in funcs:
+            result = func(result)
+        return result
+
+    def lazy(self) -> "LazyFrame":
+        """将 DataFrame 包装为 LazyFrame，支持惰性求值。
+
+        :return: LazyFrame 实例
+
+        Examples:
+            >>> from rspandas import col
+            >>> result = df.lazy().filter(col('x') > 0).select(['x', 'y']).collect()
+        """
+        from .lazyframe import LazyFrame
+
+        return LazyFrame(self)
 
 
 class DataFrameGroupBy:
     """DataFrame 分组结果 (极简版)。"""
 
-    def __init__(self, df: "DataFrame", by, as_index: bool = True, sort: bool = True, dropna: bool = True):
+    def __init__(
+        self,
+        df: "DataFrame",
+        by,
+        as_index: bool = True,
+        sort: bool = True,
+        dropna: bool = True,
+    ):
         if isinstance(by, str):
             self._by = [by]
         else:
@@ -5182,38 +6333,71 @@ class DataFrameGroupBy:
         self._as_index = as_index
         self._sort = sort
         self._dropna = dropna
-        
-        # 分组: { key_tuple: [row_indices] }
+
+        # 分组: { key_tuple: [row_indices] } （优化：预取列 + 列表推导式提取 key）
         self._groups: Dict[tuple, list] = {}
         n = df._nrows
-        
+        by_cols = [df._inner.get_column(c).values for c in self._by]
+
         for i in range(n):
-            key = tuple(df._inner.get_column(c).values[i] for c in self._by)
-            
-            # 处理 dropna
-            if not dropna and any(v is None for v in key):
+            key = tuple(col[i] for col in by_cols)
+            # dropna=True 时丢弃含 None 的键；dropna=False 保留所有键
+            if dropna and any(v is None for v in key):
                 continue
-            
             self._groups.setdefault(key, []).append(i)
-        
+
         # 排序组
         if sort:
-            sorted_groups = dict(sorted(self._groups.items()))
-            self._groups = sorted_groups
+            try:
+                self._groups = dict(sorted(self._groups.items()))
+            except TypeError:
+                # 不可排序键类型（含 None/混合类型）保持原顺序
+                pass
 
     def _agg(self, agg_funcs: Dict[str, str]) -> "DataFrame":
         """对每列应用聚合函数。
 
         :param agg_funcs: {列名: 'sum' | 'mean' | 'min' | 'max' | 'count' | 'std' | 'var' | 'median' | 'first' | 'last'}
+
+        分组键不作为列输出（与 pandas as_index=True 行为一致）。
         """
-        result: Dict[str, list] = {c: [] for c in self._by}
         agg_cols = list(agg_funcs.keys())
-        for c in agg_cols:
-            result[c] = []
+        # 优先调用 Rust 层（仅支持单列 by、所有列同一 agg 且在 Rust 支持列表中）
+        if len(self._by) == 1 and len(set(agg_funcs.values())) == 1:
+            single_agg = agg_funcs[agg_cols[0]]
+            if single_agg in ("sum", "mean", "count", "min", "max"):
+                by_col = self._by[0]
+                by_idx = self._df._columns.index(by_col)
+                # 检查 by 列是否有 None 值（Rust 层 None 处理为空字符串，行为不一致）
+                by_values = self._df._inner.get_column(by_col).values
+                has_none = any(v is None for v in by_values)
+                if not has_none:
+                    try:
+                        rust_keys, rust_df = self._df._inner.groupby_agg(
+                            by_idx, single_agg
+                        )
+                        # 构建 {rust_key: row_idx} 映射
+                        rust_key_to_idx = {k: i for i, k in enumerate(rust_keys)}
+                        # 按 self._groups 的顺序提取行（保持 sort/dropna 行为一致）
+                        ordered_indices = []
+                        for key_tuple in self._groups.keys():
+                            key_str = str(key_tuple[0])
+                            if key_str in rust_key_to_idx:
+                                ordered_indices.append(rust_key_to_idx[key_str])
+                        # 所有组都找到时按顺序提取结果
+                        if len(ordered_indices) == len(self._groups):
+                            new_data = {c: [] for c in agg_cols}
+                            for c in agg_cols:
+                                col_vals = rust_df.get_column(c).values
+                                new_data[c] = [col_vals[i] for i in ordered_indices]
+                            return DataFrame(new_data)
+                    except Exception:
+                        pass
+
+        # 回退到 Python 实现
+        result: Dict[str, list] = {c: [] for c in agg_cols}
 
         for key, idxs in self._groups.items():
-            for k, c in zip(key, self._by):
-                result[c].append(k)
             for c in agg_cols:
                 # 用 iloc 取子集 (Series.iloc 接受 list[int])
                 ser = self._df[c]
@@ -5250,7 +6434,8 @@ class DataFrameGroupBy:
         numeric_cols = [
             c
             for c in self._df._columns
-            if c not in self._by and self._df._inner.get_column(c).dtype in ("int64", "float64")
+            if c not in self._by
+            and self._df._inner.get_column(c).dtype in ("int64", "float64")
         ]
         return self._agg({c: "mean" for c in numeric_cols})
 
@@ -5264,12 +6449,46 @@ class DataFrameGroupBy:
         return self._agg({c: "count" for c in self._df._columns if c not in self._by})
 
     def agg(self, func) -> "DataFrame":
-        """通用聚合: 可以传 str 或 dict[列名->str]。"""
+        """通用聚合: 支持 str / dict[列名->str] / list[func]。"""
         if isinstance(func, str):
             return self._agg({c: func for c in self._df._columns if c not in self._by})
         if isinstance(func, dict):
+            # 允许 dict 值为 list: {col: [func1, func2]} -> 展开为 MultiIndex 风格列
+            flat_funcs: Dict[str, str] = {}
+            multi_mode = False
+            for col, f in func.items():
+                if isinstance(f, (list, tuple)):
+                    multi_mode = True
+                    for single_f in f:
+                        flat_funcs[f"{col}_{single_f}"] = single_f
+                else:
+                    flat_funcs[col] = f
+            if multi_mode:
+                return self._agg(flat_funcs)
             return self._agg(func)
-        raise TypeError("agg must be str or dict")
+        if isinstance(func, (list, tuple)):
+            # 所有列都应用这些函数
+            result_parts: Dict[str, "DataFrame"] = {}
+            other_cols = [c for c in self._df._columns if c not in self._by]
+            for fname in func:
+                sub = self._agg({c: fname for c in other_cols})
+                # 重命名列以避免冲突
+                rename_map = {c: f"{c}_{fname}" for c in other_cols}
+                sub = sub.rename(columns=rename_map)
+                result_parts[str(fname)] = sub
+            # 横向拼接：取第一个 DataFrame 为基准，追加其他列
+            if not result_parts:
+                return DataFrame()
+            it = iter(result_parts.values())
+            merged = next(it)
+            for rest_df in it:
+                # 简单按列顺序横向合并
+                for col in rest_df._columns:
+                    merged[col] = rest_df[col].to_list()
+            return merged
+        raise TypeError("agg must be str, dict or list")
+
+    aggregate = agg
 
     # ---------- 分组取值扩展 (v1.4.0) ----------
 
@@ -5286,14 +6505,12 @@ class DataFrameGroupBy:
 
         :param n: 行索引 (0-based, 支持负数)
         """
-        result: Dict[str, list] = {c: [] for c in self._by}
+        result: Dict[str, list] = {}
         other_cols = [c for c in self._df._columns if c not in self._by]
         for c in other_cols:
             result[c] = []
 
         for key, idxs in self._groups.items():
-            for k, c in zip(key, self._by):
-                result[c].append(k)
             for c in other_cols:
                 ser = self._df[c]
                 sub_vals = ser.iloc(idxs).values
@@ -5396,7 +6613,8 @@ class DataFrameGroupBy:
                     group_start = 0
                     for j in range(1, len(indexed) + 1):
                         if (
-                            j == len(indexed) or indexed[j][0] != indexed[group_start][0]
+                            j == len(indexed)
+                            or indexed[j][0] != indexed[group_start][0]
                         ):
                             n_g = j - group_start
                             avg_rank = group_start + 1 + (n_g - 1) / 2.0
@@ -5413,14 +6631,12 @@ class DataFrameGroupBy:
 
         :param q: 分位数 (0-1)
         """
-        result: Dict[str, list] = {c: [] for c in self._by}
+        result: Dict[str, list] = {}
         other_cols = [c for c in self._df._columns if c not in self._by]
         for c in other_cols:
             result[c] = []
 
         for key, idxs in self._groups.items():
-            for k, c in zip(key, self._by):
-                result[c].append(k)
             for c in other_cols:
                 vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
                 if not vals:
@@ -5441,7 +6657,7 @@ class DataFrameGroupBy:
         :param other_col: 目标列名
         """
         numeric_cols = [c for c in self._df._columns if c not in self._by]
-        result: Dict[str, list] = {c: [] for c in self._by}
+        result: Dict[str, list] = {}
         for c in numeric_cols:
             if c != other_col:
                 result[c] = []
@@ -5481,7 +6697,7 @@ class DataFrameGroupBy:
         :param other_col: 目标列名
         """
         numeric_cols = [c for c in self._df._columns if c not in self._by]
-        result: Dict[str, list] = {c: [] for c in self._by}
+        result: Dict[str, list] = {}
         for c in numeric_cols:
             if c != other_col:
                 result[c] = []
@@ -5558,7 +6774,9 @@ class DataFrameGroupBy:
                     if j < periods:
                         result[c][idx] = None
                     elif (
-                        vals[j - periods] is None or vals[j - periods] == 0 or vals[j] is None
+                        vals[j - periods] is None
+                        or vals[j - periods] == 0
+                        or vals[j] is None
                     ):
                         result[c][idx] = None
                     else:
@@ -5650,6 +6868,513 @@ class DataFrameGroupBy:
 
         return DataFrame(result)
 
+    # ---------- v2.1.0: GroupBy 补全 ----------
+
+    def std(self, ddof: int = 1) -> "DataFrame":
+        """分组标准差。
+
+        :param ddof: 自由度修正（默认 1）
+        """
+        return self._agg_with_ddof("std", ddof)
+
+    def var(self, ddof: int = 1) -> "DataFrame":
+        """分组方差。
+
+        :param ddof: 自由度修正（默认 1）
+        """
+        return self._agg_with_ddof("var", ddof)
+
+    def median(self) -> "DataFrame":
+        """分组中位数。"""
+        return self._agg({c: "median" for c in self._df._columns if c not in self._by})
+
+    def sem(self, ddof: int = 1) -> "DataFrame":
+        """分组标准误差。
+
+        :param ddof: 自由度修正（默认 1）
+        """
+        return self._agg_with_ddof("sem", ddof)
+
+    def mad(self) -> "DataFrame":
+        """分组平均绝对偏差。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                if not vals:
+                    result[c].append(None)
+                    continue
+                m = sum(vals) / len(vals)
+                result[c].append(sum(abs(x - m) for x in vals) / len(vals))
+        return DataFrame(result)
+
+    def prod(self) -> "DataFrame":
+        """分组乘积（math.prod 优化版）。"""
+        import math
+
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {c: [] for c in other_cols}
+
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                result[c].append(math.prod(vals) if vals else None)
+        return DataFrame(result)
+
+    def skew(self) -> "DataFrame":
+        """分组偏度。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                if len(vals) < 3:
+                    result[c].append(None)
+                    continue
+                n = len(vals)
+                m = sum(vals) / n
+                s = (sum((x - m) ** 2 for x in vals) / (n - 1)) ** 0.5
+                if s == 0:
+                    result[c].append(None)
+                else:
+                    result[c].append(sum((x - m) ** 3 for x in vals) / ((n - 1) * s**3))
+        return DataFrame(result)
+
+    def kurt(self) -> "DataFrame":
+        """分组峰度。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                if len(vals) < 4:
+                    result[c].append(None)
+                    continue
+                n = len(vals)
+                m = sum(vals) / n
+                s2 = sum((x - m) ** 2 for x in vals) / (n - 1)
+                if s2 == 0:
+                    result[c].append(None)
+                    continue
+                s4 = sum((x - m) ** 4 for x in vals) / (n - 1)
+                result[c].append(s4 / (s2**2) - 3)
+        return DataFrame(result)
+
+    def nunique(self) -> "DataFrame":
+        """分组唯一值计数。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                result[c].append(len(set(vals)))
+        return DataFrame(result)
+
+    def size(self) -> "Series":
+        """返回每个分组的大小。"""
+        from .series import Series
+
+        keys = list(self._groups.keys())
+        sizes = [len(idxs) for idxs in self._groups.values()]
+        return Series(sizes, index=keys)
+
+    def describe(self) -> "DataFrame":
+        """分组描述统计。每行为一个统计量，每列为 '列名_组键'。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        stats = ["count", "mean", "std", "min", "25%", "50%", "75%", "max"]
+        group_keys = list(self._groups.keys())
+        result: Dict[str, list] = {"stat": stats}
+
+        for c in other_cols:
+            for gk in group_keys:
+                col_name = f"{c}_{gk}" if len(group_keys) > 1 else c
+                result[col_name] = []
+                idxs = self._groups[gk]
+                sub_vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                for stat_name in stats:
+                    if not sub_vals:
+                        result[col_name].append(None)
+                        continue
+                    if stat_name == "count":
+                        result[col_name].append(len(sub_vals))
+                    elif stat_name == "mean":
+                        result[col_name].append(sum(sub_vals) / len(sub_vals))
+                    elif stat_name == "std":
+                        n = len(sub_vals)
+                        if n > 1:
+                            m = sum(sub_vals) / n
+                            variance = sum((x - m) ** 2 for x in sub_vals) / (n - 1)
+                            result[col_name].append(variance**0.5)
+                        else:
+                            result[col_name].append(None)
+                    elif stat_name == "min":
+                        result[col_name].append(min(sub_vals))
+                    elif stat_name == "max":
+                        result[col_name].append(max(sub_vals))
+                    elif stat_name == "50%":
+                        sv = sorted(sub_vals)
+                        n = len(sv)
+                        result[col_name].append(
+                            sv[n // 2]
+                            if n % 2 == 1
+                            else (sv[n // 2 - 1] + sv[n // 2]) / 2
+                        )
+                    elif stat_name == "25%":
+                        sv = sorted(sub_vals)
+                        n = len(sv)
+                        pos = 0.25 * (n - 1)
+                        lo = int(pos)
+                        hi = min(lo + 1, n - 1)
+                        result[col_name].append(sv[lo] + (sv[hi] - sv[lo]) * (pos - lo))
+                    elif stat_name == "75%":
+                        sv = sorted(sub_vals)
+                        n = len(sv)
+                        pos = 0.75 * (n - 1)
+                        lo = int(pos)
+                        hi = min(lo + 1, n - 1)
+                        result[col_name].append(sv[lo] + (sv[hi] - sv[lo]) * (pos - lo))
+
+        return DataFrame(result)
+
+    def apply(self, func, *args, **kwargs) -> "DataFrame":
+        """对每个分组应用函数。
+
+        :param func: 接收 DataFrame 的函数
+        """
+        parts = []
+        for key, idxs in self._groups.items():
+            sub_df = self._df.iloc[idxs]
+            result = func(sub_df, *args, **kwargs)
+            if isinstance(result, DataFrame):
+                parts.append(result)
+            elif isinstance(result, dict):
+                parts.append(DataFrame(result))
+        if not parts:
+            return DataFrame()
+        return DataFrame.concat(parts)
+
+    def transform(self, func, *args, **kwargs) -> "DataFrame":
+        """对每个分组应用变换函数，返回与原 DataFrame 等长的结果。
+
+        :param func: 接收 DataFrame 的函数
+        """
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for key, idxs in self._groups.items():
+            sub_df = self._df.iloc[idxs]
+            transformed = func(sub_df, *args, **kwargs)
+            if isinstance(transformed, DataFrame):
+                for c in self._df._columns:
+                    if c in transformed._columns:
+                        for j, idx in enumerate(idxs):
+                            result[c][idx] = transformed._inner.get_column(c).values[j]
+            elif isinstance(transformed, dict):
+                for c, vals in transformed.items():
+                    for j, idx in enumerate(idxs):
+                        result[c][idx] = vals[j] if j < len(vals) else None
+        return DataFrame(result)
+
+    def filter(self, func, *args, **kwargs) -> "DataFrame":
+        """过滤分组，保留满足条件的组。
+
+        :param func: 接收 DataFrame 返回 bool 的函数
+        """
+        keep_indices = []
+        for key, idxs in self._groups.items():
+            sub_df = self._df.iloc[idxs]
+            if func(sub_df, *args, **kwargs):
+                keep_indices.extend(idxs)
+        return self._df.iloc[keep_indices]
+
+    def cumsum(self) -> "DataFrame":
+        """分组累加和。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                cum = 0
+                for j, idx in enumerate(idxs):
+                    if vals[j] is not None:
+                        cum += vals[j]
+                    result[c][idx] = cum
+        return DataFrame(result)
+
+    def cumprod(self) -> "DataFrame":
+        """分组累乘积。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                cum = 1
+                for j, idx in enumerate(idxs):
+                    if vals[j] is not None:
+                        cum *= vals[j]
+                    result[c][idx] = cum
+        return DataFrame(result)
+
+    def cummax(self) -> "DataFrame":
+        """分组累最大值。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                cur_max = None
+                for j, idx in enumerate(idxs):
+                    if vals[j] is not None:
+                        cur_max = vals[j] if cur_max is None else max(cur_max, vals[j])
+                    result[c][idx] = cur_max
+        return DataFrame(result)
+
+    def cummin(self) -> "DataFrame":
+        """分组累最小值。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                cur_min = None
+                for j, idx in enumerate(idxs):
+                    if vals[j] is not None:
+                        cur_min = vals[j] if cur_min is None else min(cur_min, vals[j])
+                    result[c][idx] = cur_min
+        return DataFrame(result)
+
+    def diff(self, periods: int = 1) -> "DataFrame":
+        """分组差分。
+
+        :param periods: 差分周期
+        """
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                for j, idx in enumerate(idxs):
+                    if (
+                        j >= periods
+                        and vals[j] is not None
+                        and vals[j - periods] is not None
+                    ):
+                        result[c][idx] = vals[j] - vals[j - periods]
+        return DataFrame(result)
+
+    def shift(self, periods: int = 1, fill_value=None) -> "DataFrame":
+        """分组位移。
+
+        :param periods: 位移周期
+        :param fill_value: 填充值
+        """
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                for j, idx in enumerate(idxs):
+                    if j >= periods:
+                        result[c][idx] = vals[j - periods]
+                    elif fill_value is not None:
+                        result[c][idx] = fill_value
+        return DataFrame(result)
+
+    def fillna(self, value=None, method=None, limit=None) -> "DataFrame":
+        """分组填充缺失值。
+
+        :param value: 填充值
+        :param method: 填充方法 ('ffill'/'bfill')
+        :param limit: 最大填充数
+        """
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {
+            c: [None] * self._df._nrows for c in self._df._columns
+        }
+        for idxs in self._groups.values():
+            for c in other_cols:
+                vals = [self._df._inner.get_column(c).values[i] for i in idxs]
+                if method == "ffill":
+                    last_valid = None
+                    fill_count = 0
+                    for j, idx in enumerate(idxs):
+                        if vals[j] is not None:
+                            result[c][idx] = vals[j]
+                            last_valid = vals[j]
+                            fill_count = 0
+                        elif last_valid is not None and (
+                            limit is None or fill_count < limit
+                        ):
+                            result[c][idx] = last_valid
+                            fill_count += 1
+                        else:
+                            result[c][idx] = None
+                elif method == "bfill":
+                    next_valid = None
+                    fill_count = 0
+                    for j in range(len(idxs) - 1, -1, -1):
+                        if vals[j] is not None:
+                            result[c][idxs[j]] = vals[j]
+                            next_valid = vals[j]
+                            fill_count = 0
+                        elif next_valid is not None and (
+                            limit is None or fill_count < limit
+                        ):
+                            result[c][idxs[j]] = next_valid
+                            fill_count += 1
+                        else:
+                            result[c][idxs[j]] = None
+                else:
+                    for j, idx in enumerate(idxs):
+                        result[c][idx] = value if vals[j] is None else vals[j]
+        return DataFrame(result)
+
+    def ffill(self, limit=None) -> "DataFrame":
+        """分组前向填充。"""
+        return self.fillna(method="ffill", limit=limit)
+
+    def bfill(self, limit=None) -> "DataFrame":
+        """分组后向填充。"""
+        return self.fillna(method="bfill", limit=limit)
+
+    def head(self, n: int = 5) -> "DataFrame":
+        """返回每个分组的前 n 行。
+
+        :param n: 行数
+        """
+        keep_indices = []
+        for idxs in self._groups.values():
+            keep_indices.extend(idxs[:n])
+        return self._df.iloc[keep_indices]
+
+    def tail(self, n: int = 5) -> "DataFrame":
+        """返回每个分组的后 n 行。
+
+        :param n: 行数
+        """
+        keep_indices = []
+        for idxs in self._groups.values():
+            keep_indices.extend(idxs[-n:] if n <= len(idxs) else idxs)
+        return self._df.iloc[keep_indices]
+
+    def idxmax(self) -> "DataFrame":
+        """分组最大值索引。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [
+                    (v, i)
+                    for i, v in enumerate(self._df[c].iloc(idxs).values)
+                    if v is not None
+                ]
+                if vals:
+                    result[c].append(max(vals, key=lambda x: x[0])[1])
+                else:
+                    result[c].append(None)
+        return DataFrame(result)
+
+    def idxmin(self) -> "DataFrame":
+        """分组最小值索引。"""
+        other_cols = [c for c in self._df._columns if c not in self._by]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [
+                    (v, i)
+                    for i, v in enumerate(self._df[c].iloc(idxs).values)
+                    if v is not None
+                ]
+                if vals:
+                    result[c].append(min(vals, key=lambda x: x[0])[1])
+                else:
+                    result[c].append(None)
+        return DataFrame(result)
+
+    def get_group(self, name) -> "DataFrame":
+        """获取指定分组的数据。
+
+        :param name: 分组键
+        """
+        if isinstance(name, tuple):
+            key = name
+        else:
+            key = (name,)
+        idxs = self._groups.get(key, [])
+        return self._df.iloc[idxs]
+
+    @property
+    def groups(self) -> dict:
+        """返回 {分组键: [索引]} 字典。"""
+        return dict(self._groups)
+
+    @property
+    def indices(self) -> dict:
+        """返回 {分组键: [位置索引]} 字典。"""
+        return dict(self._groups)
+
+    def _agg_with_ddof(self, func_name: str, ddof: int) -> "DataFrame":
+        """支持 ddof 参数的聚合方法。
+
+        :param func_name: 'std'/'var'/'sem'
+        :param ddof: 自由度修正
+        """
+        other_cols = [
+            c
+            for c in self._df._columns
+            if c not in self._by
+            and self._df._inner.get_column(c).dtype in ("int64", "float64")
+        ]
+        result: Dict[str, list] = {}
+        for c in other_cols:
+            result[c] = []
+
+        for key, idxs in self._groups.items():
+            for c in other_cols:
+                vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
+                n = len(vals)
+                if n <= ddof:
+                    result[c].append(None)
+                    continue
+                m = sum(vals) / n
+                variance = sum((x - m) ** 2 for x in vals) / (n - ddof)
+                if func_name == "std":
+                    result[c].append(variance**0.5)
+                elif func_name == "var":
+                    result[c].append(variance)
+                elif func_name == "sem":
+                    result[c].append((variance / n) ** 0.5)
+        return DataFrame(result)
+
 
 # ---------------------------------------------------------------------------
 # 索引器
@@ -5661,6 +7386,63 @@ class _IndexerBase:
 
     def __init__(self, df: "DataFrame"):
         self._df = df
+
+
+class _AtIndexer(_IndexerBase):
+    """基于标签的标量索引器。"""
+
+    def __getitem__(self, key):
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise KeyError("at[] requires a tuple (row_label, col_label)")
+        row_label, col_label = key
+        if row_label not in self._df._index:
+            raise KeyError(f"row label {row_label!r} not found")
+        if col_label not in self._df._columns:
+            raise KeyError(f"column label {col_label!r} not found")
+        row_idx = self._df._index.index(row_label)
+        return self._df[col_label].values[row_idx]
+
+    def __setitem__(self, key, value):
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise KeyError("at[] requires a tuple (row_label, col_label)")
+        row_label, col_label = key
+        if row_label not in self._df._index:
+            raise KeyError(f"row label {row_label!r} not found")
+        if col_label not in self._df._columns:
+            raise KeyError(f"column label {col_label!r} not found")
+        # 简化实现：通过重建 DataFrame 修改值
+        row_idx = self._df._index.index(row_label)
+        new_data = {c: list(self._df[c].values) for c in self._df._columns}
+        new_data[col_label][row_idx] = value
+        self._df._reload_inplace(new_data)
+
+
+class _IatIndexer(_IndexerBase):
+    """基于位置的标量索引器。"""
+
+    def __getitem__(self, key):
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise KeyError("iat[] requires a tuple (row_pos, col_pos)")
+        row_pos, col_pos = key
+        if not (0 <= row_pos < self._df._nrows):
+            raise IndexError(f"row position {row_pos} out of range")
+        if not (0 <= col_pos < len(self._df._columns)):
+            raise IndexError(f"column position {col_pos} out of range")
+        col_name = self._df._columns[col_pos]
+        return self._df[col_name].values[row_pos]
+
+    def __setitem__(self, key, value):
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise KeyError("iat[] requires a tuple (row_pos, col_pos)")
+        row_pos, col_pos = key
+        if not (0 <= row_pos < self._df._nrows):
+            raise IndexError(f"row position {row_pos} out of range")
+        if not (0 <= col_pos < len(self._df._columns)):
+            raise IndexError(f"column position {col_pos} out of range")
+        col_name = self._df._columns[col_pos]
+        new_data = {c: list(self._df[c].values) for c in self._df._columns}
+        new_data[col_name][row_pos] = value
+        self._df._reload_inplace(new_data)
 
 
 class _LocIndexer(_IndexerBase):

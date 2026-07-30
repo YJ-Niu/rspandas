@@ -153,9 +153,15 @@ fn cast_strings(
         .collect()
 }
 
+/// 从 CSV 字符串构造 DataFrame（释放 GIL 进行解析）
 #[pyfunction]
-pub fn read_csv_string(content: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
-    let (headers, cols) = parse_csv_string(content, has_header)?;
+pub fn read_csv_string<'py>(
+    py: Python<'py>,
+    content: &str,
+    has_header: bool,
+) -> PyResult<(Vec<String>, Vec<PySeries>)> {
+    // 释放 GIL 进行 CSV 解析和类型推断
+    let (headers, cols) = py.detach(|| parse_csv_string(content, has_header))?;
     let series_list: Vec<PySeries> = headers
         .par_iter()
         .zip(cols.par_iter())
@@ -215,66 +221,163 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
+/// 写入 CSV 为字符串（释放 GIL 进行并行序列化）
 #[pyfunction]
-pub fn write_csv_string(
+pub fn write_csv_string<'py>(
+    py: Python<'py>,
     columns: Vec<String>,
     series_list: Vec<PySeries>,
     include_header: bool,
 ) -> PyResult<String> {
-    let mut buf = String::new();
-    let sep = ',';
+    // 释放 GIL 进行并行 CSV 序列化
+    py.detach(|| {
+        let mut buf = String::new();
+        let sep = ',';
 
-    if include_header {
-        let escaped: Vec<String> = columns.iter().map(|c| csv_escape(c)).collect();
-        buf.push_str(&escaped.join(&sep.to_string()));
-        buf.push('\n');
-    }
+        if include_header {
+            let escaped: Vec<String> = columns.iter().map(|c| csv_escape(c)).collect();
+            buf.push_str(&escaped.join(&sep.to_string()));
+            buf.push('\n');
+        }
 
-    if series_list.is_empty() {
-        return Ok(buf);
-    }
+        if series_list.is_empty() {
+            return Ok(buf);
+        }
 
-    let nrows = series_list[0].inner.len();
-    // 并行生成每行的 CSV 字符串
-    let row_strings: Vec<String> = (0..nrows)
-        .into_par_iter()
-        .map(|i| {
-            let mut record: Vec<String> = Vec::with_capacity(series_list.len());
-            for s in &series_list {
-                let v = s.inner.get_str_at(i);
-                record.push(csv_escape(&v));
-            }
-            record.join(&sep.to_string())
-        })
-        .collect();
-    for row_str in &row_strings {
-        buf.push_str(row_str);
-        buf.push('\n');
-    }
-    Ok(buf)
+        let nrows = series_list[0].inner.len();
+        // 并行生成每行的 CSV 字符串
+        let row_strings: Vec<String> = (0..nrows)
+            .into_par_iter()
+            .map(|i| {
+                let mut record: Vec<String> = Vec::with_capacity(series_list.len());
+                for s in &series_list {
+                    let v = s.inner.get_str_at(i);
+                    record.push(csv_escape(&v));
+                }
+                record.join(&sep.to_string())
+            })
+            .collect();
+        for row_str in &row_strings {
+            buf.push_str(row_str);
+            buf.push('\n');
+        }
+        Ok(buf)
+    })
 }
 
+/// 从文件路径读取 CSV（释放 GIL 进行文件读取和解析）
 #[pyfunction]
-pub fn read_csv_path(path: &str, has_header: bool) -> PyResult<(Vec<String>, Vec<PySeries>)> {
-    let mut content = String::new();
-    let mut file = File::open(path)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("open {path}: {e}")))?;
-    file.read_to_string(&mut content)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("read {path}: {e}")))?;
-    read_csv_string(&content, has_header)
+pub fn read_csv_path<'py>(
+    py: Python<'py>,
+    path: &str,
+    has_header: bool,
+) -> PyResult<(Vec<String>, Vec<PySeries>)> {
+    let content = py.detach(|| -> PyResult<String> {
+        let mut content = String::new();
+        let mut file = File::open(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("open {path}: {e}")))?;
+        file.read_to_string(&mut content)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("read {path}: {e}")))?;
+        Ok(content)
+    })?;
+    read_csv_string(py, &content, has_header)
 }
 
+/// 写入 CSV 到文件路径（释放 GIL 进行文件写入）
 #[pyfunction]
-pub fn write_csv_path(
+pub fn write_csv_path<'py>(
+    py: Python<'py>,
     path: &str,
     columns: Vec<String>,
     series_list: Vec<PySeries>,
     include_header: bool,
 ) -> PyResult<()> {
-    let content = write_csv_string(columns, series_list, include_header)?;
-    let mut file = File::create(path)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("create {path}: {e}")))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("write {path}: {e}")))?;
-    Ok(())
+    let content = write_csv_string(py, columns, series_list, include_header)?;
+    py.detach(|| -> PyResult<()> {
+        let mut file = File::create(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("create {path}: {e}")))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("write {path}: {e}")))?;
+        Ok(())
+    })
+}
+
+/// 分块读取 CSV：返回每个块的 (headers, PySeries 列表) 列表
+/// chunk_size: 每块的行数
+#[pyfunction]
+pub fn read_csv_chunks<'py>(
+    py: Python<'py>,
+    content: &str,
+    has_header: bool,
+    chunk_size: usize,
+) -> PyResult<Vec<(Vec<String>, Vec<PySeries>)>> {
+    if chunk_size == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "chunk_size must be > 0",
+        ));
+    }
+    // 释放 GIL 解析 CSV
+    let (headers, cols) = py.detach(|| parse_csv_string(content, has_header))?;
+    if cols.is_empty() {
+        return Ok(Vec::new());
+    }
+    let n_rows = cols[0].len();
+    let mut chunks: Vec<(Vec<String>, Vec<PySeries>)> = Vec::new();
+    let mut start = 0;
+    while start < n_rows {
+        let end = (start + chunk_size).min(n_rows);
+        // 切片每列
+        let chunk_cols: Vec<Vec<Option<String>>> = cols
+            .par_iter()
+            .map(|col| col[start..end].to_vec())
+            .collect();
+        // 类型推断并构建 Series
+        let series_list: Vec<PySeries> = headers
+            .par_iter()
+            .zip(chunk_cols.par_iter())
+            .map(|(h, col)| {
+                if col.is_empty() {
+                    return PySeries {
+                        inner: Series::from_options_string(h.clone(), &[]),
+                    };
+                }
+                let (dtype, _strings) = infer_column(col);
+                let casted = cast_strings(col, dtype);
+                let series = match dtype {
+                    DType::Int64 => {
+                        let ints: Vec<Option<i64>> = casted
+                            .par_iter()
+                            .map(|v| v.as_ref().and_then(|s| s.parse::<i64>().ok()))
+                            .collect();
+                        Series::from_options_i64(h.clone(), &ints)
+                    }
+                    DType::Float64 => {
+                        let floats: Vec<Option<f64>> = casted
+                            .par_iter()
+                            .map(|v| v.as_ref().and_then(|s| s.parse::<f64>().ok()))
+                            .collect();
+                        Series::from_options_f64(h.clone(), &floats)
+                    }
+                    DType::Bool => {
+                        let bools: Vec<Option<bool>> = casted
+                            .par_iter()
+                            .map(|v| {
+                                v.as_ref().map(|s| {
+                                    let sl = s.to_lowercase();
+                                    sl == "true" || sl == "1"
+                                })
+                            })
+                            .collect();
+                        Series::from_options_bool(h.clone(), &bools)
+                    }
+                    DType::Object => Series::from_options_string(h.clone(), col),
+                    DType::Categorical => Series::from_options_string(h.clone(), col),
+                };
+                PySeries { inner: series }
+            })
+            .collect();
+        chunks.push((headers.clone(), series_list));
+        start = end;
+    }
+    Ok(chunks)
 }

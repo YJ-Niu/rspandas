@@ -6,6 +6,7 @@ edition = "2024"
 [lib]
 name = "rspandas"
 crate-type = ["cdylib", "rlib"]
+path = "rust/src/lib.rs"
 
 [features]
 extension-module = ["pyo3/extension-module"]

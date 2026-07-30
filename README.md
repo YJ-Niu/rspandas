@@ -8,13 +8,15 @@
 <p align="center">
   <img src="https://img.shields.io/pypi/v/rspandas?label=PyPI" alt="PyPI">
   <img src="https://img.shields.io/pypi/pyversions/rspandas" alt="Python">
-  <img src="https://img.shields.io/github/actions/workflow/status/USERNAME/rspandas/publish.yml?label=CI" alt="CI">
+  <img src="https://img.shields.io/badge/Rust-2024%20edition-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
 
 ---
 
-**rspandas** is a drop-in pandas replacement with a Rust backend. Write the same pandas code you know—filtering, grouping, window functions, reshaping—but get near-native performance thanks to columnar storage, vectorized operations, and multi-threaded parallelism via [Rayon](https://github.com/rayon-rs/rayon).
+**rspandas** is a high-performance pandas-compatible data analysis library powered by Rust. Write the same pandas code you know—filtering, grouping, window functions, reshaping—but get near-native performance thanks to columnar storage, vectorized operations, and multi-threaded parallelism via [Rayon](https://github.com/rayon-rs/rayon).
+
+Built on [rsnumpy](https://pypi.org/project/rsnumpy/) for zero-copy ndarray operations.
 
 ```python
 import rspandas as rpd
@@ -26,13 +28,13 @@ print(df.groupby("a").sum())
 
 ## Highlights
 
-- **95%+ pandas API coverage** — Series, DataFrame, GroupBy, window functions, reshaping, time series
-- **Rust core** — columnar storage, vectorized computation, Rayon parallel iterators
+- **95%+ pandas API coverage** — Series, DataFrame, GroupBy, Rolling/Expanding/EWM, Resampler, reshaping, time series
+- **Rust 2024 core** — columnar storage, vectorized computation, Rayon parallel iterators, LTO optimized
 - **Multi-platform wheels** — pre-built binaries for Linux (x86_64 / arm64), macOS (Intel / Apple Silicon), Windows (x64 / x86)
-- **Zero required Python dependencies** — one compiled extension, no NumPy/PyArrow required at runtime
-- **Rich I/O** — CSV, Excel (native Rust), JSON, Parquet, SQL, Pickle, Feather
+- **Minimal dependencies** — requires only `rsnumpy` at runtime (no NumPy/PyArrow required)
+- **Rich I/O** — CSV, Excel (native Rust via calamine + rust_xlsxwriter), JSON, Parquet, SQL, Pickle, Feather
 - **Full type system** — int64, float64, bool, string, category, datetime, timedelta, period
-- **950+ tests** — comprehensive pytest suite validating pandas compatibility
+- **Comprehensive testing** — 950+ tests validating pandas compatibility
 
 ## Installation
 
@@ -278,22 +280,28 @@ Methods: `head`, `tail`, `describe`, `info`, `dropna`, `fillna`, `merge`, `conca
 
 ```bash
 # Install in dev mode
-pip install -e .
+pip install -e ".[dev]"
+
+# Build and install to .venv
+./build_wheel.sh
 
 # Run tests
 pytest tests/        # 950+ Python tests
 cargo test           # Rust unit tests
 
-# Lint
-cargo clippy
-cargo fmt
+# Lint (automatically checked by build_wheel.sh)
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+uv run flake8 python/ --max-line-length=500 --extend-ignore=E203
+uv run black --check --target-version py313 python/
 ```
 
 ## Requirements
 
-- Python >= 3.9
-- Rust toolchain (stable)
+- Python >= 3.10
+- Rust toolchain (stable, edition 2024)
 - [maturin](https://github.com/PyO3/maturin) >= 1.7
+- [uv](https://docs.astral.sh/uv/) (recommended for development)
 
 ## License
 

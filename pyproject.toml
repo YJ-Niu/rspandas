@@ -12,6 +12,9 @@ license = { text = "MIT" }
 authors = [
     { name = "YJ-Niu" },
 ]
+dependencies = [
+    "rsnumpy",
+]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",

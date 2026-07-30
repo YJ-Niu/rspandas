@@ -84,23 +84,19 @@ class Index:
 
     @property
     def is_monotonic_increasing(self) -> bool:
-        if len(self._data) < 2:
-            return True
-        for i in range(1, len(self._data)):
-            if self._data[i] is not None and self._data[i - 1] is not None:
-                if self._data[i] < self._data[i - 1]:
-                    return False
-        return True
+        # 使用 all() + 生成器表达式替代显式 for 循环
+        return all(
+            not (a is not None and b is not None and b < a)
+            for a, b in zip(self._data, self._data[1:])
+        )
 
     @property
     def is_monotonic_decreasing(self) -> bool:
-        if len(self._data) < 2:
-            return True
-        for i in range(1, len(self._data)):
-            if self._data[i] is not None and self._data[i - 1] is not None:
-                if self._data[i] > self._data[i - 1]:
-                    return False
-        return True
+        # 使用 all() + 生成器表达式替代显式 for 循环
+        return all(
+            not (a is not None and b is not None and b > a)
+            for a, b in zip(self._data, self._data[1:])
+        )
 
     # ---------- dunder ----------
 
@@ -159,35 +155,17 @@ class Index:
 
     def intersection(self, other: "Index") -> "Index":
         other_set = set(other._data)
-        seen = set()
-        result = []
-        for v in self._data:
-            if v in other_set and v not in seen:
-                result.append(v)
-                seen.add(v)
-        return Index(result)
+        # 使用 dict.fromkeys 保留首次出现顺序并去重
+        return Index([v for v in dict.fromkeys(self._data) if v in other_set])
 
     def union(self, other: "Index") -> "Index":
-        seen = set()
-        result = []
-        for v in self._data:
-            if v not in seen:
-                result.append(v)
-                seen.add(v)
-        for v in other._data:
-            if v not in seen:
-                result.append(v)
-                seen.add(v)
-        return Index(result)
+        # 合并后利用 dict.fromkeys 保序去重（与 pandas union 语义一致）
+        merged = list(self._data) + list(other._data)
+        return Index(list(dict.fromkeys(merged)))
 
     def unique(self) -> "Index":
-        seen = set()
-        result = []
-        for v in self._data:
-            if v not in seen:
-                result.append(v)
-                seen.add(v)
-        return Index(result)
+        # 使用 dict.fromkeys 保留首次出现顺序并去重
+        return Index(list(dict.fromkeys(self._data)))
 
     def sort_values(self, ascending: bool = True) -> "Index":
         sorted_data = sorted(
@@ -243,25 +221,15 @@ class Index:
         return max(non_null, key=lambda x: x[1])[0]
 
     def duplicated(self, keep: str = "first") -> list:
-        seen = set()
-        result = []
-        for v in self._data:
-            if v in seen:
-                result.append(True)
-            else:
-                result.append(False)
-                seen.add(v)
+        seen: set = set()
         if keep == "last":
-            # 反转检测
-            seen.clear()
-            for i in range(len(self._data) - 1, -1, -1):
-                v = self._data[i]
-                if v in seen:
-                    result[i] = True
-                else:
-                    result[i] = False
-                    seen.add(v)
-        return result
+            # 反向遍历检测重复，再反转结果
+            reversed_flags = [
+                v in seen or (seen.add(v) or False) for v in reversed(self._data)
+            ]
+            return list(reversed(reversed_flags))
+        # 默认 keep='first': 从前往后，首次出现标记为 False
+        return [v in seen or (seen.add(v) or False) for v in self._data]
 
     def copy(self) -> "Index":
         return Index(self._data, name=self._name)
@@ -349,6 +317,95 @@ class Index:
             df._index = list(range(len(self._data)))
         return df
 
+    # ---------- v2.1.0: Index 补全方法 ----------
+
+    def equals(self, other) -> bool:
+        """判断两个 Index 是否相等（值和类型都相同）。"""
+        if not isinstance(other, Index):
+            return False
+        if len(self) != len(other):
+            return False
+        return all(a == b for a, b in zip(self._data, other._data))
+
+    def identical(self, other) -> bool:
+        """判断两个 Index 是否完全相同（值、名称、类型都相同）。"""
+        if not isinstance(other, Index):
+            return False
+        if self.name != other.name:
+            return False
+        return self.equals(other)
+
+    @property
+    def hasnans(self) -> bool:
+        """是否有缺失值。"""
+        return any(v is None for v in self._data)
+
+    @property
+    def nbytes(self) -> int:
+        """内存占用字节数（粗略估算）。"""
+        return len(self._data) * 8  # 假设每个元素 8 字节
+
+    def item(self):
+        """如果 Index 只有一个元素，返回该元素；否则抛出 ValueError。"""
+        if len(self._data) == 1:
+            return self._data[0]
+        raise ValueError("can only convert an array of size 1 to a Python scalar")
+
+    def to_series(self):
+        """转为 Series。"""
+        from .series import Series
+
+        return Series(list(self._data), name=self.name, index=list(self._data))
+
+    def delete(self, loc):
+        """删除指定位置的元素，返回新 Index。"""
+        if isinstance(loc, (list, tuple)):
+            new_vals = [v for i, v in enumerate(self._data) if i not in loc]
+        else:
+            new_vals = [v for i, v in enumerate(self._data) if i != loc]
+        return Index(new_vals, name=self.name)
+
+    def insert(self, loc, item):
+        """在指定位置插入元素，返回新 Index。"""
+        new_vals = list(self._data[:loc]) + [item] + list(self._data[loc:])
+        return Index(new_vals, name=self.name)
+
+    def drop(self, labels, errors: str = "raise"):
+        """删除指定标签，返回新 Index。"""
+        if errors not in ("raise", "ignore"):
+            raise ValueError("errors must be 'raise' or 'ignore'")
+        if isinstance(labels, (list, tuple)):
+            labels_set = set(labels)
+        else:
+            labels_set = {labels}
+        missing = labels_set - set(self._data)
+        if missing and errors == "raise":
+            raise KeyError(f"labels {missing} not found in index")
+        new_vals = [v for v in self._data if v not in labels_set]
+        return Index(new_vals, name=self.name)
+
+    def droplevel(self, level=0):
+        """删除指定层级（对 MultiIndex 有效，普通 Index 直接返回副本）。"""
+        return Index(list(self._data), name=self.name)
+
+    def ravel(self):
+        """展平（1D 本身已展平，直接返回值的列表）。"""
+        return list(self._data)
+
+    @property
+    def T(self):
+        """转置（1D 的转置就是自身）。"""
+        return self
+
+    def transpose(self):
+        """转置（1D 的转置就是自身）。"""
+        return self
+
+    @property
+    def array(self):
+        """返回底层值的列表（Arrow 数组接口的简化版本）。"""
+        return list(self._data)
+
 
 # ============================================================================
 # RangeIndex
@@ -401,7 +458,10 @@ class RangeIndex(Index):
 
     def __repr__(self) -> str:
         name = f", name='{self._name}'" if self._name else ""
-        return f"RangeIndex(start={self._start}, stop={self._stop}, step={self._step}{name})"
+        return (
+            f"RangeIndex(start={self._start}, stop={self._stop}, "
+            f"step={self._step}{name})"
+        )
 
     def __iter__(self):
         return iter(range(self._start, self._stop, self._step))
@@ -522,9 +582,9 @@ class MultiIndex(Index):
         if len(self._levels) != len(self._codes):
             raise ValueError("levels and codes must have same length")
         n = len(self._codes[0]) if self._codes else 0
-        for c in self._codes:
-            if len(c) != n:
-                raise ValueError("all codes must have same length")
+        # 使用 any() + 生成器表达式替代显式 for 循环
+        if any(len(c) != n for c in self._codes):
+            raise ValueError("all codes must have same length")
 
     # ---------- 属性 ----------
 
@@ -622,21 +682,20 @@ class MultiIndex(Index):
         """
         arrays = [list(a) for a in arrays]
         n = len(arrays[0])
-        for a in arrays:
-            if len(a) != n:
-                raise ValueError("all arrays must have same length")
+        # 使用 any() + 生成器表达式替代显式 for 循环
+        if any(len(a) != n for a in arrays):
+            raise ValueError("all arrays must have same length")
 
-        levels = []
-        codes = []
-        for arr in arrays:
-            unique = []
-            seen = {}
-            for v in arr:
-                if v not in seen:
-                    seen[v] = len(unique)
-                    unique.append(v)
-            levels.append(unique)
-            codes.append([seen[v] for v in arr])
+        # 对每个数组构建 levels 和 codes（使用 dict.fromkeys 保序去重并构建 code 映射）
+        def _build_levels_codes(arr):
+            # 利用 dict.fromkeys 保序去重，再构建 code 映射
+            unique = list(dict.fromkeys(arr))
+            seen = {v: i for i, v in enumerate(unique)}
+            return unique, [seen[v] for v in arr]
+
+        levels_codes = [_build_levels_codes(arr) for arr in arrays]
+        levels = [lc[0] for lc in levels_codes]
+        codes = [lc[1] for lc in levels_codes]
 
         return MultiIndex(levels, codes, names=names)
 
@@ -653,12 +712,8 @@ class MultiIndex(Index):
         if not tuples:
             return MultiIndex([], [], names=names or [])
 
-        nlevels = len(tuples[0])
-        arrays = [[] for _ in range(nlevels)]
-        for t in tuples:
-            for i in range(nlevels):
-                arrays[i].append(t[i])
-
+        # 使用 zip 一次性解包所有 tuple 到多个数组（替代嵌套 for 循环）
+        arrays = [list(col) for col in zip(*tuples)]
         return MultiIndex.from_arrays(arrays, names=names)
 
     @staticmethod
@@ -690,10 +745,8 @@ class MultiIndex(Index):
 
     def tolist(self) -> list:
         """返回 tuple 列表。"""
-        result = []
-        for i in range(len(self)):
-            result.append(self[i])
-        return result
+        # 使用列表推导式替代显式 for 循环
+        return [self[i] for i in range(len(self))]
 
     def to_list(self) -> list:
         return self.tolist()
@@ -705,11 +758,11 @@ class MultiIndex(Index):
                 return self.tolist().index(key)
             except ValueError:
                 raise KeyError(key)
-        # 部分 key: 只匹配第一层
-        for i in range(len(self)):
-            if self[i][0] == key:
-                return i
-        raise KeyError(key)
+        # 部分 key: 只匹配第一层 - 使用 next() + 生成器表达式查找首个匹配
+        try:
+            return next(i for i in range(len(self)) if self[i][0] == key)
+        except StopIteration:
+            raise KeyError(key)
 
     def get_level_values(self, level: Union[int, str]) -> Index:
         """返回指定 level 的值。
@@ -724,10 +777,10 @@ class MultiIndex(Index):
         Index
         """
         level_idx = self._resolve_level(level)
-        values = []
-        for i in range(len(self)):
-            c = self._codes[level_idx][i]
-            values.append(self._levels[level_idx][c] if c >= 0 else None)
+        # 使用列表推导式替代显式 for 循环
+        codes_lvl = self._codes[level_idx]
+        levels_lvl = self._levels[level_idx]
+        values = [levels_lvl[c] if c >= 0 else None for c in codes_lvl]
         return Index(values, name=self._names[level_idx])
 
     def swaplevel(self, i: int = -2, j: int = -1) -> MultiIndex:
@@ -811,7 +864,16 @@ class MultiIndex(Index):
 
     def _slice_by_indices(self, indices) -> MultiIndex:
         """按索引列表切片。"""
-        new_codes = [[c[i] for i in indices] for c in self._codes]
+        # 使用列表推导式替代显式 for 循环（外层为推导式，内层 itemgetter 批量取值）
+        from operator import itemgetter
+
+        indices_list = list(indices)
+        if len(indices_list) == 1:
+            idx = indices_list[0]
+            new_codes = [[c[idx]] for c in self._codes]
+        else:
+            getter = itemgetter(*indices_list)
+            new_codes = [list(getter(c)) for c in self._codes]
         return MultiIndex(self._levels, new_codes, names=self._names)
 
     def copy(self) -> MultiIndex:
@@ -945,23 +1007,19 @@ class IntervalIndex(Index):
     def __contains__(self, item) -> bool:
         if isinstance(item, tuple) and len(item) == 2:
             return item in self._data
-        # 单值查找: 判断属于哪个区间
-        for d in self._data:
-            if d is None:
-                continue
-            if self._closed == "right":
-                if d[0] < item <= d[1]:
-                    return True
-            elif self._closed == "left":
-                if d[0] <= item < d[1]:
-                    return True
-            elif self._closed == "both":
-                if d[0] <= item <= d[1]:
-                    return True
-            else:
-                if d[0] < item < d[1]:
-                    return True
-        return False
+        # 单值查找: 判断属于哪个区间 - 用 any() + 生成器表达式
+        return any(self._contains_value(d, item) for d in self._data if d is not None)
+
+    def _contains_value(self, d, item) -> bool:
+        """检查单值是否在区间 d 内（按 closed 模式判断）。"""
+        if self._closed == "right":
+            return d[0] < item <= d[1]
+        elif self._closed == "left":
+            return d[0] <= item < d[1]
+        elif self._closed == "both":
+            return d[0] <= item <= d[1]
+        else:  # neither
+            return d[0] < item < d[1]
 
     def __eq__(self, other) -> bool:
         if isinstance(other, IntervalIndex):
@@ -981,23 +1039,15 @@ class IntervalIndex(Index):
                 return self._data.index(key)
             except ValueError:
                 raise KeyError(key)
-        # 单值查找
-        for i, d in enumerate(self._data):
-            if d is None:
-                continue
-            if self._closed == "right":
-                if d[0] < key <= d[1]:
-                    return i
-            elif self._closed == "left":
-                if d[0] <= key < d[1]:
-                    return i
-            elif self._closed == "both":
-                if d[0] <= key <= d[1]:
-                    return i
-            else:
-                if d[0] < key < d[1]:
-                    return i
-        raise KeyError(key)
+        # 单值查找 - 使用 next() + 生成器表达式查找首个匹配
+        try:
+            return next(
+                i
+                for i, d in enumerate(self._data)
+                if d is not None and self._contains_value(d, key)
+            )
+        except StopIteration:
+            raise KeyError(key)
 
     def contains(self, other) -> list:
         """检查每个值是否在某个区间内。"""
@@ -1085,18 +1135,16 @@ class CategoricalIndex(Index):
         """
         self._data = list(data)
         if categories is None:
-            seen = set()
-            self._categories = []
-            for v in self._data:
-                if v is not None and v not in seen:
-                    self._categories.append(v)
-                    seen.add(v)
+            # 使用 dict.fromkeys 保序去重，过滤 None
+            self._categories = list(
+                dict.fromkeys(v for v in self._data if v is not None)
+            )
         else:
             self._categories = list(categories)
         self._ordered = ordered
         self._name = name
 
-        # 构建 codes
+        # 构建 codes（使用字典推导式构建映射，再用列表推导式生成 codes）
         cat_to_code = {c: i for i, c in enumerate(self._categories)}
         self._codes = [
             cat_to_code.get(v, -1) if v is not None else -1 for v in self._data
@@ -1162,10 +1210,8 @@ class CategoricalIndex(Index):
 
     def add_categories(self, new_categories) -> CategoricalIndex:
         """添加新类别。"""
-        new_cats = list(self._categories)
-        for c in new_categories:
-            if c not in new_cats:
-                new_cats.append(c)
+        # 使用 dict.fromkeys 合并去重，保留首次出现顺序
+        new_cats = list(dict.fromkeys(list(self._categories) + list(new_categories)))
         return CategoricalIndex(
             self._data, categories=new_cats, ordered=self._ordered, name=self._name
         )
@@ -1225,21 +1271,23 @@ class DatetimeIndex(Index):
         :param name: 索引名称
         :param tz: 时区信息
         """
-        self._data = []
-        for v in data:
+
+        # 使用辅助函数 + 列表推导式替代显式 for 循环
+        def _parse_one(v):
             if v is None:
-                self._data.append(None)
-            elif isinstance(v, datetime):
-                self._data.append(v)
-            elif isinstance(v, str):
+                return None
+            if isinstance(v, datetime):
+                return v
+            if isinstance(v, str):
                 try:
-                    self._data.append(datetime.fromisoformat(v))
+                    return datetime.fromisoformat(v)
                 except (ValueError, TypeError):
                     from .datetime import _parse_iso
 
-                    self._data.append(_parse_iso(v))
-            else:
-                self._data.append(v)
+                    return _parse_iso(v)
+            return v
+
+        self._data = [_parse_one(v) for v in data]
         self._name = name
         self._tz = tz
 
@@ -1339,10 +1387,15 @@ class DatetimeIndex(Index):
                 key_dt = datetime.fromisoformat(key)
             except (ValueError, TypeError):
                 raise KeyError(key)
-            for i, v in enumerate(self._data):
-                if isinstance(v, datetime) and v == key_dt:
-                    return i
-            raise KeyError(key)
+            # 使用 next() + 生成器表达式查找首个匹配
+            try:
+                return next(
+                    i
+                    for i, v in enumerate(self._data)
+                    if isinstance(v, datetime) and v == key_dt
+                )
+            except StopIteration:
+                raise KeyError(key)
         try:
             return self._data.index(key)
         except ValueError:
@@ -1471,18 +1524,20 @@ class TimedeltaIndex(Index):
         :param data: timedelta 对象列表或字符串列表
         :param name: 索引名称
         """
-        self._data = []
-        for v in data:
+
+        # 使用辅助函数 + 列表推导式替代显式 for 循环
+        def _parse_one(v):
             if v is None:
-                self._data.append(None)
-            elif isinstance(v, timedelta):
-                self._data.append(v)
-            elif isinstance(v, (int, float)):
-                self._data.append(timedelta(seconds=float(v)))
-            elif isinstance(v, str):
-                self._data.append(self._parse_timedelta(v))
-            else:
-                self._data.append(v)
+                return None
+            if isinstance(v, timedelta):
+                return v
+            if isinstance(v, (int, float)):
+                return timedelta(seconds=float(v))
+            if isinstance(v, str):
+                return self._parse_timedelta(v)
+            return v
+
+        self._data = [_parse_one(v) for v in data]
         self._name = name
 
     @staticmethod
@@ -1566,10 +1621,15 @@ class TimedeltaIndex(Index):
         # 支持字符串 key 查找
         if isinstance(key, str):
             key_td = self._parse_timedelta(key)
-            for i, v in enumerate(self._data):
-                if isinstance(v, timedelta) and v == key_td:
-                    return i
-            raise KeyError(key)
+            # 使用 next() + 生成器表达式查找首个匹配
+            try:
+                return next(
+                    i
+                    for i, v in enumerate(self._data)
+                    if isinstance(v, timedelta) and v == key_td
+                )
+            except StopIteration:
+                raise KeyError(key)
         try:
             return self._data.index(key)
         except ValueError:
@@ -1599,35 +1659,35 @@ class PeriodIndex(Index):
         :param freq: 频率 ('M'/'Q'/'Y'/'D'/'H' 等)
         :param name: 索引名称
         """
-        self._data = []
+        # 使用辅助函数 + 列表推导式替代显式 for 循环
         self._freq = freq
-        for v in data:
+
+        def _parse_one(v):
             if v is None:
-                self._data.append(None)
-            elif isinstance(v, datetime):
-                self._data.append(v)
-            elif isinstance(v, str):
+                return None
+            if isinstance(v, datetime):
+                return v
+            if isinstance(v, str):
                 from .datetime import _parse_iso
 
-                # Try to parse as period string (e.g. '2024-01', '2024-Q1')
+                # 尝试解析为时期字符串 (如 '2024-01', '2024-Q1')
                 try:
-                    self._data.append(_parse_iso(v))
+                    return _parse_iso(v)
                 except ValueError:
-                    # Try period-specific parsing
+                    # 尝试时期特定解析
                     try:
-                        # '2024-01' -> treat as first day of month
+                        # '2024-01' -> 当月第一天
                         if "-" in v and len(v) == 7:  # 'YYYY-MM'
-                            self._data.append(datetime.strptime(v + "-01", "%Y-%m-%d"))
+                            return datetime.strptime(v + "-01", "%Y-%m-%d")
                         elif "-" in v and len(v) == 4:  # 'YYYY'
-                            self._data.append(
-                                datetime.strptime(v + "-01-01", "%Y-%m-%d")
-                            )
+                            return datetime.strptime(v + "-01-01", "%Y-%m-%d")
                         else:
-                            self._data.append(v)
+                            return v
                     except ValueError:
-                        self._data.append(v)
-            else:
-                self._data.append(v)
+                        return v
+            return v
+
+        self._data = [_parse_one(v) for v in data]
         self._name = name
 
     @property
@@ -1718,10 +1778,15 @@ class PeriodIndex(Index):
             from .datetime import _parse_iso
 
             key_dt = _parse_iso(key)
-            for i, v in enumerate(self._data):
-                if isinstance(v, datetime) and v == key_dt:
-                    return i
-            raise KeyError(key)
+            # 使用 next() + 生成器表达式查找首个匹配
+            try:
+                return next(
+                    i
+                    for i, v in enumerate(self._data)
+                    if isinstance(v, datetime) and v == key_dt
+                )
+            except StopIteration:
+                raise KeyError(key)
         try:
             return self._data.index(key)
         except ValueError:
@@ -1774,24 +1839,27 @@ def get_dummies(
 
     if isinstance(data, _DataFrame):
         if columns is None:
+            # 使用列表推导式替代显式 for 循环收集待转换列
             columns = [
                 c
                 for c in data.columns
                 if data[c].dtype in ("object", "category", "bool")
             ]
-        result = data
-        for col in columns:
-            dummies = _get_dummies_series(
-                list(data[col].values),
-                prefix=(
-                    prefix
-                    if isinstance(prefix, str)
-                    else (prefix[columns.index(col)] if prefix else col)
-                ),
-                sep=prefix_sep,
+
+        # 为每列构建哑变量 DataFrame，再用 _concat_frames 一次性拼接
+        def _build_dummies_for_col(col_idx, col):
+            """为单列构建哑变量 DataFrame。"""
+            actual_prefix = (
+                prefix
+                if isinstance(prefix, str)
+                else (prefix[col_idx] if prefix else col)
             )
-            result = _concat_frames([result, dummies])
-        return result
+            return _get_dummies_series(
+                list(data[col].values), prefix=actual_prefix, sep=prefix_sep
+            )
+
+        all_dummies = [_build_dummies_for_col(i, c) for i, c in enumerate(columns)]
+        return _concat_frames([data] + all_dummies) if all_dummies else data
 
     raise TypeError(
         f"get_dummies expected Series or DataFrame, got {type(data).__name__}"
@@ -1802,18 +1870,14 @@ def _get_dummies_series(values: list, prefix: str, sep: str) -> rspandas_DataFra
     """对单个 Series 做 one-hot 编码。"""
     from .dataframe import DataFrame as _DataFrame
 
-    # 获取唯一值
-    unique_vals = []
-    seen = set()
-    for v in values:
-        if v is not None and v not in seen:
-            unique_vals.append(v)
-            seen.add(v)
+    # 获取唯一值（使用 dict.fromkeys 保序去重，过滤 None）
+    unique_vals = list(dict.fromkeys(v for v in values if v is not None))
 
-    result_data = {}
-    for uv in unique_vals:
-        col_name = f"{prefix}{sep}{uv}"
-        result_data[col_name] = [1 if v == uv else 0 for v in values]
+    # 使用字典推导式一次性生成所有列（每列为该值的 one-hot 编码）
+    result_data = {
+        f"{prefix}{sep}{uv}": [1 if v == uv else 0 for v in values]
+        for uv in unique_vals
+    }
 
     return _DataFrame(result_data)
 
@@ -1827,11 +1891,14 @@ def _concat_frames(frames: list) -> rspandas_DataFrame:
     if len(frames) == 1:
         return frames[0]
 
-    result_data = {}
+    # 保留每个列名首次出现的列数据 - 使用普通 dict 按 key 去重（Python 3.7+ dict 保持插入顺序）
+    result_data: Dict[str, list] = {}
     for df in frames:
-        for col in df.columns:
-            if col not in result_data:
-                result_data[col] = list(df[col].values)
+        # 使用 update 仅插入尚未存在的 key（用 dict 推导式过滤）
+        new_cols = {
+            col: list(df[col].values) for col in df.columns if col not in result_data
+        }
+        result_data.update(new_cols)
 
     return _DataFrame(result_data)
 
@@ -1883,16 +1950,12 @@ def cut(
 
     n_bins = len(bins) - 1
 
-    # 生成标签
+    # 生成标签（使用列表推导式替代显式 for 循环）
     if labels is None:
-        labels = []
-        for i in range(n_bins):
-            left = bins[i]
-            right_val = bins[i + 1]
-            if right:
-                labels.append(f"({left}, {right_val}]")
-            else:
-                labels.append(f"[{left}, {right_val})")
+        if right:
+            labels = [f"({bins[i]}, {bins[i + 1]}]" for i in range(n_bins)]
+        else:
+            labels = [f"[{bins[i]}, {bins[i + 1]})" for i in range(n_bins)]
         if include_lowest:
             if right:
                 labels[0] = f"[{bins[0]}, {bins[1]}]"
@@ -1901,38 +1964,25 @@ def cut(
     else:
         labels = list(labels)
 
-    # 分配区间
-    result = []
-    for v in values:
+    # 分配区间 - 使用辅助函数 + 列表推导式替代嵌套 for 循环
+    def _find_bin(v):
+        """返回 v 所在区间的标签，未匹配则返回 None。"""
         if v is None:
-            result.append(None)
-            continue
-
-        assigned = False
+            return None
         for i in range(n_bins):
             if right:
-                if i == 0 and include_lowest:
-                    if bins[0] <= v <= bins[1]:
-                        result.append(labels[i])
-                        assigned = True
-                        break
+                if i == 0 and include_lowest and bins[0] <= v <= bins[1]:
+                    return labels[i]
                 if bins[i] < v <= bins[i + 1]:
-                    result.append(labels[i])
-                    assigned = True
-                    break
+                    return labels[i]
             else:
-                if i == n_bins - 1 and include_lowest:
-                    if bins[-2] <= v <= bins[-1]:
-                        result.append(labels[i])
-                        assigned = True
-                        break
+                if i == n_bins - 1 and include_lowest and bins[-2] <= v <= bins[-1]:
+                    return labels[i]
                 if bins[i] <= v < bins[i + 1]:
-                    result.append(labels[i])
-                    assigned = True
-                    break
+                    return labels[i]
+        return None
 
-        if not assigned:
-            result.append(None)
+    result = [_find_bin(v) for v in values]
 
     return Series(result, dtype="category")
 
@@ -1967,14 +2017,16 @@ def qcut(
 
     if isinstance(q, int):
         n_bins = q
-        # 计算分位点
-        quantiles = []
-        for i in range(n_bins + 1):
+
+        # 计算分位点（使用辅助函数 + 列表推导式替代显式 for 循环）
+        def _quantile_at(i):
             pos = i * (n - 1) / n_bins
             lo = int(pos)
             hi = min(lo + 1, n - 1)
             frac = pos - lo
-            quantiles.append(non_null[lo] + frac * (non_null[hi] - non_null[lo]))
+            return non_null[lo] + frac * (non_null[hi] - non_null[lo])
+
+        quantiles = [_quantile_at(i) for i in range(n_bins + 1)]
     else:
         quantiles = sorted(q)
         n_bins = len(quantiles) - 1
@@ -2028,28 +2080,14 @@ def crosstab(
     else:
         val_vals = [1] * len(idx_vals)
 
-    # 收集所有 index 和 column 值
-    unique_idx = []
-    idx_seen = set()
-    for v in idx_vals:
-        if v not in idx_seen:
-            unique_idx.append(v)
-            idx_seen.add(v)
+    # 收集所有 index 和 column 值（使用 dict.fromkeys 保序去重）
+    unique_idx = list(dict.fromkeys(idx_vals))
+    unique_col = list(dict.fromkeys(col_vals))
 
-    unique_col = []
-    col_seen = set()
-    for v in col_vals:
-        if v not in col_seen:
-            unique_col.append(v)
-            col_seen.add(v)
-
-    # 构建交叉表
+    # 构建交叉表 - 使用 dict.setdefault 简化分组
     groups: Dict[tuple, list] = {}
-    for i, iv, cv in zip(range(len(idx_vals)), idx_vals, col_vals):
-        key = (iv, cv)
-        if key not in groups:
-            groups[key] = []
-        groups[key].append(val_vals[i])
+    for i, (iv, cv) in enumerate(zip(idx_vals, col_vals)):
+        groups.setdefault((iv, cv), []).append(val_vals[i])
 
     # 聚合
     def _agg(vals):
@@ -2070,34 +2108,37 @@ def crosstab(
             return max(nums)
         return 0
 
-    # 构建结果
-    result_data: Dict[str, list] = {}
-    result_data[""] = unique_idx  # 行索引列
-
-    for cv in unique_col:
-        col_data = []
-        for iv in unique_idx:
-            col_data.append(_agg(groups.get((iv, cv), [])))
-        result_data[str(cv)] = col_data
+    # 构建结果（使用字典推导式 + 嵌套列表推导式替代显式 for 循环）
+    result_data: Dict[str, list] = {
+        "": unique_idx,  # 行索引列
+    }
+    result_data.update(
+        {
+            str(cv): [_agg(groups.get((iv, cv), [])) for iv in unique_idx]
+            for cv in unique_col
+        }
+    )
 
     df = _DataFrame(result_data)
 
     # 边际汇总
     if margins:
-        row_sums = []
-        for iv in unique_idx:
-            row_sum = 0
-            for cv in unique_col:
-                row_sum += _agg(groups.get((iv, cv), []))
-            row_sums.append(row_sum)
+        # 行汇总：每行所有列的聚合值之和
+        row_sums = [
+            sum(_agg(groups.get((iv, cv), [])) for cv in unique_col)
+            for iv in unique_idx
+        ]
         df["All"] = row_sums
 
-        col_sums = [""]  # 索引列名
-        for cv in unique_col:
-            col_sum = sum(_agg(groups.get((iv, cv), [])) for iv in unique_idx)
-            col_sums.append(col_sum)
-        if margins:
-            col_sums.append(sum(row_sums))
+        # 列汇总：每列所有行的聚合值之和
+        col_sums = (
+            [""]
+            + [
+                sum(_agg(groups.get((iv, cv), [])) for iv in unique_idx)
+                for cv in unique_col
+            ]
+            + [sum(row_sums)]
+        )
 
         # 添加汇总行
         df_data = {
@@ -2111,12 +2152,46 @@ def crosstab(
             sum(v for v in df[c].values if v is not None) for c in df.columns if c != ""
         )
         if total > 0:
-            for c in df.columns:
-                if c != "":
-                    _ = [v / total for v in df[c].values]  # noqa: F841
+            # 使用字典推导式批量归一化所有列
+            df_data = {
+                c: (
+                    [v / total for v in df[c].values] if c != "" else list(df[c].values)
+                )
+                for c in df.columns
+            }
+            df = _DataFrame(df_data)
     elif normalize == "index":
-        pass  # 按行归一化 (预留)
+        # 按行归一化：每行总和为 1
+        row_totals = [
+            sum(df[c].values[i] for c in df.columns if c != "") for i in range(len(df))
+        ]
+        df_data = {
+            c: (
+                [
+                    df[c].values[i] / row_totals[i] if row_totals[i] > 0 else 0
+                    for i in range(len(df))
+                ]
+                if c != ""
+                else list(df[c].values)
+            )
+            for c in df.columns
+        }
+        df = _DataFrame(df_data)
     elif normalize == "columns":
-        pass  # 按列归一化 (预留)
+        # 按列归一化：每列总和为 1
+        col_totals = {
+            c: sum(v for v in df[c].values if v is not None)
+            for c in df.columns
+            if c != ""
+        }
+        df_data = {
+            c: (
+                [v / col_totals[c] if col_totals[c] > 0 else 0 for v in df[c].values]
+                if c != ""
+                else list(df[c].values)
+            )
+            for c in df.columns
+        }
+        df = _DataFrame(df_data)
 
     return df

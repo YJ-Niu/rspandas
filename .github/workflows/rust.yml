@@ -1,0 +1,61 @@
+name: Rust Checks
+
+# dev 分支的快速 Rust 静态检查（fmt + clippy）。
+# 完整的 maturin 构建 / wheel / 冒烟测试由 main 分支的 ci.yml 负责。
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+# 同一分支/PR 的新推送会取消仍在进行的旧运行，节省 CI 时间。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  checks:
+    name: fmt + clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # 三大平台都跑 clippy：src/lib.rs 中的字体注册逻辑按
+      # #[cfg(target_os = "macos" / "linux" / "windows")] 分支实现，
+      # 只有在对应平台上 clippy 才会真正检查到这些代码。
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pyo3 的 build script 需要一个 Python 解释器来探测 ABI / 版本，
+      # 否则 cargo clippy / check 无法编译（找不到 Python 配置）。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # 按操作系统自动隔离缓存，rust-cache 默认已区分 runner OS。
+      - uses: Swatinem/rust-cache@v2
+
+      # 格式检查与平台无关，只需在一个平台上跑一次。
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+
+      # clippy 走 cargo check 模式（不做最终链接），因此无需 extension-module，
+      # 也不会去链接 libpython。不加 --target：直接用各 runner 的原生架构
+      # （修复原先在 arm64 的 macos-latest 上交叉编译 x86_64-apple-darwin 的问题）。
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings

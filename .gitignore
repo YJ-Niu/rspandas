@@ -8,6 +8,9 @@ __pycache__/
 *$py.class
 *.so
 *.png
+*.csv
+*.xlsx
+*.parquet
 *.egg-info/
 dist/
 build/
@@ -31,7 +34,6 @@ Thumbs.db
 
 # Data / plots
 test/
-testing/
 main*.py
 out/
 test_data/

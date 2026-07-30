@@ -84,6 +84,10 @@ if [[ -f "$VENV_PY" && -z "$PYTHON_EXEC_SET" ]]; then
   PYTHON_EXEC="$VENV_PY"
 fi
 
+# 将 Python 路径转换为绝对路径
+PYTHON_ABS="$(cd "$(dirname "$PYTHON_EXEC")" && pwd)/$(basename "$PYTHON_EXEC")"
+echo "Using Python: $PYTHON_ABS"
+
 # Ensure chosen Python executable exists or is runnable
 if ! command -v "$PYTHON_EXEC" >/dev/null 2>&1 && [[ ! -x "$PYTHON_EXEC" && ! -f "$PYTHON_EXEC" ]]; then
   echo "Error: Python executable '$PYTHON_EXEC' not found or not executable." >&2
@@ -116,16 +120,24 @@ if ! cargo clippy --all-targets -- -D warnings; then
 fi
 echo "  -> clippy checks passed."
 
+# ========== 构建前的 Flake8 Python 代码检查 ==========
+echo "Running flake8 checks (uv run flake8 python/ --max-line-length=500 --extend-ignore=E203) ..."
+if ! uv run flake8 python/ --max-line-length=500 --extend-ignore=E203; then
+  echo "Error: flake8 checks failed. Fix the warnings above before building." >&2
+  exit 1
+fi
+echo "  -> flake8 checks passed."
+
 BUILD_ARGS=()
 if $RELEASE; then BUILD_ARGS+=(--release); else BUILD_ARGS+=(--debug); fi
 
 mkdir -p "$OUT_DIR"
 echo "Building wheel into $OUT_DIR using $PYTHON_EXEC (release=$RELEASE)"
 if [[ "$MATURIN_MODE" == "path" ]]; then
-  maturin build "${BUILD_ARGS[@]}" -o "$OUT_DIR" -i "$PYTHON_EXEC"
+  maturin build "${BUILD_ARGS[@]}" -o "$OUT_DIR" -i "$PYTHON_ABS"
 else
   # run maturin as a module under the chosen Python
-  "$PYTHON_EXEC" -m maturin build "${BUILD_ARGS[@]}" -o "$OUT_DIR" -i "$PYTHON_EXEC"
+  "$PYTHON_ABS" -m maturin build "${BUILD_ARGS[@]}" -o "$OUT_DIR" -i "$PYTHON_ABS"
 fi
 
 # Locate the built wheel and install it into the local venv
