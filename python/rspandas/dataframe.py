@@ -1505,7 +1505,34 @@ class DataFrame:
         :param expr: 表达式字符串
         :param inplace: 是否原地修改
         """
-        # 使用列表推导式替代显式 for 循环
+        # 优先尝试用 Rust 层 query_filter 处理简单比较表达式（如 "col > 5"）
+        try:
+            import re
+
+            simple = re.match(
+                r"^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*([+-]?\d+\.?\d*)\s*$", expr
+            )
+            if simple:
+                col_name, op, val_str = simple.groups()
+                if col_name in self._columns:
+                    col_idx = self._columns.index(col_name)
+                    value = float(val_str)
+                    inner = self._inner.query_filter(col_idx, op, value)
+                    new_df = DataFrame.__new__(DataFrame)
+                    new_df._inner = inner
+                    new_df._columns = list(self._columns)
+                    new_df._nrows = inner.nrows()
+                    new_df._index = list(range(new_df._nrows))
+                    if inplace:
+                        self._inner = inner
+                        self._nrows = new_df._nrows
+                        self._index = new_df._index
+                        return self
+                    return new_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现：使用列表推导式替代显式 for 循环
         mask = [
             bool(
                 eval(
@@ -3374,7 +3401,20 @@ class DataFrame:
 
     def stack(self, level: int = -1) -> "DataFrame":
         """将列堆叠为行 (v1.0.0)。"""
-        # 简化版: 仅支持单层
+        # 优先调用 Rust 层 stack
+        try:
+            inner = self._inner.stack(level)
+            new_df = DataFrame.__new__(DataFrame)
+            new_df._inner = inner
+            # Rust 层 stack 固定返回 ["index", "variable", "value"] 三列
+            new_df._columns = ["index", "variable", "value"]
+            new_df._nrows = inner.nrows()
+            new_df._index = list(range(new_df._nrows))
+            return new_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现
         n = self._nrows
         idx_name = self._index_name or "index"
         # 使用列表推导式替代嵌套显式 for 循环
@@ -3397,7 +3437,32 @@ class DataFrame:
 
     def unstack(self) -> "DataFrame":
         """stack 的反操作 (v1.0.0) - 简化版。"""
-        # 如果 DataFrame 包含 'variable' 和 'value' 列, 尝试 pivot
+        # 优先调用 Rust 层 unstack（要求包含 variable/value 列）
+        try:
+            if "variable" in self._columns and "value" in self._columns:
+                other_cols = [
+                    c for c in self._columns if c not in ("variable", "value")
+                ]
+                if other_cols:
+                    index_col = self._columns.index(other_cols[0])
+                    var_col = self._columns.index("variable")
+                    value_col = self._columns.index("value")
+                    inner = self._inner.unstack(index_col, var_col, value_col)
+                    new_df = DataFrame.__new__(DataFrame)
+                    new_df._inner = inner
+                    # 从 inner 获取列名
+                    try:
+                        cols = inner.columns()
+                        new_df._columns = list(cols)
+                    except Exception:
+                        new_df._columns = []
+                    new_df._nrows = inner.nrows()
+                    new_df._index = list(range(new_df._nrows))
+                    return new_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现：如果 DataFrame 包含 'variable' 和 'value' 列, 尝试 pivot
         if "variable" in self._columns and "value" in self._columns:
             other_cols = [c for c in self._columns if c not in ("variable", "value")]
             if other_cols:

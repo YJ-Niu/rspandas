@@ -1732,6 +1732,367 @@ impl Series {
             self.clone()
         }
     }
+
+    // ---------- 插值 / 采样 / 重采样 ----------
+
+    /// 线性插值填充 None
+    /// method: "linear" / "nearest" / "zero"
+    /// limit: 最多连续填充数量（None 表示无限制）
+    pub fn interpolate(&self, method: &str, limit: Option<usize>) -> Series {
+        let f64_vec = self.as_f64_vec();
+        let n = f64_vec.len();
+        if n == 0 {
+            return self.clone();
+        }
+        let mut result: Vec<Option<f64>> = f64_vec.clone();
+        let mut i = 0;
+        while i < n {
+            if result[i].is_some() {
+                i += 1;
+                continue;
+            }
+            // 找到连续 None 区间 [i, j)
+            let mut j = i;
+            while j < n && result[j].is_none() {
+                j += 1;
+            }
+            let left_val = if i > 0 { result[i - 1] } else { None };
+            let right_val = if j < n { result[j] } else { None };
+            match (left_val, right_val) {
+                (Some(lv), Some(rv)) => {
+                    let gap = j - i;
+                    for (k, slot) in result.iter_mut().enumerate().take(j).skip(i) {
+                        if let Some(lim) = limit
+                            && k - i >= lim
+                        {
+                            break;
+                        }
+                        let frac = (k - i + 1) as f64 / (gap + 1) as f64;
+                        *slot = Some(lv + (rv - lv) * frac);
+                    }
+                }
+                (Some(lv), None) => {
+                    if method == "linear" {
+                        for (k, slot) in result.iter_mut().enumerate().take(j).skip(i) {
+                            if let Some(lim) = limit
+                                && k - i >= lim
+                            {
+                                break;
+                            }
+                            *slot = Some(lv);
+                        }
+                    }
+                }
+                (None, Some(rv)) => {
+                    if method == "linear" {
+                        for (k, slot) in result.iter_mut().enumerate().take(j).skip(i) {
+                            if let Some(lim) = limit
+                                && j - k > lim
+                            {
+                                continue;
+                            }
+                            *slot = Some(rv);
+                        }
+                    }
+                }
+                (None, None) => {}
+            }
+            i = j;
+        }
+        Series {
+            name: self.name.clone(),
+            data: ColumnData::Float(result),
+        }
+    }
+
+    /// 随机采样
+    /// n: 采样数量（None 时使用 frac）
+    /// frac: 采样比例
+    /// replace: 是否有放回
+    /// seed: 随机种子
+    pub fn sample(
+        &self,
+        n: Option<usize>,
+        frac: Option<f64>,
+        replace: bool,
+        seed: Option<u64>,
+    ) -> Series {
+        let len = self.len();
+        if len == 0 {
+            return self.clone();
+        }
+        let sample_n = if let Some(f) = frac {
+            ((len as f64) * f).round() as usize
+        } else {
+            n.unwrap_or(1)
+        };
+        // 简单 LCG 伪随机数生成器（可重现）
+        let mut state = seed.unwrap_or(0xC0FFEE);
+        let next_rand = |state: &mut u64| {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (*state >> 33) as usize
+        };
+        let indices: Vec<usize> = if replace {
+            (0..sample_n).map(|_| next_rand(&mut state) % len).collect()
+        } else {
+            let take_n = sample_n.min(len);
+            // Fisher-Yates 洗牌
+            let mut idx: Vec<usize> = (0..len).collect();
+            for k in 0..take_n {
+                let r = k + next_rand(&mut state) % (len - k);
+                idx.swap(k, r);
+            }
+            idx.truncate(take_n);
+            idx
+        };
+        // 按采样索引构造新 Series
+        let mut sampled: Vec<Option<f64>> = Vec::with_capacity(indices.len());
+        let f64_vec = self.as_f64_vec();
+        for idx in &indices {
+            sampled.push(f64_vec[*idx]);
+        }
+        Series {
+            name: self.name.clone(),
+            data: ColumnData::Float(sampled),
+        }
+    }
+
+    /// 时间序列重采样聚合
+    /// timestamps: 每行对应的 epoch 秒
+    /// freq_seconds: 桶宽度（秒）
+    /// agg: "sum"/"mean"/"count"/"min"/"max"/"median"/"first"/"last"
+    /// 返回 (桶起始时间列表, 聚合值列表)
+    pub fn resample(
+        &self,
+        timestamps: &[f64],
+        freq_seconds: f64,
+        agg: &str,
+    ) -> (Vec<f64>, Vec<Option<f64>>) {
+        let n = self.len();
+        if n == 0 || timestamps.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let values = self.as_f64_vec();
+        // 按 floor(ts/freq) 分组
+        let mut buckets: HashMap<i64, Vec<f64>> = HashMap::new();
+        let mut bucket_order: Vec<i64> = Vec::new();
+        for i in 0..n.min(timestamps.len()) {
+            if values[i].is_none() {
+                continue;
+            }
+            let bucket_id = (timestamps[i] / freq_seconds).floor() as i64;
+            if !buckets.contains_key(&bucket_id) {
+                bucket_order.push(bucket_id);
+            }
+            buckets
+                .entry(bucket_id)
+                .or_default()
+                .push(values[i].unwrap());
+        }
+        // 按时间戳升序
+        bucket_order.sort();
+        let out_ts: Vec<f64> = bucket_order
+            .iter()
+            .map(|b| (*b as f64) * freq_seconds)
+            .collect();
+        let out_vals: Vec<Option<f64>> = bucket_order
+            .iter()
+            .map(|b| {
+                let nums = buckets.get(b).unwrap();
+                if nums.is_empty() {
+                    return None;
+                }
+                match agg {
+                    "sum" => Some(nums.iter().sum()),
+                    "mean" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
+                    "count" => Some(nums.len() as f64),
+                    "min" => nums.iter().cloned().fold(None::<f64>, |acc, x| {
+                        Some(match acc {
+                            Some(a) => a.min(x),
+                            None => x,
+                        })
+                    }),
+                    "max" => nums.iter().cloned().fold(None::<f64>, |acc, x| {
+                        Some(match acc {
+                            Some(a) => a.max(x),
+                            None => x,
+                        })
+                    }),
+                    "median" => {
+                        let mut sorted = nums.clone();
+                        sorted
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        let m = sorted.len();
+                        if m % 2 == 1 {
+                            Some(sorted[m / 2])
+                        } else {
+                            Some((sorted[m / 2 - 1] + sorted[m / 2]) / 2.0)
+                        }
+                    }
+                    "first" => Some(nums[0]),
+                    "last" => Some(nums[nums.len() - 1]),
+                    _ => None,
+                }
+            })
+            .collect();
+        (out_ts, out_vals)
+    }
+
+    // ---------- SeriesGroupBy 聚合 ----------
+
+    /// 按 by 列（Vec<String>）分组聚合
+    /// by: 每行对应的分组键（字符串表示）
+    /// agg: "sum"/"mean"/"count"/"min"/"max"/"median"/"std"/"var"/"prod"/"first"/"last"
+    /// 返回 (group_keys, agg_values)
+    pub fn groupby_agg_series(&self, by: &[String], agg: &str) -> (Vec<String>, Vec<Option<f64>>) {
+        let n = self.len();
+        if n == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let values = self.as_f64_vec();
+        // 分组：键 -> 行索引列表
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut group_order: Vec<String> = Vec::new();
+        for (i, key) in by.iter().enumerate().take(n.min(by.len())) {
+            if !groups.contains_key(key) {
+                group_order.push(key.clone());
+            }
+            groups.entry(key.clone()).or_default().push(i);
+        }
+        // 排序键（保持稳定）
+        group_order.sort();
+        let out_vals: Vec<Option<f64>> = group_order
+            .iter()
+            .map(|k| {
+                let indices = groups.get(k).unwrap();
+                let nums: Vec<f64> = indices.iter().filter_map(|&i| values[i]).collect();
+                if nums.is_empty() {
+                    return None;
+                }
+                match agg {
+                    "sum" => Some(nums.iter().sum()),
+                    "mean" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
+                    "count" => Some(nums.len() as f64),
+                    "min" => nums.iter().cloned().fold(None::<f64>, |acc, x| {
+                        Some(match acc {
+                            Some(a) => a.min(x),
+                            None => x,
+                        })
+                    }),
+                    "max" => nums.iter().cloned().fold(None::<f64>, |acc, x| {
+                        Some(match acc {
+                            Some(a) => a.max(x),
+                            None => x,
+                        })
+                    }),
+                    "median" => {
+                        let mut sorted = nums.clone();
+                        sorted
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        let m = sorted.len();
+                        if m % 2 == 1 {
+                            Some(sorted[m / 2])
+                        } else {
+                            Some((sorted[m / 2 - 1] + sorted[m / 2]) / 2.0)
+                        }
+                    }
+                    "std" => {
+                        if nums.len() < 2 {
+                            return None;
+                        }
+                        let m = nums.iter().sum::<f64>() / nums.len() as f64;
+                        let v =
+                            nums.iter().map(|x| (x - m).powi(2)).sum::<f64>() / nums.len() as f64;
+                        Some(v.sqrt())
+                    }
+                    "var" => {
+                        if nums.len() < 2 {
+                            return None;
+                        }
+                        let m = nums.iter().sum::<f64>() / nums.len() as f64;
+                        Some(nums.iter().map(|x| (x - m).powi(2)).sum::<f64>() / nums.len() as f64)
+                    }
+                    "prod" => Some(nums.iter().product()),
+                    "first" => Some(nums[0]),
+                    "last" => Some(nums[nums.len() - 1]),
+                    _ => None,
+                }
+            })
+            .collect();
+        (group_order, out_vals)
+    }
+
+    // ---------- 批量聚合（一次遍历多聚合） ----------
+
+    /// 一次遍历计算多个聚合值
+    /// aggs: 聚合名列表，如 ["sum", "mean", "min", "max", "count", "std", "var"]
+    pub fn batch_agg(&self, aggs: &[String]) -> Vec<Option<f64>> {
+        let values: Vec<f64> = self.as_f64_vec().into_iter().flatten().collect();
+        let cnt = values.len();
+        if cnt == 0 {
+            return aggs.iter().map(|_| None).collect();
+        }
+        let sum: f64 = values.iter().sum();
+        let mean = sum / cnt as f64;
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        aggs.iter()
+            .map(|a| match a.as_str() {
+                "sum" => Some(sum),
+                "mean" => Some(mean),
+                "count" => Some(cnt as f64),
+                "min" => Some(sorted[0]),
+                "max" => Some(sorted[cnt - 1]),
+                "median" => {
+                    if cnt % 2 == 1 {
+                        Some(sorted[cnt / 2])
+                    } else {
+                        Some((sorted[cnt / 2 - 1] + sorted[cnt / 2]) / 2.0)
+                    }
+                }
+                "std" => {
+                    if cnt < 2 {
+                        None
+                    } else {
+                        let v = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / cnt as f64;
+                        Some(v.sqrt())
+                    }
+                }
+                "var" => {
+                    if cnt < 2 {
+                        None
+                    } else {
+                        Some(values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / cnt as f64)
+                    }
+                }
+                "prod" => Some(values.iter().product()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // ---------- 简单表达式过滤（query 简化版） ----------
+
+    /// 简单比较过滤：列 op 标量
+    /// op: ">" / "<" / ">=" / "<=" / "==" / "!="
+    /// 返回符合条件行的 mask
+    pub fn compare_scalar(&self, op: &str, value: f64) -> Vec<bool> {
+        let f64_vec = self.as_f64_vec();
+        f64_vec
+            .iter()
+            .map(|x| match (x, op) {
+                (Some(v), ">") => *v > value,
+                (Some(v), "<") => *v < value,
+                (Some(v), ">=") => *v >= value,
+                (Some(v), "<=") => *v <= value,
+                (Some(v), "==") => (*v - value).abs() < f64::EPSILON,
+                (Some(v), "!=") => (*v - value).abs() >= f64::EPSILON,
+                _ => false,
+            })
+            .collect()
+    }
 }
 
 // =====================================================================
@@ -2712,6 +3073,87 @@ impl PySeries {
     fn dt_dayofweek(&self, py: Python<'_>) -> Self {
         let inner = py.detach(|| self.inner.dt_dayofweek());
         PySeries { inner }
+    }
+
+    // ---------- 插值 / 采样 / 重采样 ----------
+
+    /// 线性插值填充 None
+    fn interpolate(&self, py: Python<'_>, method: &str, limit: Option<usize>) -> Self {
+        let method_owned = method.to_string();
+        let inner = py.detach(|| self.inner.interpolate(&method_owned, limit));
+        PySeries { inner }
+    }
+
+    /// 随机采样
+    fn sample(
+        &self,
+        py: Python<'_>,
+        n: Option<usize>,
+        frac: Option<f64>,
+        replace: bool,
+        seed: Option<u64>,
+    ) -> Self {
+        let inner = py.detach(|| self.inner.sample(n, frac, replace, seed));
+        PySeries { inner }
+    }
+
+    /// 时间序列重采样聚合
+    /// 返回 (桶起始时间列表, 聚合值列表)
+    fn resample<'py>(
+        &self,
+        py: Python<'py>,
+        timestamps: Vec<f64>,
+        freq_seconds: f64,
+        agg: &str,
+    ) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
+        let agg_owned = agg.to_string();
+        let (out_ts, out_vals) =
+            py.detach(|| self.inner.resample(&timestamps, freq_seconds, &agg_owned));
+        let ts_list = PyList::new(py, out_ts.iter().copied())?;
+        let val_list = PyList::new(py, out_vals.iter().map(|v| v.into_pyobject(py).ok()))?;
+        Ok((ts_list, val_list))
+    }
+
+    // ---------- SeriesGroupBy 聚合 ----------
+
+    /// 按字符串列表分组聚合
+    /// 返回 (group_keys, agg_values)
+    fn groupby_agg_series<'py>(
+        &self,
+        py: Python<'py>,
+        by: Vec<String>,
+        agg: &str,
+    ) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
+        let agg_owned = agg.to_string();
+        let (keys, vals) = py.detach(|| self.inner.groupby_agg_series(&by, &agg_owned));
+        let keys_list = PyList::new(py, keys.iter().map(|s| s.as_str()))?;
+        let vals_list = PyList::new(py, vals.iter().map(|v| v.into_pyobject(py).ok()))?;
+        Ok((keys_list, vals_list))
+    }
+
+    // ---------- 批量聚合（一次遍历多聚合） ----------
+
+    /// 一次遍历计算多个聚合值
+    /// aggs: 聚合名列表
+    fn batch_agg<'py>(&self, py: Python<'py>, aggs: Vec<String>) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.batch_agg(&aggs));
+        let list = PyList::new(py, result.iter().map(|v| v.into_pyobject(py).ok()))?;
+        Ok(list)
+    }
+
+    // ---------- 简单表达式过滤（query 简化版） ----------
+
+    /// 简单比较过滤：列 op 标量
+    /// op: ">" / "<" / ">=" / "<=" / "==" / "!="
+    fn compare_scalar<'py>(
+        &self,
+        py: Python<'py>,
+        op: &str,
+        value: f64,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let op_owned = op.to_string();
+        let mask = py.detach(|| self.inner.compare_scalar(&op_owned, value));
+        PyList::new(py, mask.iter().copied())
     }
 }
 

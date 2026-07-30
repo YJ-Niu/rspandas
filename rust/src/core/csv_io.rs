@@ -301,3 +301,83 @@ pub fn write_csv_path<'py>(
         Ok(())
     })
 }
+
+/// 分块读取 CSV：返回每个块的 (headers, PySeries 列表) 列表
+/// chunk_size: 每块的行数
+#[pyfunction]
+pub fn read_csv_chunks<'py>(
+    py: Python<'py>,
+    content: &str,
+    has_header: bool,
+    chunk_size: usize,
+) -> PyResult<Vec<(Vec<String>, Vec<PySeries>)>> {
+    if chunk_size == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "chunk_size must be > 0",
+        ));
+    }
+    // 释放 GIL 解析 CSV
+    let (headers, cols) = py.detach(|| parse_csv_string(content, has_header))?;
+    if cols.is_empty() {
+        return Ok(Vec::new());
+    }
+    let n_rows = cols[0].len();
+    let mut chunks: Vec<(Vec<String>, Vec<PySeries>)> = Vec::new();
+    let mut start = 0;
+    while start < n_rows {
+        let end = (start + chunk_size).min(n_rows);
+        // 切片每列
+        let chunk_cols: Vec<Vec<Option<String>>> = cols
+            .par_iter()
+            .map(|col| col[start..end].to_vec())
+            .collect();
+        // 类型推断并构建 Series
+        let series_list: Vec<PySeries> = headers
+            .par_iter()
+            .zip(chunk_cols.par_iter())
+            .map(|(h, col)| {
+                if col.is_empty() {
+                    return PySeries {
+                        inner: Series::from_options_string(h.clone(), &[]),
+                    };
+                }
+                let (dtype, _strings) = infer_column(col);
+                let casted = cast_strings(col, dtype);
+                let series = match dtype {
+                    DType::Int64 => {
+                        let ints: Vec<Option<i64>> = casted
+                            .par_iter()
+                            .map(|v| v.as_ref().and_then(|s| s.parse::<i64>().ok()))
+                            .collect();
+                        Series::from_options_i64(h.clone(), &ints)
+                    }
+                    DType::Float64 => {
+                        let floats: Vec<Option<f64>> = casted
+                            .par_iter()
+                            .map(|v| v.as_ref().and_then(|s| s.parse::<f64>().ok()))
+                            .collect();
+                        Series::from_options_f64(h.clone(), &floats)
+                    }
+                    DType::Bool => {
+                        let bools: Vec<Option<bool>> = casted
+                            .par_iter()
+                            .map(|v| {
+                                v.as_ref().map(|s| {
+                                    let sl = s.to_lowercase();
+                                    sl == "true" || sl == "1"
+                                })
+                            })
+                            .collect();
+                        Series::from_options_bool(h.clone(), &bools)
+                    }
+                    DType::Object => Series::from_options_string(h.clone(), col),
+                    DType::Categorical => Series::from_options_string(h.clone(), col),
+                };
+                PySeries { inner: series }
+            })
+            .collect();
+        chunks.push((headers.clone(), series_list));
+        start = end;
+    }
+    Ok(chunks)
+}

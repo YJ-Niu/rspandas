@@ -708,7 +708,7 @@ def read_csv_chunked(
     encoding : str
         文件编码（默认 utf-8）。
     delimiter : str
-        分隔符（默认逗号）。
+        分隔符（默认逗号，Rust 层仅支持逗号，其他分隔符回退到 Python 实现）。
     header : bool
         是否有表头（默认 True）。
 
@@ -717,6 +717,35 @@ def read_csv_chunked(
     DataFrame
         每次产出一个 chunk_size 行的 DataFrame。
     """
+    # 优先调用 Rust 层 read_csv_chunks（仅支持逗号分隔符）
+    if delimiter == ",":
+        try:
+            from .rspandas import read_csv_chunks as _read_csv_chunks_rust
+
+            with open(path, "r", encoding=encoding, newline="") as f:
+                content = f.read()
+            chunks = _read_csv_chunks_rust(content, header, chunk_size)
+            from .series import Series as _Series
+            from .dataframe import DataFrame as _DataFrame
+
+            for cols, series_list in chunks:
+                # 构造 Series 列表
+                py_series_list = []
+                for s in series_list:
+                    py_s = _Series.__new__(_Series)
+                    py_s._inner = s
+                    py_s._dtype_str = s.dtype
+                    py_s._index = list(range(s.size))
+                    py_s._name = s.name
+                    py_series_list.append(py_s)
+                # 直接构造 DataFrame
+                df_data = {c: py_s.values for c, py_s in zip(cols, py_series_list)}
+                yield _DataFrame(df_data)
+            return
+        except Exception:
+            pass
+
+    # 回退到 Python 实现
     import csv as _csv
 
     with open(path, "r", encoding=encoding, newline="") as f:

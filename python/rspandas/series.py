@@ -2646,6 +2646,24 @@ class Series:
         :param limit_area: 区域限制 ('inside'/'outside'/None)
         :param downcast: 类型降级（未实现）
         """
+        # 优先调用 Rust 层 interpolate
+        if method == "linear":
+            try:
+                limit_n = int(limit) if limit is not None else None
+                result_inner = self._inner.interpolate("linear", limit_n)
+                new_s = Series.__new__(Series)
+                new_s._inner = result_inner
+                new_s._dtype_str = "float64"
+                new_s._index = list(self._index) if self._index is not None else None
+                new_s._name = self.name
+                if inplace:
+                    self._inner = result_inner
+                    self._dtype_str = "float64"
+                    return self
+                return new_s
+            except Exception:
+                pass
+
         values = self.values
         n = len(values)
 
@@ -2970,6 +2988,32 @@ class Series:
         :param weights: 权重
         :param random_state: 随机种子
         """
+        # 优先调用 Rust 层 sample（不支持 weights，回退到 Python 实现）
+        if weights is None:
+            try:
+                # 将 random_state 转为 u64 种子
+                seed = None
+                if random_state is not None:
+                    if isinstance(random_state, int):
+                        seed = random_state & 0xFFFFFFFFFFFFFFFF
+                    else:
+                        import hashlib
+
+                        h = hashlib.md5(str(random_state).encode()).digest()
+                        seed = int.from_bytes(h[:8], "little")
+                n_int = int(n) if n is not None else None
+                frac_f = float(frac) if frac is not None else None
+                result_inner = self._inner.sample(n_int, frac_f, replace, seed)
+                new_s = Series.__new__(Series)
+                new_s._inner = result_inner
+                new_s._dtype_str = "float64"
+                # 索引按采样结果重新生成（Rust 层未保留原索引）
+                new_s._index = list(range(result_inner.size))
+                new_s._name = self.name
+                return new_s
+            except Exception:
+                pass
+
         import random as _random
 
         values = self.values
@@ -4342,6 +4386,43 @@ class Resampler:
         return dt
 
     def _aggregate(self, aggfunc: str) -> _PySeries:
+        # 优先调用 Rust 层 resample
+        try:
+            from datetime import datetime
+
+            # 将索引转为 epoch 秒
+            timestamps = []
+            for dt in self._index:
+                if isinstance(dt, datetime):
+                    timestamps.append(dt.timestamp())
+                elif isinstance(dt, (int, float)):
+                    timestamps.append(float(dt))
+                else:
+                    timestamps.append(0.0)
+            # 计算 freq_seconds
+            freq_map = {
+                "D": 86400.0,
+                "W": 86400.0 * 7,
+                "H": 3600.0,
+                "h": 3600.0,
+                "S": 1.0,
+            }
+            if self._freq not in freq_map:
+                raise ValueError(f"unsupported freq for Rust: {self._freq}")
+            freq_seconds = freq_map[self._freq]
+            ts_list, val_list = self._s._inner.resample(
+                timestamps, freq_seconds, aggfunc
+            )
+            # 将 epoch 秒转回 datetime
+            from datetime import datetime as _dt
+
+            out_index = [_dt.fromtimestamp(ts) for ts in ts_list]
+            out_values = [v for v in val_list]
+            return Series(out_values, name=self._s.name, index=out_index)
+        except Exception:
+            pass
+
+        # 回退到 Python 实现
         # 按桶分组 - 使用 dict.setdefault 简化分组逻辑
         buckets: dict = {}
         bucket_order: list = []
@@ -5519,6 +5600,20 @@ class SeriesGroupBy:
     def _agg_single(self, func, axis: int = 0, *args, **kwargs) -> Series:
         """单函数聚合（原始 agg 逻辑）。"""
         import math
+
+        # 优先调用 Rust 层 groupby_agg_series（仅支持内置聚合名，不支持 callable）
+        if isinstance(func, str) and not args and not kwargs:
+            try:
+                # 构造分组键字符串列表（按原 Series 顺序）
+                values = self._s.values
+                keys_list = [self._by_key(i, v) for i, v in enumerate(values)]
+                by_str = [k if k is not None else "" for k in keys_list]
+                rust_keys, rust_vals = self._s._inner.groupby_agg_series(by_str, func)
+                rust_keys_list = list(rust_keys)
+                rust_vals_list = [(v if v is not None else None) for v in rust_vals]
+                return Series(rust_vals_list, index=rust_keys_list, name=self._s.name)
+            except Exception:
+                pass
 
         result = {}
         for key, items in self._groups.items():

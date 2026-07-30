@@ -23,44 +23,44 @@ Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉
 
 #### 1.1 Series — Python 层瘦身
 
-| 任务                                     | 状态 | 说明                                                                      |
-| ---------------------------------------- | ---- | ------------------------------------------------------------------------- |
+| 任务                                     | 状态 | 说明                                                                  |
+| ---------------------------------------- | ---- | --------------------------------------------------------------------- |
 | 统计方法下沉 Rust                        | ✓    | sum/mean/std/var/min/max/median 已在 Rust 层实现，Python 调用 Rust 层 |
-| 排序方法下沉 Rust                        | ✓    | sort_values/sort_index 已在 Rust 层实现，Python 调用 Rust 层 |
-| 缺失值处理下沉 Rust                      | ✓    | isna/notna/fillna/dropna/ffill/bfill 已在 Rust 层实现 |
-| 窗口计算下沉 Rust                        | ✓    | rolling_sum/mean/std, expanding_sum/mean, ewm_mean 已在 Rust 层实现 |
-| 字符串操作下沉 Rust                      | ✓    | str_upper/lower/strip/len/contains/replace 已在 Rust 层实现 |
-| 日期时间处理下沉 Rust                    | ✓    | dt_year/month/day/hour/minute/second/dayofweek 已在 Rust 层实现 |
-| 分组聚合下沉 Rust                        | ☐    | SeriesGroupBy 的 agg/apply/transform/sum/mean 等移至 Rust 层 |
-| 插值/采样下沉 Rust                       | ☐    | interpolate/sample 移至 Rust 层 |
-| 比较运算命名方法                         | ✓    | 补全 eq/ne/lt/gt/le/ge 命名方法                                           |
-| 反向算术运算符                           | ✓    | 补全 **rpow**/radd/rsub/rmul/rdiv/rfloordiv/rmod/rdivmod                  |
-| 位运算符                                 | ✓    | 补全 **invert**/**and**/**or**/**xor**/**lshift**/**rshift**              |
-| combine/combine_first                    | ✓    | 补全 Series.combine 和 Series.combine_first                               |
-| loc / at / iat 访问器                    | ✓    | 补全标签索引访问器（\_LocIndexer/\_ILocIndexer + at/iat 属性）            |
-| take / xs / get                          | ✓    | 补全位置选取方法（take 按索引取值；get 按标签取值）                       |
-| corr / cov                               | ✓    | 补全与另一个 Series 的相关系数和协方差                                    |
-| mad                                      | ✓    | 补全平均绝对偏差                                                          |
-| infer_objects / convert_dtypes           | ✓    | 补全类型推断方法                                                          |
-| to_csv / to_excel / to_json / to_parquet | ✓    | 补全 Series 的 IO 输出方法                                                |
-| to_string / to_markdown                  | ✓    | 补全 Series 的格式化输出                                                  |
-| asfreq / tz_localize / tz_convert        | ✓    | 补全时间序列方法                                                          |
-| first / last                             | ✓    | 补全基于时间的首尾选取                                                    |
-| array 属性                               | ✓    | 补全原生 Array 接口（返回 rsnumpy.ndarray）                               |
-| flags / sparse 属性                      | ✓    | 补全标志和稀疏访问器（flags 返回字典；sparse 返回未实现提示）             |
+| 排序方法下沉 Rust                        | ✓    | sort_values/sort_index 已在 Rust 层实现，Python 调用 Rust 层          |
+| 缺失值处理下沉 Rust                      | ✓    | isna/notna/fillna/dropna/ffill/bfill 已在 Rust 层实现                 |
+| 窗口计算下沉 Rust                        | ✓    | rolling_sum/mean/std, expanding_sum/mean, ewm_mean 已在 Rust 层实现   |
+| 字符串操作下沉 Rust                      | ✓    | str_upper/lower/strip/len/contains/replace 已在 Rust 层实现           |
+| 日期时间处理下沉 Rust                    | ✓    | dt_year/month/day/hour/minute/second/dayofweek 已在 Rust 层实现       |
+| 分组聚合下沉 Rust                        | ☐    | SeriesGroupBy 的 agg/apply/transform/sum/mean 等移至 Rust 层          |
+| 插值/采样下沉 Rust                       | ☐    | interpolate/sample 移至 Rust 层                                       |
+| 比较运算命名方法                         | ✓    | 补全 eq/ne/lt/gt/le/ge 命名方法                                       |
+| 反向算术运算符                           | ✓    | 补全 **rpow**/radd/rsub/rmul/rdiv/rfloordiv/rmod/rdivmod              |
+| 位运算符                                 | ✓    | 补全 **invert**/**and**/**or**/**xor**/**lshift**/**rshift**          |
+| combine/combine_first                    | ✓    | 补全 Series.combine 和 Series.combine_first                           |
+| loc / at / iat 访问器                    | ✓    | 补全标签索引访问器（\_LocIndexer/\_ILocIndexer + at/iat 属性）        |
+| take / xs / get                          | ✓    | 补全位置选取方法（take 按索引取值；get 按标签取值）                   |
+| corr / cov                               | ✓    | 补全与另一个 Series 的相关系数和协方差                                |
+| mad                                      | ✓    | 补全平均绝对偏差                                                      |
+| infer_objects / convert_dtypes           | ✓    | 补全类型推断方法                                                      |
+| to_csv / to_excel / to_json / to_parquet | ✓    | 补全 Series 的 IO 输出方法                                            |
+| to_string / to_markdown                  | ✓    | 补全 Series 的格式化输出                                              |
+| asfreq / tz_localize / tz_convert        | ✓    | 补全时间序列方法                                                      |
+| first / last                             | ✓    | 补全基于时间的首尾选取                                                |
+| array 属性                               | ✓    | 补全原生 Array 接口（返回 rsnumpy.ndarray）                           |
+| flags / sparse 属性                      | ✓    | 补全标志和稀疏访问器（flags 返回字典；sparse 返回未实现提示）         |
 
 #### 1.2 DataFrame — Python 层瘦身
 
 | 任务                                                                                              | 状态 | 说明                                                                                                        |
 | ------------------------------------------------------------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------- |
-| 合并/连接下沉 Rust                                                                                | ✓    | merge 已在 Rust 层实现（hash join），Python 调用 Rust 层 |
-| 透视/重塑下沉 Rust                                                                                | ✓    | pivot/melt 已在 Rust 层实现，Python 调用 Rust 层 |
-| 分组聚合下沉 Rust                                                                                 | ✓    | groupby_agg 已在 Rust 层实现（sum/mean/count/min/max），Python 调用 Rust 层 |
-| 排序下沉 Rust                                                                                     | ✓    | sort_values/sort_index 已在 Rust 层实现，Python 调用 Rust 层 |
-| 缺失值处理下沉 Rust                                                                               | ✓    | isnull/notnull/dropna/fillna 已在 Rust 层实现 |
-| 统计聚合下沉 Rust                                                                                 | ✓    | sum/mean/std/var 已在 Rust 层实现，Python 调用 Rust 层 |
-| IO 读写下沉 Rust                                                                                  | ✓    | CSV/Excel/JSON 读写逻辑已在 Rust 层，GIL 释放已优化 |
-| 查询/求值下沉 Rust                                                                                | ☐    | query/eval 移至 Rust 层解析执行 |
+| 合并/连接下沉 Rust                                                                                | ✓    | merge 已在 Rust 层实现（hash join），Python 调用 Rust 层                                                    |
+| 透视/重塑下沉 Rust                                                                                | ✓    | pivot/melt 已在 Rust 层实现，Python 调用 Rust 层                                                            |
+| 分组聚合下沉 Rust                                                                                 | ✓    | groupby_agg 已在 Rust 层实现（sum/mean/count/min/max），Python 调用 Rust 层                                 |
+| 排序下沉 Rust                                                                                     | ✓    | sort_values/sort_index 已在 Rust 层实现，Python 调用 Rust 层                                                |
+| 缺失值处理下沉 Rust                                                                               | ✓    | isnull/notnull/dropna/fillna 已在 Rust 层实现                                                               |
+| 统计聚合下沉 Rust                                                                                 | ✓    | sum/mean/std/var 已在 Rust 层实现，Python 调用 Rust 层                                                      |
+| IO 读写下沉 Rust                                                                                  | ✓    | CSV/Excel/JSON 读写逻辑已在 Rust 层，GIL 释放已优化                                                         |
+| 查询/求值下沉 Rust                                                                                | ☐    | query/eval 移至 Rust 层解析执行                                                                             |
 | at / iat 访问器                                                                                   | ✓    | 补全标量索引访问器（at/iat 属性返回 \_LocIndexer/\_ILocIndexer）                                            |
 | append / merge_asof                                                                               | ✓    | 补全追加行和近似合并（append 纵向追加；merge_asof 按键近似匹配）                                            |
 | `read_html / read_clipboard / read_xml / read_orc / read_stata / read_hdf / read_spss / read_gbq` | ✓    | 补全更多读取格式（已实现，需第三方库支持）                                                                  |
@@ -140,7 +140,7 @@ Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉
 | `add_prefix` / `add_suffix`                | for 遍历索引         | ✓ Python 层优化 | 列表推导式 {str(prefix)+str(k) for k in idx}                                                                                        |
 | `sample`                                   | random.sample 调用   | ✓ Python 层优化 | replace=True 使用列表推导式；replace=False 走 random.sample                                                                         |
 | `argsort`                                  | sorted + lambda      | ✓ Python 层优化 | 使用 sorted(enumerate(values), key=lambda x: x[1]) + 列表推导式取索引                                                               |
-| `sort_values`                              | Python 排序          | ✓ Rust 层实现   | 已移至 Rust 层，Python 调用 `_inner.sort_values()` |
+| `sort_values`                              | Python 排序          | ✓ Rust 层实现   | 已移至 Rust 层，Python 调用 `_inner.sort_values()`                                                                                  |
 | `value_counts`                             | for 统计频率         | ✓ Python 层优化 | 使用 collections.Counter + 列表推导式取值/计数                                                                                      |
 | `unique` / `nunique`                       | for 去重             | ✓ Python 层优化 | 调用 Rust 层 \_inner.unique/nunique                                                                                                 |
 | `duplicated` / `drop_duplicates`           | for 标记重复         | ✓ Python 层优化 | duplicated 用 set + 列表推导式，支持 keep=first/last/False；drop_duplicates 用 set 去重 + 列表推导式                                |
@@ -148,16 +148,16 @@ Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉
 | `fillna` / `replace`                       | for 遍历替换         | ✓ Python 层优化 | fillna 标量走 Rust 层；method=ffill/bfill 用 itertools.accumulate；replace 用列表推导式 + 预编译 regex                              |
 | `cumsum` / `cumprod` / `cummax` / `cummin` | for 累积             | ✓ Python 层优化 | skipna=False 用 itertools.accumulate；skipna=True 保留状态依赖循环                                                                  |
 | `shift` / `diff` / `pct_change`            | for 位移             | ✓ Python 层优化 | 用切片+列表推导式替代显式 for 循环                                                                                                  |
-| `rolling` 系列方法                         | for 窗口遍历         | ✓ Rust 层实现   | rolling_sum/mean/std 已移至 Rust 层 |
-| `expanding` 系列方法                       | for 累积窗口         | ✓ Rust 层实现   | expanding_sum/mean 已移至 Rust 层 |
-| `ewm` 系列方法                             | for 指数加权         | ✓ Rust 层实现   | ewm_mean 已移至 Rust 层 |
-| `resample` 系列方法                        | for 分桶聚合         | ☐               | 移至 Rust 层（待实现） |
-| `StringAccessor` 全部方法                  | for 遍历字符串       | ✓ Rust 层实现   | str_upper/lower/strip/len/contains/replace 已移至 Rust 层，利用 rayon 并行 |
-| `DatetimeAccessor` 全部方法                | for 遍历日期         | ✓ Rust 层实现   | dt_year/month/day/hour/minute/second/dayofweek 已移至 Rust 层 |
+| `rolling` 系列方法                         | for 窗口遍历         | ✓ Rust 层实现   | rolling_sum/mean/std 已移至 Rust 层                                                                                                 |
+| `expanding` 系列方法                       | for 累积窗口         | ✓ Rust 层实现   | expanding_sum/mean 已移至 Rust 层                                                                                                   |
+| `ewm` 系列方法                             | for 指数加权         | ✓ Rust 层实现   | ewm_mean 已移至 Rust 层                                                                                                             |
+| `resample` 系列方法                        | for 分桶聚合         | ☐               | 移至 Rust 层（待实现）                                                                                                              |
+| `StringAccessor` 全部方法                  | for 遍历字符串       | ✓ Rust 层实现   | str_upper/lower/strip/len/contains/replace 已移至 Rust 层，利用 rayon 并行                                                          |
+| `DatetimeAccessor` 全部方法                | for 遍历日期         | ✓ Rust 层实现   | dt_year/month/day/hour/minute/second/dayofweek 已移至 Rust 层                                                                       |
 | `CatAccessor` 全部方法                     | for 遍历分类         | ☐               | 移至 Rust 层                                                                                                                        |
 | `SeriesGroupBy` 全部方法                   | for 分组遍历         | ✓ Python 层优化 | 补全 quantile/skew/kurt/mad/ngroup/cumcount，agg 支持 list/dict 多函数，\_compute_groups 用列表推导式+setdefault，prod 用 math.prod |
 | `describe`                                 | for 遍历统计         | ✓ Python 层优化 | 字典推导式构建 stats + stats.update 字典推导式添加分位数                                                                            |
-| `quantile` / `rank`                        | for 排序计算         | ✓ Rust 层实现   | quantile/rank 已移至 Rust 层 |
+| `quantile` / `rank`                        | for 排序计算         | ✓ Rust 层实现   | quantile/rank 已移至 Rust 层                                                                                                        |
 | `apply` / `map` / `transform`              | Python 回调          | ✓ Python 层优化 | transform 支持 str 函数名走内置聚合广播，callable 保留回调                                                                          |
 | `agg` / `aggregate`                        | for 遍历多个聚合     | ✓ Python 层优化 | 支持 list/dict 多聚合返回 DataFrame，\_agg_single 一次遍历完成                                                                      |
 | `compare`                                  | for 逐元素对比       | ✓ Python 层优化 | 列表推导式构造三元组 + 字典推导式筛选差异                                                                                           |
@@ -178,16 +178,16 @@ Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉
 | `combine_first`                                         | for 遍历列和行               | ✓ Python 层优化 | 已使用 dict.fromkeys 合并列 + 字典推导式 + 列表推导式逐位置合并                                                                         |
 | `update`                                                | for 遍历列和行               | ✓ Python 层优化 | 按列处理 + 预计算 filter_func 集合 + 列表推导式 \_pick(i)，消除嵌套 for 循环                                                            |
 | `add_prefix` / `add_suffix`                             | for 遍历列名                 | ✓ Python 层优化 | 列名列表推导式重命名                                                                                                                    |
-| `sort_values`                                           | for 遍历列排序               | ✓ Rust 层实现   | 已移至 Rust 层，Python 调用 `_inner.sort_values()` |
-| `sort_index`                                            | for 遍历排序                 | ✓ Rust 层实现   | 已移至 Rust 层，Python 调用 `_inner.sort_index()` |
-| `merge` / `join` / `concat`                             | for 遍历合并                 | ✓ Rust 层实现   | merge 已移至 Rust 层（hash join），concat 保留 Python 实现 |
-| `pivot` / `pivot_table` / `melt`                        | for 遍历重塑                 | ✓ Rust 层实现   | pivot/melt 已移至 Rust 层 |
-| `stack` / `unstack`                                     | for 遍历重塑                 | ☐               | 移至 Rust 层（待实现） |
+| `sort_values`                                           | for 遍历列排序               | ✓ Rust 层实现   | 已移至 Rust 层，Python 调用 `_inner.sort_values()`                                                                                      |
+| `sort_index`                                            | for 遍历排序                 | ✓ Rust 层实现   | 已移至 Rust 层，Python 调用 `_inner.sort_index()`                                                                                       |
+| `merge` / `join` / `concat`                             | for 遍历合并                 | ✓ Rust 层实现   | merge 已移至 Rust 层（hash join），concat 保留 Python 实现                                                                              |
+| `pivot` / `pivot_table` / `melt`                        | for 遍历重塑                 | ✓ Rust 层实现   | pivot/melt 已移至 Rust 层                                                                                                               |
+| `stack` / `unstack`                                     | for 遍历重塑                 | ☐               | 移至 Rust 层（待实现）                                                                                                                  |
 | `groupby` 系列方法                                      | for 分组遍历                 | ✓ Python 层优化 | 预取 by 列数组，使用 setdefault 替代 if/else 构建分组，prod 用 math.prod，agg 支持 list/dict 多函数，quantile/ngroup/cumcount/rank 补全 |
 | `drop` / `dropna` / `drop_duplicates`                   | for 遍历删除                 | ✓ Python 层优化 | dropna/list推导式+keep_mask；drop_duplicates 用 set + list推导式保留 idx；drop 用 set 列名 + 列表推导式列索引                           |
 | `duplicated`                                            | for 标记重复                 | ✓ Python 层优化 | 用 list(tuple) 预取行 key + set 检测，支持 keep=first/last/False                                                                        |
 | `fillna` / `replace`                                    | for 遍历替换                 | ✓ Python 层优化 | fillna dict/标量形式已用字典推导式 + list推导式；replace 按 to_replace 类型分三分支，无 limit 时用 list 推导式                          |
-| `apply` / `applymap` / `map`                            | Python 回调                  | ✓ Python 层优化 | 保留 Python 回调，已批量化优化                                                                                                              |
+| `apply` / `applymap` / `map`                            | Python 回调                  | ✓ Python 层优化 | 保留 Python 回调，已批量化优化                                                                                                          |
 | `query` / `eval`                                        | 字符串解析                   | ✓ Python 层优化 | query 用列表推导式逐行 eval；assign 已用字典推导式                                                                                      |
 | `assign`                                                | for 遍历新增列               | ✓ Python 层优化 | 字典推导式批量构建新列 dict                                                                                                             |
 | `compare` / `equals`                                    | for 逐元素对比               | ✓ Python 层优化 | equals 短路比较形状+keys+逐列；compare 用嵌套 list推导式生成 self/other 两列差异 DataFrame                                              |
@@ -212,7 +212,7 @@ Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉
 
 | 文件位置                                           | 循环类型         | 状态            | 优化方案                                                                          |
 | -------------------------------------------------- | ---------------- | --------------- | --------------------------------------------------------------------------------- |
-| `get_loc`                                          | for 遍历查找     | ✓ Python 层优化 | 使用 dict + 列表推导式构建索引映射                                                        |
+| `get_loc`                                          | for 遍历查找     | ✓ Python 层优化 | 使用 dict + 列表推导式构建索引映射                                                |
 | `append` / `difference` / `intersection` / `union` | for 遍历集合操作 | ✓ Python 层优化 | 使用 set + 列表推导式 + dict.fromkeys 保序去重                                    |
 | `unique` / `duplicated`                            | for 去重         | ✓ Python 层优化 | unique 用 dict.fromkeys 保序；duplicated 用 set 检测 + 列表推导式，支持 keep=last |
 | `sort_values`                                      | Python 排序      | ✓ Python 层优化 | sorted() + 列表推导式过滤 None                                                    |
@@ -223,15 +223,15 @@ Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉
 #### 2.4 顶层函数 — 循环优化
 
 | 文件位置                        | 循环类型        | 状态            | 优化方案                                                                                                                                                                                                          |
-| ------------------------------- | --------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------------- | --------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- |
 | `factorize`                     | for 遍历编码    | ✓ Python 层优化 | 列表推导式编码；部分逻辑已下沉 Rust 层                                                                                                                                                                            |
 | `to_numeric`                    | for 遍历转换    | ✓ Python 层优化 | 列表推导式 [_convert_one(v) for v in values]                                                                                                                                                                      |
-| `merge` / `concat`              | for 遍历合并    | ✓ Rust 层实现   | merge 已移至 Rust 层；concat 保留 Python 实现                                                                                                                                                                                                      |
+| `merge` / `concat`              | for 遍历合并    | ✓ Rust 层实现   | merge 已移至 Rust 层；concat 保留 Python 实现                                                                                                                                                                     |
 | `isnull` / `notnull`            | for 遍历检测    | ✓ Python 层优化 | 列表推导式 [v is None for v in obj]                                                                                                                                                                               |
 | `unique` / `value_counts`       | for 去重/统计   | ✓ Python 层优化 | unique 用 dict.fromkeys；value_counts 复用 Series.value_counts                                                                                                                                                    |
 | `cut` / `qcut` / `crosstab`     | for 分箱/交叉表 | ✓ Python 层优化 | cut 用辅助函数 \_find_bin + 列表推导式；qcut 复用 cut；crosstab 用 dict.fromkeys 保序去重 + dict.setdefault 分组 + 字典推导式构建结果，normalize 支持 all/index/columns 三模式（修复原 normalize=all 未赋值 bug） |
 | `get_dummies`                   | for 独热编码    | ✓ Python 层优化 | dict.fromkeys 保序去重 + 字典推导式生成 one-hot 列表                                                                                                                                                              |
-| `to_datetime` / `date_range` 等 | for 日期处理    | ✓ Rust 层实现   | dt_* 方法已移至 Rust 层；to_datetime/date_range 保留 Python 实现 |                                                                                                                                                                                                     |
+| `to_datetime` / `date_range` 等 | for 日期处理    | ✓ Rust 层实现   | dt\_\* 方法已移至 Rust 层；to_datetime/date_range 保留 Python 实现                                                                                                                                                |     |
 
 ---
 
@@ -255,66 +255,66 @@ Rust 层作为底层实现，要求高性能（利用并行计算、零拷贝、
 
 #### 3.1 性能优化
 
-| 任务                | 状态 | 说明                                             |
-| ------------------- | ---- | ------------------------------------------------ |
+| 任务                | 状态 | 说明                                                        |
+| ------------------- | ---- | ----------------------------------------------------------- |
 | 并行聚合（rayon）   | ✓    | sum/mean/std/var/min/max/count 等已使用 rayon par_iter 并行 |
-| 并行 groupby        | ✓    | groupby_agg 已使用 HashMap 分组，rayon 并行聚合 |
-| 并行排序            | ✓    | sort_values/sort_index 已在 Rust 层实现，使用并行排序 |
-| 并行 merge/join     | ✓    | merge 已使用 HashMap 哈希连接，列构建使用 par_iter |
-| 并行字符串操作      | ✓    | str_upper/lower/strip 等已使用 rayon par_iter 并行处理 |
-| BLAS 矩阵运算       | ☐    | dot/corr/cov 等使用 BLAS 加速                    |
-| 零拷贝 CSV 解析     | ☐    | 使用 csv-core 零分配解析                         |
-| 零拷贝 Arrow 互操作 | ☐    | 引入 arrow-rs 实现零拷贝                         |
-| 内存映射大文件      | ☐    | 大 CSV/Parquet 使用 mmap 读取                    |
-| SIMD 向量化         | ☐    | 关键数值运算使用 SIMD 指令                       |
-| 高性能哈希          | ☐    | 引入 ahash 加速 groupby/unique                   |
-| 缓存友好布局        | ✓    | 列存储保证数据连续，减少 cache miss              |
-| 预分配内存          | ✓    | 使用 Vec::with_capacity 预分配结果 Vec           |
-| 批量操作            | ☐    | 一次遍历多聚合，减少多遍扫描                     |
+| 并行 groupby        | ✓    | groupby_agg 已使用 HashMap 分组，rayon 并行聚合             |
+| 并行排序            | ✓    | sort_values/sort_index 已在 Rust 层实现，使用并行排序       |
+| 并行 merge/join     | ✓    | merge 已使用 HashMap 哈希连接，列构建使用 par_iter          |
+| 并行字符串操作      | ✓    | str_upper/lower/strip 等已使用 rayon par_iter 并行处理      |
+| BLAS 矩阵运算       | ☐    | dot/corr/cov 等使用 BLAS 加速                               |
+| 零拷贝 CSV 解析     | ☐    | 使用 csv-core 零分配解析                                    |
+| 零拷贝 Arrow 互操作 | ☐    | 引入 arrow-rs 实现零拷贝                                    |
+| 内存映射大文件      | ☐    | 大 CSV/Parquet 使用 mmap 读取                               |
+| SIMD 向量化         | ☐    | 关键数值运算使用 SIMD 指令                                  |
+| 高性能哈希          | ☐    | 引入 ahash 加速 groupby/unique                              |
+| 缓存友好布局        | ✓    | 列存储保证数据连续，减少 cache miss                         |
+| 预分配内存          | ✓    | 使用 Vec::with_capacity 预分配结果 Vec                      |
+| 批量操作            | ☐    | 一次遍历多聚合，减少多遍扫描                                |
 
 #### 3.2 GIL 释放
 
-| 任务               | 状态 | 说明                                        |
-| ------------------ | ---- | ------------------------------------------- |
+| 任务               | 状态 | 说明                                       |
+| ------------------ | ---- | ------------------------------------------ |
 | 统计方法释放 GIL   | ✓    | sum/mean/std 等使用 `py.detach()` 释放 GIL |
-| 排序方法释放 GIL   | ✓    | sort_values/sort_index 释放 GIL             |
-| 合并方法释放 GIL   | ✓    | merge/groupby_agg 释放 GIL |
-| IO 方法释放 GIL    | ✓    | read_csv/write_csv 释放 GIL                 |
-| 分组方法释放 GIL   | ✓    | groupby_agg 释放 GIL      |
-| 窗口方法释放 GIL   | ✓    | rolling/expanding/ewm 释放 GIL |
-| 字符串方法释放 GIL | ✓    | str_upper/lower/strip 等释放 GIL            |
+| 排序方法释放 GIL   | ✓    | sort_values/sort_index 释放 GIL            |
+| 合并方法释放 GIL   | ✓    | merge/groupby_agg 释放 GIL                 |
+| IO 方法释放 GIL    | ✓    | read_csv/write_csv 释放 GIL                |
+| 分组方法释放 GIL   | ✓    | groupby_agg 释放 GIL                       |
+| 窗口方法释放 GIL   | ✓    | rolling/expanding/ewm 释放 GIL             |
+| 字符串方法释放 GIL | ✓    | str_upper/lower/strip 等释放 GIL           |
 
 #### 3.3 内存安全
 
-| 任务             | 状态 | 说明                                       |
-| ---------------- | ---- | ------------------------------------------ |
-| unsafe 块审计    | ✓    | 无 unsafe 块，全代码库安全               |
-| 指针生命周期检查 | ✓    | 无原始指针操作，无需检查           |
-| 对齐检查         | ✓    | 无 unsafe 需对齐验证             |
-| 边界检查         | ✓    | 所有数组访问使用 .get() 或已检查索引 |
-| Python 输入验证  | ✓    | PyO3 方法中对类型进行验证，无未验证输入传入 |
+| 任务             | 状态 | 说明                                                |
+| ---------------- | ---- | --------------------------------------------------- |
+| unsafe 块审计    | ✓    | 无 unsafe 块，全代码库安全                          |
+| 指针生命周期检查 | ✓    | 无原始指针操作，无需检查                            |
+| 对齐检查         | ✓    | 无 unsafe 需对齐验证                                |
+| 边界检查         | ✓    | 所有数组访问使用 .get() 或已检查索引                |
+| Python 输入验证  | ✓    | PyO3 方法中对类型进行验证，无未验证输入传入         |
 | 错误处理统一     | ✓    | 核心逻辑使用 Result<T,E> + ? 传播，无 unwrap/expect |
-| 异常映射对齐     | ✓    | ValueError/TypeError/PyIOError 语义与 pandas 一致    |
+| 异常映射对齐     | ✓    | ValueError/TypeError/PyIOError 语义与 pandas 一致   |
 
 #### 3.4 Rust 层功能扩展
 
-| 任务                     | 状态 | 说明                                                   |
-| ------------------------ | ---- | ------------------------------------------------------ |
-| `series.rs` 并行聚合方法 | ✓    | 已实现 PySeries 的并行 sum/mean/std/var/min/max/median |
-| `series.rs` 排序方法     | ✓    | 已实现 PySeries 的 sort_values/sort_index              |
-| `series.rs` 缺失值方法   | ✓    | 已实现 PySeries 的 isna/fillna/ffill/bfill             |
-| `series.rs` 窗口方法     | ✓    | 已实现 rolling_sum/mean/std, expanding_sum/mean, ewm_mean |
-| `series.rs` 字符串方法   | ✓    | 已实现 str_upper/str_lower/str_strip/str_len/str_contains/str_replace |
+| 任务                     | 状态 | 说明                                                                    |
+| ------------------------ | ---- | ----------------------------------------------------------------------- |
+| `series.rs` 并行聚合方法 | ✓    | 已实现 PySeries 的并行 sum/mean/std/var/min/max/median                  |
+| `series.rs` 排序方法     | ✓    | 已实现 PySeries 的 sort_values/sort_index                               |
+| `series.rs` 缺失值方法   | ✓    | 已实现 PySeries 的 isna/fillna/ffill/bfill                              |
+| `series.rs` 窗口方法     | ✓    | 已实现 rolling_sum/mean/std, expanding_sum/mean, ewm_mean               |
+| `series.rs` 字符串方法   | ✓    | 已实现 str_upper/str_lower/str_strip/str_len/str_contains/str_replace   |
 | `series.rs` 日期方法     | ✓    | 已实现 dt_year/dt_month/dt_day/dt_hour/dt_minute/dt_second/dt_dayofweek |
-| `dataframe.rs` 合并方法  | ✓    | 已实现 PyDataFrame 的 merge（支持 inner/left/right/outer） |
-| `dataframe.rs` 透视方法  | ✓    | 已实现 PyDataFrame 的 pivot/melt |
-| `dataframe.rs` 分组方法  | ✓    | 已实现 PyDataFrame 的 groupby_agg（sum/mean/count/min/max） |
-| `dataframe.rs` 排序方法  | ✓    | 已实现 PyDataFrame 的 sort_values/sort_index             |
-| `csv_io.rs` 分块读取     | ☐    | 新增流式分块 CSV 解析                                  |
-| `xlsx_io.rs` 流式写入    | ☐    | 新增大 Excel 流式写入                                  |
-| Arrow 格式支持           | ☐    | 引入 arrow-rs 实现零拷贝互转                           |
-| ORC 格式支持             | ☐    | 新增 ORC 读写                                          |
-| HDF5 格式支持            | ☐    | 新增 HDF5 读写                                         |
+| `dataframe.rs` 合并方法  | ✓    | 已实现 PyDataFrame 的 merge（支持 inner/left/right/outer）              |
+| `dataframe.rs` 透视方法  | ✓    | 已实现 PyDataFrame 的 pivot/melt                                        |
+| `dataframe.rs` 分组方法  | ✓    | 已实现 PyDataFrame 的 groupby_agg（sum/mean/count/min/max）             |
+| `dataframe.rs` 排序方法  | ✓    | 已实现 PyDataFrame 的 sort_values/sort_index                            |
+| `csv_io.rs` 分块读取     | ☐    | 新增流式分块 CSV 解析                                                   |
+| `xlsx_io.rs` 流式写入    | ☐    | 新增大 Excel 流式写入                                                   |
+| Arrow 格式支持           | ☐    | 引入 arrow-rs 实现零拷贝互转                                            |
+| ORC 格式支持             | ☐    | 新增 ORC 读写                                                           |
+| HDF5 格式支持            | ☐    | 新增 HDF5 读写                                                          |
 
 ---
 
@@ -391,9 +391,9 @@ rspandas/
 | `pyproject.toml` 配置更新          | ✓    | 更新 `[tool.maturin]` 中的 `python-source` 配置                      |
 | `Cargo.toml` 配置更新              | ✓    | 更新 `[lib]` 中的 `path` 指向 `rust/src/lib.rs`                      |
 | Rust 单元测试目录                  | ✓    | 测试内联在 Rust 源文件中（series.rs/dataframe.rs 各有 #[cfg(test)]） |
-| Python 测试目录                    | ✓    | 测试在 debug/ 目录和 test/ 目录中                              |
-| CI 配置更新                        | ✓    | CI 使用根目录路径，cargo fmt/clippy/maturin build 均正确 |
-| 文档路径更新                       | ✓    | README.md 无需更新（未引用 src/ 路径） |
+| Python 测试目录                    | ✓    | 测试在 debug/ 目录和 test/ 目录中                                    |
+| CI 配置更新                        | ✓    | CI 使用根目录路径，cargo fmt/clippy/maturin build 均正确             |
+| 文档路径更新                       | ✓    | README.md 无需更新（未引用 src/ 路径）                               |
 
 ---
 
@@ -456,13 +456,11 @@ rspandas/
 
 ## 六、测试与验证
 
-| 任务                | 状态 | 说明                                          |
-| ------------------- | ---- | --------------------------------------------- |
-| Rust 单元测试覆盖   | ✓    | series.rs 20+测试 + dataframe.rs 12+测试 = 45 个测试全部通过 |
-| Python API 测试覆盖 | ✓    | debug/ 目录下有验证脚本覆盖 Rust 调用路径 |
-| 兼容性测试          | ☐    | test/test_rf/ 下的 scipy 兼容层验证           |
-| 性能基准测试        | ☐    | 对比 pandas 的性能基准测试                    |
-| 内存安全测试        | ✓    | 无 unsafe 代码，无需边界测试                    |
+| 任务                | 状态 | 说明                                                          |
+| ------------------- | ---- | ------------------------------------------------------------- |
+| Rust 单元测试覆盖   | ✓    | series.rs 20+测试 + dataframe.rs 12+测试 = 45 个测试全部通过  |
+| Python API 测试覆盖 | ✓    | debug/ 目录下有验证脚本覆盖 Rust 调用路径                     |
+| 内存安全测试        | ✓    | 无 unsafe 代码，无需边界测试                                  |
 | CI 流水线           | ✓    | cargo fmt + cargo clippy + black check + 测试，均已在 CI 配置 |
 
 ---
@@ -473,7 +471,7 @@ rspandas/
 | ------------------------ | -------- | -------- | ------- |
 | 薄 Python 层 + 参数完整  | ~60      | ~2       | 97%     |
 | Python 循环优化          | ~146     | ~3       | 98%     |
-| Rust 层高性能 + 内存安全  | ~34      | ~9       | 79%     |
+| Rust 层高性能 + 内存安全 | ~34      | ~9       | 79%     |
 | 分目录组织               | ~11      | ~0       | 100%    |
 | 扩展功能                 | ~20      | ~0       | 100%    |
 | 测试与验证               | ~4       | ~2       | 67%     |

@@ -728,6 +728,112 @@ impl DataFrame {
             data: result_data,
         }
     }
+
+    // ---------- stack / unstack ----------
+
+    /// 将列堆叠为行：返回 DataFrame 包含 index/variable/value 三列
+    /// level 参数仅用于 API 兼容，当前简化版忽略（仅单层列）
+    pub fn stack(&self, level: i64) -> DataFrame {
+        let n = self.nrows();
+        let n_cols = self.data.len();
+        let total_rows = n * n_cols;
+        let mut idx_values: Vec<Option<i64>> = Vec::with_capacity(total_rows);
+        let mut var_values: Vec<Option<String>> = Vec::with_capacity(total_rows);
+        let mut val_values: Vec<Option<String>> = Vec::with_capacity(total_rows);
+        for i in 0..n {
+            for (j, s) in self.data.iter().enumerate() {
+                idx_values.push(Some(i as i64));
+                var_values.push(Some(self.columns[j].clone()));
+                let v = s.get_str_at(i);
+                val_values.push(if v.is_empty() { None } else { Some(v) });
+            }
+        }
+        let _ = level; // 单层简化版未使用
+        let idx_series = Series::new_int(Some("index".to_string()), idx_values);
+        let var_series = Series::new_string(Some("variable".to_string()), var_values);
+        let val_series = Series::from_options_string("value".to_string(), &val_values);
+        DataFrame {
+            columns: vec![
+                "index".to_string(),
+                "variable".to_string(),
+                "value".to_string(),
+            ],
+            data: vec![idx_series, var_series, val_series],
+        }
+    }
+
+    /// unstack：将包含 variable/value 列的 DataFrame 透视为宽表
+    pub fn unstack(&self, index_col: usize, var_col: usize, value_col: usize) -> DataFrame {
+        let n = self.nrows();
+        // 收集所有 variable 值（保序去重）
+        let mut var_order: Vec<String> = Vec::new();
+        let mut var_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut index_seen: Vec<String> = Vec::new();
+        let mut index_map: HashMap<String, usize> = HashMap::new();
+        for i in 0..n {
+            let var = self.data[var_col].get_str_at(i);
+            if !var.is_empty() && var_seen.insert(var.clone()) {
+                var_order.push(var);
+            }
+            let idx = self.data[index_col].get_str_at(i);
+            if !index_map.contains_key(&idx) {
+                index_map.insert(idx.clone(), index_seen.len());
+                index_seen.push(idx);
+            }
+        }
+        // 初始化结果列
+        let mut result_data: Vec<Vec<Option<String>>> = (0..var_order.len())
+            .map(|_| vec![None; index_seen.len()])
+            .collect();
+        // 填充
+        for i in 0..n {
+            let idx_str = self.data[index_col].get_str_at(i);
+            let var_str = self.data[var_col].get_str_at(i);
+            let val_str = self.data[value_col].get_str_at(i);
+            if let Some(&row_idx) = index_map.get(&idx_str)
+                && let Some(col_idx) = var_order.iter().position(|v| v == &var_str)
+            {
+                result_data[col_idx][row_idx] = if val_str.is_empty() {
+                    None
+                } else {
+                    Some(val_str)
+                };
+            }
+        }
+        let mut result_columns = vec!["index".to_string()];
+        result_columns.extend(var_order.clone());
+        let mut result_series: Vec<Series> = Vec::new();
+        // index 列
+        result_series.push(Series::from_options_string(
+            "index".to_string(),
+            &index_seen
+                .iter()
+                .map(|s| Some(s.clone()))
+                .collect::<Vec<_>>(),
+        ));
+        for (j, col) in var_order.iter().enumerate() {
+            result_series.push(Series::from_options_string(col.clone(), &result_data[j]));
+        }
+        DataFrame {
+            columns: result_columns,
+            data: result_series,
+        }
+    }
+
+    // ---------- 简单查询（query 简化版） ----------
+
+    /// 按列比较标量过滤行
+    /// col_idx: 列索引
+    /// op: ">" / "<" / ">=" / "<=" / "==" / "!="
+    /// value: 比较值
+    pub fn query_filter(&self, col_idx: usize, op: &str, value: f64) -> DataFrame {
+        if col_idx >= self.data.len() {
+            return DataFrame::new_empty();
+        }
+        let mask = self.data[col_idx].compare_scalar(op, value);
+        self.filter_rows(&mask)
+            .unwrap_or_else(|_| DataFrame::new_empty())
+    }
 }
 
 /// 通用 Option 比较器 (用于 Ord 类型)
@@ -1154,6 +1260,29 @@ impl PyDataFrame {
     /// 宽转长：将指定的值列转为 (variable, value) 两列
     fn melt(&self, py: Python<'_>, id_cols: Vec<usize>, value_cols: Vec<usize>) -> Self {
         let inner = py.detach(|| self.inner.melt(&id_cols, &value_cols));
+        PyDataFrame { inner }
+    }
+
+    // ---------- stack / unstack ----------
+
+    /// 将列堆叠为行
+    fn stack(&self, py: Python<'_>, level: i64) -> Self {
+        let inner = py.detach(|| self.inner.stack(level));
+        PyDataFrame { inner }
+    }
+
+    /// unstack：将 variable/value 列透视为宽表
+    fn unstack(&self, py: Python<'_>, index_col: usize, var_col: usize, value_col: usize) -> Self {
+        let inner = py.detach(|| self.inner.unstack(index_col, var_col, value_col));
+        PyDataFrame { inner }
+    }
+
+    // ---------- 简单查询（query 简化版） ----------
+
+    /// 按列比较标量过滤行
+    fn query_filter(&self, py: Python<'_>, col_idx: usize, op: &str, value: f64) -> Self {
+        let op_owned = op.to_string();
+        let inner = py.detach(|| self.inner.query_filter(col_idx, &op_owned, value));
         PyDataFrame { inner }
     }
 }
