@@ -383,6 +383,33 @@ class DataFrame:
         for c in by:
             if c not in self._columns:
                 raise KeyError(f"column not found: {c}")
+
+        # 尝试调用 Rust 层加速
+        # 限制条件：
+        # 1. 索引为默认 RangeIndex（Rust 层不处理索引同步）
+        # 2. na_position 与 Rust 行为一致（ascending=True 对应 'last'，
+        #    ascending=False 对应 'first'）
+        # 3. Rust 层仅使用 by 的第一列排序，多列排序需保留 Python 实现
+        rust_na_match = (ascending and na_position == "last") or (
+            not ascending and na_position == "first"
+        )
+        is_default_idx = list(self._index) == list(range(self._nrows))
+        if rust_na_match and is_default_idx:
+            try:
+                by_indices = [self._columns.index(c) for c in by]
+                new_inner = self._inner.sort_values(by=by_indices, ascending=ascending)
+                new_nrows = new_inner.nrows
+                if inplace:
+                    self._inner = new_inner
+                    self._nrows = new_nrows
+                    self._index = list(range(new_nrows))
+                    return self
+                new_df = DataFrame._from_inner(new_inner)
+                return new_df
+            except Exception:
+                pass
+
+        # 回退到原 Python 实现（自定义索引、多列排序、na_position 不匹配或 Rust 失败时）
         n = self._nrows
 
         # 取出 by 列用于排序
@@ -1290,6 +1317,31 @@ class DataFrame:
         :param sort_remaining: 是否对剩余级别排序（暂不支持）
         """
         if axis == 0:
+            # 尝试调用 Rust 层加速（仅在默认 RangeIndex 时）
+            # Rust 层 sort_index: ascending=True 保持原顺序，ascending=False 反转
+            # 对默认 RangeIndex 而言，按索引值排序等价于保持/反转原顺序
+            is_default_idx = list(self._index) == list(range(self._nrows))
+            if is_default_idx:
+                try:
+                    new_inner = self._inner.sort_index(ascending=ascending)
+                    new_nrows = new_inner.nrows
+                    if inplace:
+                        self._inner = new_inner
+                        self._nrows = new_nrows
+                        self._index = (
+                            list(range(new_nrows))
+                            if ascending
+                            else list(range(new_nrows - 1, -1, -1))
+                        )
+                        return self
+                    new_df = DataFrame._from_inner(new_inner)
+                    if not ascending:
+                        new_df._index = list(range(new_nrows - 1, -1, -1))
+                    return new_df
+                except Exception:
+                    pass
+
+            # 回退到原 Python 实现（自定义索引或 Rust 调用失败时）
             if self._index is None:
                 return self.copy()
 

@@ -931,6 +931,39 @@ class Series:
         :param kind: 排序算法 ('quicksort'/'mergesort'/'heapsort'/'stable')
         :param na_position: None 值的位置 ('first' 或 'last', 默认 'last')
         """
+        # 尝试调用 Rust 层加速（仅在默认 RangeIndex 时，因为 Rust 层不处理索引同步）
+        if _is_range_index(self._index):
+            try:
+                new_inner = self._inner.sort_values(ascending=ascending)
+                new_values = list(new_inner.values)
+                # 处理 na_position：Rust 层 ascending=True 时 None 放最后，
+                # ascending=False 时 None 放最前，需按 na_position 调整
+                none_count = sum(1 for v in new_values if v is None)
+                if none_count > 0:
+                    rust_none_first = not ascending
+                    want_none_first = na_position == "first"
+                    if rust_none_first != want_none_first:
+                        non_none_vals = [v for v in new_values if v is not None]
+                        if want_none_first:
+                            new_values = [None] * none_count + non_none_vals
+                        else:
+                            new_values = non_none_vals + [None] * none_count
+                new_index = list(range(len(new_values)))
+                if inplace:
+                    self._inner = _PySeries(
+                        new_values, self.name, dtype=self._dtype_str
+                    )
+                    self._index = new_index
+                    return self
+                return Series(
+                    new_values,
+                    name=self.name,
+                    dtype=self._dtype_str,
+                    index=new_index,
+                )
+            except Exception:
+                pass
+        # 回退到原 Python 实现（自定义索引或 Rust 调用失败时）
         pairs = [(i, v) for i, v in enumerate(self.values)]
         # 分离 None 和非 None
         non_none = [(i, v) for i, v in pairs if v is not None]
@@ -1429,6 +1462,30 @@ class Series:
         :param kind: 排序算法
         :param na_position: NaN 位置 ('first' 或 'last')
         """
+        # 尝试调用 Rust 层加速（仅在默认 RangeIndex 时）
+        # Rust 层 sort_index: ascending=True 保持原顺序，ascending=False 反转
+        # 对默认 RangeIndex 而言，按索引值排序等价于保持/反转原顺序
+        if _is_range_index(self._index):
+            try:
+                new_inner = self._inner.sort_index(ascending=ascending)
+                new_values = list(new_inner.values)
+                n = len(new_values)
+                new_index = list(range(n)) if ascending else list(range(n - 1, -1, -1))
+                if inplace:
+                    self._inner = _PySeries(
+                        new_values, self.name, dtype=self._dtype_str
+                    )
+                    self._index = new_index
+                    return self
+                return Series(
+                    new_values,
+                    name=self.name,
+                    dtype=self._dtype_str,
+                    index=new_index,
+                )
+            except Exception:
+                pass
+        # 回退到原 Python 实现（自定义索引或 Rust 调用失败时）
         if self._index is None:
             return self.copy()
         pairs = list(zip(self._index, self.values))
@@ -2476,6 +2533,14 @@ class Series:
 
         :param limit: 最大连续填充数量
         """
+        # 尝试调用 Rust 层加速（limit=None 时，Rust 层暂不支持 limit 参数）
+        if limit is None:
+            try:
+                new_inner = self._inner.ffill()
+                return Series(new_inner, name=self.name, index=self._index)
+            except Exception:
+                pass
+        # 回退到原 Python 实现
         values = self.values
         result = []
         last_valid = None
@@ -2498,6 +2563,14 @@ class Series:
 
         :param limit: 最大连续填充数量
         """
+        # 尝试调用 Rust 层加速（limit=None 时，Rust 层暂不支持 limit 参数）
+        if limit is None:
+            try:
+                new_inner = self._inner.bfill()
+                return Series(new_inner, name=self.name, index=self._index)
+            except Exception:
+                pass
+        # 回退到原 Python 实现
         values = self.values
         n = len(values)
         result = [None] * n
@@ -4291,6 +4364,11 @@ class StringAccessor:
         return None if v is None else str(v)
 
     def upper(self) -> _PySeries:
+        try:
+            new_inner = self._s._inner.str_upper()
+            return Series(new_inner, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
         return self._wrap(
             [
                 self._ensure_str(v).upper() if v is not None else None
@@ -4299,6 +4377,11 @@ class StringAccessor:
         )
 
     def lower(self) -> _PySeries:
+        try:
+            new_inner = self._s._inner.str_lower()
+            return Series(new_inner, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
         return self._wrap(
             [
                 self._ensure_str(v).lower() if v is not None else None
@@ -4323,6 +4406,11 @@ class StringAccessor:
         )
 
     def strip(self) -> _PySeries:
+        try:
+            new_inner = self._s._inner.str_strip()
+            return Series(new_inner, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
         return self._wrap(
             [
                 self._ensure_str(v).strip() if v is not None else None
@@ -4347,10 +4435,26 @@ class StringAccessor:
         )
 
     def len(self) -> _PySeries:
+        try:
+            new_inner = self._s._inner.str_len()
+            return Series(new_inner, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
         return self._wrap([len(v) if v is not None else None for v in self._s.values])
 
     def contains(self, pat, case: bool = True, na=None) -> _PySeries:
-        # 使用辅助函数 + 列表推导式替代显式 for 循环
+        # case=True 时尝试调用 Rust 层加速
+        if case:
+            try:
+                mask = self._s._inner.str_contains(pat)
+                # Rust 层 None 视为 false，Python 层 None 返回 na
+                out = [
+                    na if v is None else mask[i] for i, v in enumerate(self._s.values)
+                ]
+                return self._wrap(out)
+            except Exception:
+                pass
+        # 回退到原 Python 实现（case=False 或 Rust 调用失败时）
         needle = pat if case else pat.lower()
 
         def _contains_one(v):
@@ -4373,6 +4477,11 @@ class StringAccessor:
         )
 
     def replace(self, pat, repl) -> _PySeries:
+        try:
+            new_inner = self._s._inner.str_replace(pat, repl)
+            return Series(new_inner, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
         return self._wrap(
             [
                 str(v).replace(pat, repl) if v is not None else None
