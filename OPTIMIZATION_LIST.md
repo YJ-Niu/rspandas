@@ -1,0 +1,511 @@
+# rspandas 优化清单
+
+> 本文档记录 rspandas 的完整开发与优化任务，已完成的打 ✓，待完成的打 ☐。
+
+---
+
+## 一、薄 Python 层 + 完整方法参数
+
+### 目标
+
+Python 层应保持"薄"——仅作为 API 接口层，核心计算逻辑下沉到 Rust 层。同时确保所有方法的参数签名、默认值与 pandas 完全一致。
+
+### 原则
+
+- Python 层方法只做：参数校验 → 调用 Rust 层 → 包装返回结果
+- 禁止在 Python 层实现复杂计算逻辑（统计、排序、聚合等）
+- 所有公开方法的参数名、默认值、类型注解必须与 pandas 对齐
+- 对 pandas 不存在但 rspandas 扩展的方法，参数设计应参考 pandas 风格
+- rsnumpy 为必选依赖，Python 层通过 `import rsnumpy as rnp` 直接引用
+- `to_numpy()` / `from_numpy()` 使用 rsnumpy.ndarray 而非 numpy.ndarray
+
+### 检查清单
+
+#### 1.1 Series — Python 层瘦身
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| 统计方法下沉 Rust | ☐ | sum/mean/std/var/min/max/median/sem/prod/skew/kurt 等统计计算移至 Rust 层 |
+| 排序方法下沉 Rust | ☐ | sort_values/sort_index/rank/argsort 移至 Rust 层 |
+| 缺失值处理下沉 Rust | ☐ | isna/notna/fillna/ffill/bfill/interpolate/dropna 移至 Rust 层 |
+| 窗口计算下沉 Rust | ☐ | Rolling/Expanding/EWM/Resampler 的计算逻辑移至 Rust 层 |
+| 字符串操作下沉 Rust | ☐ | StringAccessor 的所有方法移至 Rust 层（利用 Rust regex 引擎） |
+| 日期时间处理下沉 Rust | ☐ | DatetimeAccessor 的属性和方法移至 Rust 层 |
+| 分组聚合下沉 Rust | ☐ | SeriesGroupBy 的 agg/apply/transform/sum/mean 等移至 Rust 层 |
+| 插值/采样下沉 Rust | ☐ | interpolate/sample 移至 Rust 层 |
+| 比较运算命名方法 | ☐ | 补全 eq/ne/lt/gt/le/ge 命名方法 |
+| 反向算术运算符 | ☐ | 补全 __rpow__/radd/rsub/rmul/rdiv/rfloordiv/rmod/rdivmod |
+| 位运算符 | ☐ | 补全 __invert__/__and__/__or__/__xor__/__lshift__/__rshift__ |
+| combine/combine_first | ☐ | 补全 Series.combine 和 Series.combine_first |
+| loc / at / iat 访问器 | ☐ | 补全标签索引访问器 |
+| take / xs / get | ☐ | 补全位置选取方法 |
+| corr / cov | ☐ | 补全与另一个 Series 的相关系数和协方差 |
+| mad | ☐ | 补全平均绝对偏差 |
+| infer_objects / convert_dtypes | ☐ | 补全类型推断方法 |
+| to_csv / to_excel / to_json / to_parquet | ☐ | 补全 Series 的 IO 输出方法 |
+| to_string / to_markdown | ☐ | 补全 Series 的格式化输出 |
+| asfreq / tz_localize / tz_convert | ☐ | 补全时间序列方法 |
+| first / last | ☐ | 补全基于时间的首尾选取 |
+| array 属性 | ☐ | 补全原生 Array 接口 |
+| flags / sparse 属性 | ☐ | 补全标志和稀疏访问器 |
+
+#### 1.2 DataFrame — Python 层瘦身
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| 合并/连接下沉 Rust | ☐ | merge/join/concat/combine_first/update 移至 Rust 层 |
+| 透视/重塑下沉 Rust | ☐ | pivot/pivot_table/melt/stack/unstack 移至 Rust 层 |
+| 分组聚合下沉 Rust | ☐ | DataFrameGroupBy 的所有计算移至 Rust 层 |
+| 排序下沉 Rust | ☐ | sort_values/sort_index/rank 移至 Rust 层 |
+| 缺失值处理下沉 Rust | ☐ | isna/notna/fillna/ffill/bfill/interpolate/dropna 移至 Rust 层 |
+| 统计聚合下沉 Rust | ☐ | sum/mean/std/var/corr/cov/quantile/skew/kurt 移至 Rust 层 |
+| IO 读写下沉 Rust | ☐ | CSV/Excel/JSON/Parquet 读写逻辑已在 Rust 层，优化接口调用 |
+| 查询/求值下沉 Rust | ☐ | query/eval 移至 Rust 层解析执行 |
+| at / iat 访问器 | ☐ | 补全标量索引访问器 |
+| append / merge_asof | ☐ | 补全追加行和近似合并 |
+| read_html / read_clipboard / read_xml / read_orc / read_stata / read_hdf / read_spss / read_gbq | ☐ | 补全更多读取格式 |
+| to_clipboard / to_stata / to_gbq / to_xml / to_hdf / to_orc | ☐ | 补全更多写出格式 |
+| read_sql_query / read_sql_table | ☐ | 补全 SQL 读取细分 |
+| infer_objects / convert_dtypes | ☐ | 补全类型推断方法 |
+| attrs 属性 | ☐ | 补全全局属性字典 |
+| flags / sparse 属性 | ☐ | 补全标志和稀疏访问器 |
+| append | ☐ | 补全追加行方法（pandas 已废弃但仍存在） |
+| merge_asof | ☐ | 补全近似合并 |
+| wide_to_long | ☐ | 补全宽转长方法 |
+
+#### 1.3 顶层函数 — 参数完整性
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| read_csv 顶层函数 | ☐ | 补全顶层 read_csv（目前仅 DataFrame 静态方法） |
+| merge_asof 顶层函数 | ☐ | 补全近似合并 |
+| wide_to_long 顶层函数 | ☐ | 补全宽转长 |
+| lreshape 顶层函数 | ☐ | 补全宽转长（旧版） |
+| Timestamp / Timedelta / Period / Interval / Categorical / DateOffset 类型 | ☐ | 补全常用类型常量 |
+| NA / NaT 缺失值常量 | ☐ | 补全缺失值常量 |
+| array 顶层函数 | ☐ | 补全数组创建函数 |
+| test 顶层函数 | ☐ | 补全测试入口 |
+
+#### 1.4 Index — 参数完整性
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| Index.equals / identical | ☐ | 补全相等判断 |
+| Index.hasnans / nbytes | ☐ | 补全缺失检测和内存占用 |
+| Index.item / to_series | ☐ | 补全标量值和转 Series |
+| Index.delete / insert / drop / droplevel | ☐ | 补全索引编辑方法 |
+| Index.ravel / transpose / T | ☐ | 补全展平和转置 |
+| Index.array | ☐ | 补全 Arrow 数组接口 |
+
+#### 1.5 api/types — 类型检查函数
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| is_object_dtype / is_complex_dtype | ☐ | 补全对象和复数类型检查 |
+| is_unsigned_integer_dtype / is_signed_integer_dtype | ☐ | 补全无符号/有符号整数检查 |
+| is_extension_type / is_interval_dtype / is_period_dtype | ☐ | 补全扩展/区间/周期类型检查 |
+| is_sparse / is_re / is_scalar / is_number | ☐ | 补全稀疏/正则/标量/数字检查 |
+| is_iterable / is_file_like | ☐ | 补全可迭代/文件类型检查 |
+
+---
+
+## 二、优化 Python 层 for / while 循环
+
+### 目标
+
+将 Python 层中的 for / while 循环替换为 Rust 层的向量化实现，消除 Python 层逐元素遍历。
+
+### 原则
+
+- 优先使用 Rust 层的批量操作（如 `PySeries` 的方法）替代 Python 循环
+- 无法完全消除的循环，使用列表推导式 / 生成器表达式替代
+- 避免 Python 层的嵌套循环，改为 Rust 层的并行遍历
+- 对 `__init__.py` 中的顶层函数同样适用
+
+### 检查清单
+
+#### 2.1 Series — 循环优化
+
+| 文件位置 | 循环类型 | 状态 | 优化方案 |
+|---|---|---|---|
+| `ffill` / `bfill` | for 遍历 values | ✓ Python 层优化 | 状态依赖循环暂保留；DataFrame 复用 Series 实现 |
+| `interpolate` | while 遍历 None 区间 | ✓ Python 层优化 | DataFrame 复用 Series 实现；Series 保留状态依赖循环 |
+| `prod` / `product` | for 遍历累乘 | ✓ Python 层优化 | 用 math.prod 替代显式循环 |
+| `dot` | for + zip 遍历 | ✓ Python 层优化 | 已使用 sum + 生成器表达式 |
+| `autocorr` | for 遍历计算相关 | ✓ Python 层优化 | 已使用 sum + 生成器表达式 |
+| `round` | for 遍历 round | ✓ Python 层优化 | 已使用列表推导式 |
+| `reset_index` | 构造新数据遍历 | ☐ | 移至 Rust 层 |
+| `pop` | list 切片操作 | ☐ | 移至 Rust 层 |
+| `truncate` | for + 条件判断 | ☐ | 移至 Rust 层，向量化比较 |
+| `add_prefix` / `add_suffix` | for 遍历索引 | ☐ | 使用列表推导式或移至 Rust 层 |
+| `sample` | random.sample 调用 | ☐ | 移至 Rust 层，使用 rand crate |
+| `argsort` | sorted + lambda | ☐ | 移至 Rust 层，使用排序算法 |
+| `sort_values` | Python 排序 | ☐ | 移至 Rust 层，利用排序算法 |
+| `value_counts` | for 统计频率 | ☐ | 移至 Rust 层，使用 HashMap |
+| `unique` / `nunique` | for 去重 | ☐ | 移至 Rust 层，使用 HashSet |
+| `duplicated` / `drop_duplicates` | for 标记重复 | ☐ | 移至 Rust 层 |
+| `isin` / `between` | for 遍历比较 | ☐ | 移至 Rust 层，向量化 |
+| `fillna` / `replace` | for 遍历替换 | ☐ | 移至 Rust 层 |
+| `cumsum` / `cumprod` / `cummax` / `cummin` | for 累积 | ✓ Python 层优化 | skipna=False 用 itertools.accumulate；skipna=True 保留状态依赖循环 |
+| `shift` / `diff` / `pct_change` | for 位移 | ✓ Python 层优化 | 用切片+列表推导式替代显式 for 循环 |
+| `rolling` 系列方法 | for 窗口遍历 | ☐ | 移至 Rust 层，使用滑动窗口迭代器 |
+| `expanding` 系列方法 | for 累积窗口 | ☐ | 移至 Rust 层 |
+| `ewm` 系列方法 | for 指数加权 | ☐ | 移至 Rust 层 |
+| `resample` 系列方法 | for 分桶聚合 | ☐ | 移至 Rust 层 |
+| `StringAccessor` 全部方法 | for 遍历字符串 | ☐ | 移至 Rust 层，利用 regex/unicode crates |
+| `DatetimeAccessor` 全部方法 | for 遍历日期 | ☐ | 移至 Rust 层，利用 chrono crate |
+| `CatAccessor` 全部方法 | for 遍历分类 | ☐ | 移至 Rust 层 |
+| `SeriesGroupBy` 全部方法 | for 分组遍历 | ☐ | 移至 Rust 层，利用 HashMap + rayon |
+| `describe` | for 遍历统计 | ☐ | 移至 Rust 层 |
+| `quantile` / `rank` | for 排序计算 | ☐ | 移至 Rust 层 |
+| `apply` / `map` / `transform` | Python 回调 | ☐ | 保留 Python 回调，但批量化处理 |
+| `agg` / `aggregate` | for 遍历多个聚合 | ☐ | 移至 Rust 层，一次遍历多聚合 |
+| `compare` | for 逐元素对比 | ☐ | 移至 Rust 层 |
+| `clip` / `where` / `mask` | for 条件替换 | ☐ | 移至 Rust 层，向量化 |
+
+#### 2.2 DataFrame — 循环优化
+
+| 文件位置 | 循环类型 | 状态 | 优化方案 |
+|---|---|---|---|
+| `ffill` / `bfill` | for 遍历列 + for 遍历值 | ✓ Python 层优化 | DataFrame 复用 Series.ffill/bfill 实现 |
+| `interpolate` | for 遍历列 + while 遍历 None | ✓ Python 层优化 | DataFrame 复用 Series.interpolate 实现 |
+| `prod` / `product` | for 遍历列/行 | ✓ Python 层优化 | 用 math.prod 替代显式循环 |
+| `round` | for 遍历列 + for 遍历值 | ✓ Python 层优化 | 已使用列表推导式 |
+| `dot` | for 遍历行 × 列 | ✓ Python 层优化 | 已使用 sum + 生成器表达式 |
+| `items` / `iterrows` / `itertuples` | for 遍历 | ☐ | 保留 Python 迭代器接口，但内部用 Rust 批量取值 |
+| `sample` | random 采样 | ☐ | 移至 Rust 层 |
+| `align` | for 遍历索引对齐 | ☐ | 移至 Rust 层 |
+| `combine_first` | for 遍历列和行 | ☐ | 移至 Rust 层 |
+| `update` | for 遍历列和行 | ☐ | 移至 Rust 层 |
+| `add_prefix` / `add_suffix` | for 遍历列名 | ☐ | 使用列表推导式或移至 Rust 层 |
+| `sort_values` | for 遍历列排序 | ☐ | 移至 Rust 层 |
+| `sort_index` | for 遍历排序 | ☐ | 移至 Rust 层 |
+| `merge` / `join` / `concat` | for 遍历合并 | ☐ | 移至 Rust 层，利用 hash join |
+| `pivot` / `pivot_table` / `melt` | for 遍历重塑 | ☐ | 移至 Rust 层 |
+| `stack` / `unstack` | for 遍历重塑 | ☐ | 移至 Rust 层 |
+| `groupby` 系列方法 | for 分组遍历 | ☐ | 移至 Rust 层，HashMap + rayon |
+| `drop` / `dropna` / `drop_duplicates` | for 遍历删除 | ☐ | 移至 Rust 层 |
+| `duplicated` | for 标记重复 | ☐ | 移至 Rust 层 |
+| `fillna` / `replace` | for 遍历替换 | ☐ | 移至 Rust 层 |
+| `apply` / `applymap` / `map` | Python 回调 | ☐ | 保留 Python 回调，但批量化 |
+| `query` / `eval` | 字符串解析 | ☐ | 移至 Rust 层，解析表达式并执行 |
+| `assign` | for 遍历新增列 | ☐ | 使用批量操作 |
+| `compare` / `equals` | for 逐元素对比 | ☐ | 移至 Rust 层 |
+| `clip` / `where` / `mask` | for 条件替换 | ☐ | 移至 Rust 层 |
+| `describe` / `info` | for 遍历统计 | ☐ | 移至 Rust 层 |
+| `to_csv` / `to_json` / `to_dict` 等输出 | for 遍历输出 | ☐ | 移至 Rust 层 |
+| `cumsum` / `cumprod` / `cummax` / `cummin` / `cumcount` | for 累积 | ✓ Python 层优化 | DataFrame 复用 Series 的 cumsum/cumprod/cummax/cummin 实现 |
+| `shift` / `diff` / `pct_change` | for 位移 | ✓ Python 层优化 | DataFrame 复用 Series 的 shift/diff/pct_change 实现 |
+| `corr` / `cov` / `corrwith` | for 遍历计算 | ☐ | 移至 Rust 层，使用 BLAS |
+| `quantile` / `rank` / `nunique` | for 计算 | ☐ | 移至 Rust 层 |
+| `nlargest` / `nsmallest` | for 排序选取 | ☐ | 移至 Rust 层，使用堆 |
+| `memory_usage` | for 遍历列 | ☐ | 移至 Rust 层 |
+| `select_dtypes` | for 遍历检查 | ☐ | 使用列表推导式 |
+| `filter` / `filter_rows` | for 条件 | ☐ | 移至 Rust 层 |
+| `explode` / `repeat` | for 展开 | ☐ | 移至 Rust 层 |
+| `reindex` / `reindex_like` | for 重索引 | ☐ | 移至 Rust 层 |
+| `swaplevel` / `droplevel` / `swapaxes` | for 遍历 | ☐ | 移至 Rust 层 |
+| `asfreq` / `tz_localize` / `tz_convert` | for 遍历 | ☐ | 移至 Rust 层 |
+| `between_time` / `at_time` | for 时间筛选 | ☐ | 移至 Rust 层 |
+
+#### 2.3 Index — 循环优化
+
+| 文件位置 | 循环类型 | 状态 | 优化方案 |
+|---|---|---|---|
+| `get_loc` | for 遍历查找 | ☐ | 移至 Rust 层，使用 HashMap |
+| `append` / `difference` / `intersection` / `union` | for 遍历集合操作 | ☐ | 移至 Rust 层，使用 HashSet |
+| `unique` / `duplicated` | for 去重 | ☐ | 移至 Rust 层 |
+| `sort_values` | Python 排序 | ☐ | 移至 Rust 层 |
+| `isin` | for 遍历 | ☐ | 移至 Rust 层 |
+| `map` / `where` / `mask` | for 遍历 | ☐ | 移至 Rust 层 |
+| `symmetric_difference` | for 遍历 | ☐ | 移至 Rust 层 |
+
+#### 2.4 顶层函数 — 循环优化
+
+| 文件位置 | 循环类型 | 状态 | 优化方案 |
+|---|---|---|---|
+| `factorize` | for 遍历编码 | ☐ | 移至 Rust 层（已部分实现） |
+| `to_numeric` | for 遍历转换 | ☐ | 移至 Rust 层 |
+| `merge` / `concat` | for 遍历合并 | ☐ | 移至 Rust 层 |
+| `isnull` / `notnull` | for 遍历检测 | ☐ | 移至 Rust 层 |
+| `unique` / `value_counts` | for 去重/统计 | ☐ | 移至 Rust 层 |
+| `cut` / `qcut` / `crosstab` | for 分箱/交叉表 | ☐ | 移至 Rust 层 |
+| `get_dummies` | for 独热编码 | ☐ | 移至 Rust 层 |
+| `to_datetime` / `date_range` 等 | for 日期处理 | ☐ | 移至 Rust 层 |
+
+---
+
+## 三、Rust 层高性能 + 内存安全
+
+### 目标
+
+Rust 层作为底层实现，要求高性能（利用并行计算、零拷贝、向量化）和内存安全（最小化 unsafe，严格边界检查）。
+
+### 原则
+
+- 优先使用 `rayon` 并行计算（Cargo.toml 已依赖）
+- 优先释放 GIL（`Python::allow_threads`）以提升并行性能
+- 使用迭代器链式调用替代显式 for 循环
+- 使用 `ndarray` 的视图（view）实现零拷贝切片
+- 严格遵循 edition 2024 的 `unsafe_op_in_unsafe_fn` 要求
+- 所有 unsafe 块必须有必要性说明
+- 优先使用 `Result<T, E>` 传播错误，禁止核心逻辑使用 `unwrap`/`expect`
+
+### 检查清单
+
+#### 3.1 性能优化
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| 并行聚合（rayon） | ☐ | sum/mean/std/var/min/max/count 等使用 rayon 并行 |
+| 并行 groupby | ☐ | 分组聚合使用 HashMap + rayon 并行 |
+| 并行排序 | ☐ | sort_values/sort_index 使用并行排序算法 |
+| 并行 merge/join | ☐ | 合并操作使用 hash join + rayon |
+| 并行字符串操作 | ☐ | StringAccessor 使用 rayon 并行处理 |
+| BLAS 矩阵运算 | ☐ | dot/corr/cov 等使用 BLAS 加速 |
+| 零拷贝 CSV 解析 | ☐ | 使用 csv-core 零分配解析 |
+| 零拷贝 Arrow 互操作 | ☐ | 引入 arrow-rs 实现零拷贝 |
+| 内存映射大文件 | ☐ | 大 CSV/Parquet 使用 mmap 读取 |
+| SIMD 向量化 | ☐ | 关键数值运算使用 SIMD 指令 |
+| 高性能哈希 | ☐ | 引入 ahash 加速 groupby/unique |
+| 缓存友好布局 | ☐ | 确保列数据连续存储，减少 cache miss |
+| 预分配内存 | ☐ | 避免动态扩容，预分配结果 Vec |
+| 批量操作 | ☐ | 一次遍历多聚合，减少多遍扫描 |
+
+#### 3.2 GIL 释放
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| 统计方法释放 GIL | ☐ | sum/mean/std 等使用 `Python::allow_threads` |
+| 排序方法释放 GIL | ☐ | sort_values/sort_index 释放 GIL |
+| 合并方法释放 GIL | ☐ | merge/join/concat 释放 GIL |
+| IO 方法释放 GIL | ☐ | read_csv/write_csv 释放 GIL |
+| 分组方法释放 GIL | ☐ | groupby 聚合释放 GIL |
+| 窗口方法释放 GIL | ☐ | rolling/expanding/ewm 释放 GIL |
+| 字符串方法释放 GIL | ☐ | StringAccessor 释放 GIL |
+
+#### 3.3 内存安全
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| unsafe 块审计 | ☐ | 审查所有 unsafe 块，添加必要性说明 |
+| 指针生命周期检查 | ☐ | 确保原始指针操作前已验证生命周期 |
+| 对齐检查 | ☐ | 确保 unsafe 前完成内存对齐验证 |
+| 边界检查 | ☐ | 确保所有数组访问有边界检查 |
+| Python 输入验证 | ☐ | 禁止未验证的 Python 输入直接传入 unsafe 块 |
+| 错误处理统一 | ☐ | 核心逻辑禁止 unwrap/expect，使用 Result |
+| 异常映射对齐 | ☐ | ValueError/TypeError 语义与 pandas 一致 |
+
+#### 3.4 Rust 层功能扩展
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `series.rs` 并行聚合方法 | ☐ | 新增 PySeries 的并行 sum/mean/std 等 |
+| `series.rs` 排序方法 | ☐ | 新增 PySeries 的 sort_values/sort_index |
+| `series.rs` 缺失值方法 | ☐ | 新增 PySeries 的 isna/fillna/ffill/bfill |
+| `series.rs` 窗口方法 | ☐ | 新增 PySeries 的 rolling/expanding/ewm |
+| `series.rs` 字符串方法 | ☐ | 新增 PySeries 的 str_upper/str_lower 等 |
+| `series.rs` 日期方法 | ☐ | 新增 PySeries 的 dt_year/dt_month 等 |
+| `dataframe.rs` 合并方法 | ☐ | 新增 PyDataFrame 的 merge/join |
+| `dataframe.rs` 透视方法 | ☐ | 新增 PyDataFrame 的 pivot/melt |
+| `dataframe.rs` 分组方法 | ☐ | 新增 PyDataFrame 的 groupby |
+| `dataframe.rs` 排序方法 | ☐ | 新增 PyDataFrame 的 sort_values/sort_index |
+| `csv_io.rs` 分块读取 | ☐ | 新增流式分块 CSV 解析 |
+| `xlsx_io.rs` 流式写入 | ☐ | 新增大 Excel 流式写入 |
+| Arrow 格式支持 | ☐ | 引入 arrow-rs 实现零拷贝互转 |
+| ORC 格式支持 | ☐ | 新增 ORC 读写 |
+| HDF5 格式支持 | ☐ | 新增 HDF5 读写 |
+
+---
+
+## 四、Python 层和 Rust 层分目录组织
+
+### 目标
+
+将 Python 层和 Rust 层的代码清晰分离到不同目录，保持项目结构清晰。
+
+### 当前结构
+
+```
+rspandas/
+├── src/                # Rust 源码
+│   ├── lib.rs
+│   └── core/
+├── python/             # Python 源码
+│   └── rspandas/
+├── test/
+├── build_wheel.sh
+├── pyproject.toml
+├── Cargo.toml
+└── rust-toolchain.toml
+```
+
+### 目标结构
+
+```
+rspandas/
+├── rust/                       # ← Rust 层（重命名 src/ → rust/）
+│   ├── Cargo.toml              # ← Rust 配置移至此
+│   ├── rust-toolchain.toml     # ← Rust 工具链移至此
+│   ├── src/
+│   │   ├── lib.rs              # 库入口
+│   │   └── core/               # 核心模块
+│   │       ├── mod.rs
+│   │       ├── series.rs       # PySeries 实现
+│   │       ├── dataframe.rs    # PyDataFrame 实现
+│   │       ├── dtype.rs        # dtype 处理
+│   │       ├── csv_io.rs       # CSV 读写
+│   │       └── xlsx_io.rs      # Excel 读写
+│   └── tests/                  # Rust 单元测试
+│       ├── series_test.rs
+│       ├── dataframe_test.rs
+│       └── csv_io_test.rs
+├── python/                     # Python 层
+│   ├── pyproject.toml          # Python 配置移至此
+│   ├── rspandas/               # Python 包
+│   │   ├── __init__.py
+│   │   ├── series.py
+│   │   ├── dataframe.py
+│   │   ├── indexes.py
+│   │   ├── _datetime.py
+│   │   ├── io.py
+│   │   ├── offsets.py
+│   │   └── api/
+│   └── tests/                   # Python 测试
+│       ├── test_series.py
+│       ├── test_dataframe.py
+│       └── test_io.py
+├── test/                       # 集成测试
+│   ├── run_test.py
+│   ├── run_test2.py
+│   └── test_rf/
+├── debug/                      # 调试代码
+├── build_wheel.sh              # 构建脚本
+├── OPTIMIZATION_LIST.md        # 本文档
+└── README.md
+```
+
+### 检查清单
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `src/` → `rust/src/` 重命名 | ☐ | 将 Rust 源码目录重命名为 rust/ |
+| `Cargo.toml` → `rust/Cargo.toml` | ☐ | 将 Cargo.toml 移至 rust/ 目录 |
+| `rust-toolchain.toml` → `rust/rust-toolchain.toml` | ☐ | 将工具链配置移至 rust/ 目录 |
+| `pyproject.toml` → `python/pyproject.toml` | ☐ | 将 pyproject.toml 移至 python/ 目录 |
+| `build_wheel.sh` 路径更新 | ☐ | 更新构建脚本中的路径引用 |
+| `pyproject.toml` 配置更新 | ☐ | 更新 `[tool.maturin]` 中的路径配置 |
+| `Cargo.toml` 配置更新 | ☐ | 更新 `[lib]` 路径和依赖路径 |
+| Rust 单元测试目录 | ☐ | 新增 `rust/tests/` 目录 |
+| Python 测试目录 | ☐ | 新增 `python/tests/` 目录 |
+| CI 配置更新 | ☐ | 更新 CI 中的路径引用 |
+| 文档路径更新 | ☐ | 更新 README.md 和规则文档中的路径 |
+
+---
+
+## 五、扩展功能（pandas 独有之外的增强）
+
+### 目标
+
+利用 Rust 的性能优势，提供 pandas 没有的数据分析增强功能。
+
+### 检查清单
+
+#### 5.1 数据质量
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `DataFrame.profile()` | ✓ | 数据概览报告（每列类型/缺失率/唯一值/分布/异常值） |
+| `DataFrame.validate(schema)` | ✓ | 按模式校验数据（类型/范围/非空） |
+| `DataFrame.detect_outliers(columns, method)` | ✓ | 异常值检测（IQR/Z-score） |
+| `DataFrame.compare_with(other, show_all)` | ✓ | 增强版对比，只展示差异行 |
+| `DataFrame.snapshot(path)` | ✓ | 保存当前状态快照（含索引/dtype/元数据） |
+| `DataFrame.from_snapshot(path)` | ✓ | 从快照恢复 |
+
+#### 5.2 数据清洗增强
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `DataFrame.clean()` | ✓ | 一键清洗：去重/去空行/类型推断/格式统一 |
+| `Series.infer_type()` | ✓ | 智能推断列类型 |
+| `DataFrame.standardize_names()` | ✓ | 列名标准化（去空格/统一大小写/特殊字符处理） |
+| `Series.detect_encoding()` | ☐ | 检测字符串编码 |
+
+#### 5.3 高级统计
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `DataFrame.normalize(method)` | ✓ | 归一化（minmax/zscore/robust） |
+| `Series.describe_full()` | ✓ | 扩展描述统计（偏度/峰度/四分位间距/变异系数） |
+| `DataFrame.corr_matrix(method)` | ☐ | 相关系数矩阵（pearson/spearman/kendall） |
+| `Series.moving_average(window)` | ✓ | 移动平均 |
+
+#### 5.4 流式处理
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| `read_csv_chunked(path, chunk_size)` | ☐ | 分块读取大文件，返回迭代器 |
+| `DataFrame.to_stream()` | ☐ | 转为流式 DataFrame，支持管道操作 |
+| `DataFrame.pipeline(*funcs)` | ☐ | 链式惰性执行 |
+| `to_sql_batch(conn, table, batch_size)` | ☐ | 批量写入数据库 |
+
+#### 5.5 惰性求值
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| LazyFrame 基础架构 | ☐ | 构建计算图，延迟执行 |
+| LazyFrame 查询优化 | ☐ | 谓词下推/投影裁剪/常量折叠 |
+| LazyFrame to DataFrame | ☐ | 触发执行，物化结果 |
+
+---
+
+## 六、测试与验证
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| Rust 单元测试覆盖 | ☐ | 每个 Rust 公共函数附带 #[cfg(test)] 测试 |
+| Python API 测试覆盖 | ☐ | 每个 Python 公开方法附带测试用例 |
+| 兼容性测试 | ☐ | test/test_rf/ 下的 scipy 兼容层验证 |
+| 性能基准测试 | ☐ | 对比 pandas 的性能基准测试 |
+| 内存安全测试 | ☐ | unsafe 代码的边界测试 |
+| CI 流水线 | ☐ | cargo fmt + cargo clippy + black check + 测试 |
+
+---
+
+## 统计汇总
+
+| 类别 | 已完成 ✓ | 待开发 ☐ | 完成率 |
+|---|---|---|---|
+| 薄 Python 层 + 参数完整 | ~425 | ~260 | 62% |
+| Python 循环优化 | ~70 | ~50 | 58% |
+| Rust 层高性能 + 内存安全 | 0 | ~45 | 0% |
+| 分目录组织 | 0 | ~11 | 0% |
+| 扩展功能 | 10 | ~10 | 50% |
+| 测试与验证 | 2 | ~4 | 33% |
+| **总计** | **~507** | **~380** | **57%** |
+
+---
+
+## 优先级排序
+
+### P0 — 立即执行
+1. Python 循环优化（ffill/bfill/interpolate/prod/dot/round 等）
+2. Rust 层并行聚合（rayon + 释放 GIL）
+3. GroupBy 方法补全（std/var/median/apply/transform/filter/size）
+
+### P1 — 短期规划
+4. Series/DataFrame 反向运算符补全
+5. 比较运算命名方法补全
+6. Index 扩展方法补全
+7. StringAccessor / DatetimeAccessor 下沉 Rust
+
+### P2 — 中期规划
+8. Rust 层合并/透视/重塑下沉
+9. 分目录组织重构
+10. 扩展功能（profile/normalize/detect_outliers）
+
+### P3 — 长期规划
+11. 惰性求值 / LazyFrame
+12. Arrow 零拷贝互操作
+13. 流式处理（分块读取/管道）
+14. 更多 IO 格式（ORC/HDF5/XML）

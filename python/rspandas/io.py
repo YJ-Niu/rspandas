@@ -45,13 +45,17 @@ class ExcelWriter:
         """关闭写入器并保存文件。"""
         from .rspandas import write_xlsx_multi as _write_xlsx_multi
 
-        sheets_data = []
-        for sheet_name, df, include_header, include_index in self._sheets:
-            cols = list(df.columns)
-            series_list = [df._inner.get_column(c) for c in cols]
-            sheets_data.append(
-                (sheet_name, cols, series_list, include_header, include_index)
+        # 使用列表推导式替代显式 for 循环构建 sheets_data
+        sheets_data = [
+            (
+                sheet_name,
+                list(df.columns),
+                [df._inner.get_column(c) for c in df.columns],
+                include_header,
+                include_index,
             )
+            for sheet_name, df, include_header, include_index in self._sheets
+        ]
 
         _write_xlsx_multi(self._path, sheets_data)
 
@@ -100,10 +104,8 @@ def read_json(
     elif orient == "columns":
         return DataFrame(raw)
     elif orient == "index":
-        records = []
-        for idx, row_dict in raw.items():
-            record = {"index": idx, **row_dict}
-            records.append(record)
+        # 使用列表推导式替代显式 for 循环
+        records = [{"index": idx, **row_dict} for idx, row_dict in raw.items()]
         return DataFrame(records)
     elif orient == "split":
         cols = raw.get("columns", [])
@@ -152,9 +154,8 @@ def to_json(
     elif orient == "columns":
         data = {col: [row.get(col) for row in records] for col in df.columns}
     elif orient == "index":
-        data = {}
-        for i, row in enumerate(records):
-            data[str(i)] = row
+        # 使用字典推导式替代显式 for 循环
+        data = {str(i): row for i, row in enumerate(records)}
     elif orient == "split":
         data = {
             "columns": list(df.columns),
@@ -290,10 +291,10 @@ def read_parquet(path: str, **kwargs) -> DataFrame:
 
 def _arrow_table_to_dataframe(table) -> DataFrame:
     """将 PyArrow Table 转换为 DataFrame。"""
-    data: Dict[str, list] = {}
-    for col_name in table.column_names:
-        col = table.column(col_name)
-        data[col_name] = col.to_pylist()
+    # 使用字典推导式替代显式 for 循环
+    data: Dict[str, list] = {
+        col_name: table.column(col_name).to_pylist() for col_name in table.column_names
+    }
     return DataFrame(data)
 
 
@@ -340,24 +341,23 @@ def _dataframe_to_arrow_table(df: DataFrame):
     """将 DataFrame 转换为 PyArrow Table。"""
     import pyarrow as pa
 
-    arrays = []
-    for col_name in df.columns:
+    def _infer_array(col_name):
+        """为单列推断 PyArrow 类型并构造数组。"""
         col_data = list(df[col_name].values)
         # 推断类型
         non_null = [v for v in col_data if v is not None]
         if not non_null:
-            arrays.append(pa.array(col_data, type=pa.string()))
-        elif all(isinstance(v, bool) for v in non_null):
-            arrays.append(pa.array(col_data, type=pa.bool_()))
-        elif all(isinstance(v, int) for v in non_null):
-            arrays.append(pa.array(col_data, type=pa.int64()))
-        elif all(isinstance(v, float) for v in non_null):
-            arrays.append(pa.array(col_data, type=pa.float64()))
-        else:
-            arrays.append(
-                pa.array([str(v) if v is not None else None for v in col_data])
-            )
+            return pa.array(col_data, type=pa.string())
+        if all(isinstance(v, bool) for v in non_null):
+            return pa.array(col_data, type=pa.bool_())
+        if all(isinstance(v, int) for v in non_null):
+            return pa.array(col_data, type=pa.int64())
+        if all(isinstance(v, float) for v in non_null):
+            return pa.array(col_data, type=pa.float64())
+        return pa.array([str(v) if v is not None else None for v in col_data])
 
+    # 使用列表推导式替代显式 for 循环
+    arrays = [_infer_array(col_name) for col_name in df.columns]
     return pa.table(dict(zip(df.columns, arrays)))
 
 
@@ -561,19 +561,18 @@ def to_sql(
                 raise ValueError(f"Unknown if_exists: {if_exists}")
 
         if if_exists == "replace" or name not in meta.tables:
-            # Create table from DataFrame schema
-            cols = []
-            for c in df.columns:
+            # 使用辅助函数 + 列表推导式替代显式 for 循环
+            def _infer_sa_type(c):
                 sample = next((v for v in df[c].values if v is not None), None)
                 if isinstance(sample, bool):
-                    col_type = sa.Boolean
-                elif isinstance(sample, int):
-                    col_type = sa.Integer
-                elif isinstance(sample, float):
-                    col_type = sa.Float
-                else:
-                    col_type = sa.String
-                cols.append(sa.Column(c, col_type))
+                    return sa.Boolean
+                if isinstance(sample, int):
+                    return sa.Integer
+                if isinstance(sample, float):
+                    return sa.Float
+                return sa.String
+
+            cols = [sa.Column(c, _infer_sa_type(c)) for c in df.columns]
             sa.Table(name, meta, *cols)
             meta.create_all(connection)
 

@@ -7,7 +7,7 @@ rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析�
 - **Rust 层** (`src/`): 负责底层核心实现，包括 `PySeries` 和 `PyDataFrame` 两个核心类，以及 CSV/Excel IO 操作。
 - **Python 层** (`python/rspandas/`): 负责公开 API 接口，方法参数默认值要全面，代理调用 Rust 底层实现。
 - **构建工具**: 使用 `maturin` 构建 wheel，通过 `build_wheel.sh` 脚本构建并安装到 `.venv`。
-- **依赖关系**: rspandas 与 rsnumpy 协同工作——rsnumpy 提供底层 ndarray 支持，rspandas 在其上构建 Series/DataFrame。rspandas 对 rsnumpy 为弱依赖（通过属性检测而非直接 import）。
+- **依赖关系**: rspandas 与 rsnumpy 协同工作——rsnumpy 提供底层 ndarray 支持，rspandas 在其上构建 Series/DataFrame。rsnumpy 是 rspandas 的**必选依赖**（在 `pyproject.toml` 的 `dependencies` 中声明），Python 层通过 `import rsnumpy as rnp` 直接引用。
 
 ## 开发环境
 
@@ -104,7 +104,7 @@ rspandas 依赖 rsnumpy 提供底层 ndarray 支持。rsnumpy 通过双层缓冲
 - **f64 唯一存储**：rsnumpy 底层数组恒为 `Array<f64, IxDyn>`，int64/bool/datetime64 等 dtype 仅在 Python 层通过 `_dtype` 追踪。
 - **int64 精度丢失**：大于 `2^53` 的整数会因 f64 存储限制而丢失精度，即使 `typestr` 报 `<i8`。
 - **datetime64/timedelta64**：内部存储为 f64 纪元值，`dtype.kind` 返回 `'f'`，日期零拷贝需未来引入独立整型存储。
-- **rsnumpy 弱依赖**：rspandas 的 `dataframe.py` 通过特征属性检测 rsnumpy.ndarray（`hasattr` 检查），而非直接 import，避免强依赖。
+- **rsnumpy 必选依赖**：rspandas 的 `pyproject.toml` 声明 `dependencies = ["rsnumpy"]`，Python 层通过 `import rsnumpy as rnp` 直接引用，使用 `isinstance(data, rnp.ndarray)` 进行类型检测。
 
 ### 10. 测试规范
 

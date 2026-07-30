@@ -116,6 +116,14 @@ if ! cargo clippy --all-targets -- -D warnings; then
 fi
 echo "  -> clippy checks passed."
 
+# ========== 构建前的 Flake8 Python 代码检查 ==========
+echo "Running flake8 checks (uv run flake8 python/ --max-line-length=500 --extend-ignore=E203) ..."
+if ! uv run flake8 python/ --max-line-length=500 --extend-ignore=E203; then
+  echo "Error: flake8 checks failed. Fix the warnings above before building." >&2
+  exit 1
+fi
+echo "  -> flake8 checks passed."
+
 BUILD_ARGS=()
 if $RELEASE; then BUILD_ARGS+=(--release); else BUILD_ARGS+=(--debug); fi
 

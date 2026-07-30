@@ -76,6 +76,103 @@ def is_timedelta64_dtype(arr_or_dtype) -> bool:
     return dtype == "timedelta64"
 
 
+def is_object_dtype(arr_or_dtype) -> bool:
+    """检查是否为对象类型 (object)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype == "object"
+
+
+def is_complex_dtype(arr_or_dtype) -> bool:
+    """检查是否为复数类型 (complex64/complex128)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype in ("complex64", "complex128")
+
+
+def is_unsigned_integer_dtype(arr_or_dtype) -> bool:
+    """检查是否为无符号整数类型 (uint8/uint16/uint32/uint64)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype in ("uint8", "uint16", "uint32", "uint64")
+
+
+def is_signed_integer_dtype(arr_or_dtype) -> bool:
+    """检查是否为有符号整数类型 (int8/int16/int32/int64)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype in ("int8", "int16", "int32", "int64")
+
+
+def is_extension_type(arr_or_dtype) -> bool:
+    """检查是否为扩展类型 (category/datetime64/timedelta64)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype in ("category", "datetime64", "timedelta64")
+
+
+def is_interval_dtype(arr_or_dtype) -> bool:
+    """检查是否为区间类型 (Interval)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype == "interval"
+
+
+def is_period_dtype(arr_or_dtype) -> bool:
+    """检查是否为周期类型 (Period)。"""
+    dtype = _extract_dtype(arr_or_dtype)
+    return dtype in ("period", "Period")
+
+
+def is_sparse(obj) -> bool:
+    """检查是否为稀疏对象 (SparseDtype/SparseArray)。"""
+    if hasattr(obj, "dtype") and isinstance(obj.dtype, str):
+        return obj.dtype.startswith("Sparse")
+    if isinstance(obj, str):
+        return obj.startswith("Sparse")
+    return getattr(obj, "_sub_type", None) == "Sparse" or "Sparse" in type(obj).__name__
+
+
+def is_re(obj) -> bool:
+    """检查是否为正则表达式对象 (re.Pattern)。"""
+    import re
+
+    return isinstance(obj, re.Pattern)
+
+
+def is_scalar(obj) -> bool:
+    """检查是否为标量值。"""
+    if obj is None:
+        return True
+    if isinstance(obj, (int, float, complex, bool, str, bytes)):
+        return True
+    import datetime
+
+    if isinstance(obj, (datetime.date, datetime.datetime, datetime.timedelta)):
+        return True
+    # 拦截 numpy / rsnumpy 的 0 维数组
+    if hasattr(obj, "ndim") and obj.ndim == 0:
+        return True
+    return False
+
+
+def is_number(obj) -> bool:
+    """检查是否为数字 (int/float/complex，排除 bool)。"""
+    if isinstance(obj, bool):
+        return False
+    return isinstance(obj, (int, float, complex))
+
+
+def is_iterable(obj) -> bool:
+    """检查是否为可迭代对象 (排除 str/bytes)。"""
+    if isinstance(obj, (str, bytes)):
+        return False
+    try:
+        iter(obj)
+        return True
+    except TypeError:
+        return False
+
+
+def is_file_like(obj) -> bool:
+    """检查是否为文件类对象 (有 read/write 方法之一)。"""
+    return hasattr(obj, "read") or hasattr(obj, "write")
+
+
 def is_dict_like(obj) -> bool:
     """检查是否为 dict-like 对象。
 
