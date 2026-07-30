@@ -23,6 +23,27 @@ def _is_ndarray(data: Any) -> bool:
     return isinstance(data, rnp.ndarray)
 
 
+def _convert_to_basic(v: Any) -> Any:
+    """将值转换为 Rust 端可接受的基础类型。"""
+    if v is None:
+        return None
+    if isinstance(v, (int, float, str, bool)):
+        return v
+    # Timestamp / datetime -> ISO 字符串
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    # numpy 标量 -> Python 标量
+    if hasattr(v, "item"):
+        return v.item()
+    # 其他可转换对象 -> str
+    return str(v) if v is not None else None
+
+
+def _convert_list_to_basic(values: list) -> list:
+    """将列表中的每个值转换为基础类型。"""
+    return [_convert_to_basic(v) for v in values]
+
+
 def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, list]:
     """将 dict/list/ndarray 输入解析为 dict[str, list]。"""
     if isinstance(data, dict):
@@ -32,8 +53,17 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
                 result[k] = list(v.values)
             elif isinstance(v, _PySeries):
                 result[k] = list(v.values)
+            elif v is None:
+                result[k] = []
+            elif isinstance(v, (list, tuple)):
+                result[k] = list(v)
+            elif hasattr(v, "tolist"):
+                result[k] = (
+                    list(v) if not isinstance(v, (int, float, str, bool)) else [v]
+                )
             else:
-                result[k] = list(v) if v is not None else []
+                # 标量值：先暂存，后续广播到其他列长度
+                result[k] = [v]  # 先包装成单元素列表，DataFrame.__init__ 会处理广播
         return result
 
     if isinstance(data, list):
@@ -141,16 +171,23 @@ class DataFrame:
         col_names = list(col_dict.keys())
         col_values = [col_dict[c] for c in col_names]
 
+        # 处理标量广播：如果某列长度为 1，且其他列长度 > 1，则广播
+        max_len = max((len(vs) for vs in col_values), default=0)
+        for i, vs in enumerate(col_values):
+            if len(vs) == 1 and max_len > 1:
+                col_values[i] = vs * max_len
+
         # 校验每列长度一致
         n = len(col_values[0]) if col_values else 0
         for c, vs in zip(col_names, col_values):
             if len(vs) != n:
                 raise ValueError(f"column '{c}' has length {len(vs)} != {n}")
 
-        # 构造 Rust 端 Series
+        # 构造 Rust 端 Series（转换非基础类型为基础类型）
         rust_series_list = []
         for c, vs in zip(col_names, col_values):
-            rust_series_list.append(_PySeries(vs, c, dtype=dtype))
+            converted_vs = _convert_list_to_basic(vs)
+            rust_series_list.append(_PySeries(converted_vs, c, dtype=dtype))
 
         # 构造 Rust 端 DataFrame
         self._inner = _PyDataFrame(col_names, rust_series_list)
@@ -265,6 +302,109 @@ class DataFrame:
     def __str__(self) -> str:
         return self._format_repr()
 
+    # ---------- 比较操作 ----------
+
+    def _apply_comparison(self, other, op) -> "DataFrame":
+        """应用比较操作。"""
+        new_data = {}
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            values = list(ser.values)
+            if isinstance(other, DataFrame):
+                other_ser = other._inner.get_column(c)
+                other_values = list(other_ser.values)
+                new_data[c] = [op(a, b) for a, b in zip(values, other_values)]
+            elif isinstance(other, (int, float, bool)):
+                new_data[c] = [op(a, other) for a in values]
+            else:
+                raise TypeError(
+                    f"comparison not supported between DataFrame and {type(other).__name__}"
+                )
+        return DataFrame(new_data)
+
+    def __gt__(self, other) -> "DataFrame":
+        return self._apply_comparison(
+            other, lambda a, b: a > b if a is not None and b is not None else False
+        )
+
+    def __lt__(self, other) -> "DataFrame":
+        return self._apply_comparison(
+            other, lambda a, b: a < b if a is not None and b is not None else False
+        )
+
+    def __ge__(self, other) -> "DataFrame":
+        return self._apply_comparison(
+            other, lambda a, b: a >= b if a is not None and b is not None else False
+        )
+
+    def __le__(self, other) -> "DataFrame":
+        return self._apply_comparison(
+            other, lambda a, b: a <= b if a is not None and b is not None else False
+        )
+
+    def __eq__(self, other) -> "DataFrame":
+        return self._apply_comparison(
+            other, lambda a, b: a == b if a is not None and b is not None else False
+        )
+
+    def __ne__(self, other) -> "DataFrame":
+        return self._apply_comparison(
+            other, lambda a, b: a != b if a is not None and b is not None else False
+        )
+
+    # ---------- 算术操作 ----------
+
+    def __neg__(self) -> "DataFrame":
+        """取反操作 (-df)。"""
+        new_data = {}
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            values = list(ser.values)
+            new_data[c] = [-v if v is not None and v == v else v for v in values]
+        return DataFrame(new_data)
+
+    def __add__(self, other) -> "DataFrame":
+        return self._apply_arithmetic(
+            other, lambda a, b: a + b if a is not None and b is not None else None
+        )
+
+    def __sub__(self, other) -> "DataFrame":
+        return self._apply_arithmetic(
+            other, lambda a, b: a - b if a is not None and b is not None else None
+        )
+
+    def __mul__(self, other) -> "DataFrame":
+        return self._apply_arithmetic(
+            other, lambda a, b: a * b if a is not None and b is not None else None
+        )
+
+    def __truediv__(self, other) -> "DataFrame":
+        return self._apply_arithmetic(
+            other,
+            lambda a, b: a / b if a is not None and b is not None and b != 0 else None,
+        )
+
+    def _apply_arithmetic(self, other, op) -> "DataFrame":
+        """应用算术操作。"""
+        new_data = {}
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            values = list(ser.values)
+            if isinstance(other, DataFrame):
+                if c in other._columns:
+                    other_ser = other._inner.get_column(c)
+                    other_values = list(other_ser.values)
+                    new_data[c] = [op(a, b) for a, b in zip(values, other_values)]
+                else:
+                    new_data[c] = values
+            elif isinstance(other, (int, float)):
+                new_data[c] = [op(a, other) for a in values]
+            else:
+                raise TypeError(
+                    f"arithmetic not supported between DataFrame and {type(other).__name__}"
+                )
+        return DataFrame(new_data)
+
     def __getitem__(self, key) -> Union[Series, "DataFrame"]:
         # str -> 单列
         if isinstance(key, str):
@@ -273,6 +413,9 @@ class DataFrame:
         if isinstance(key, list) and all(isinstance(x, str) for x in key):
             new_data = {c: list(self._inner.get_column(c).values) for c in key}
             return DataFrame(new_data)
+        # DataFrame -> 布尔掩码过滤 (df[bool_df] 形式)
+        if isinstance(key, DataFrame):
+            return self._filter_with_dataframe_mask(key)
         # list[bool] / Series -> 行 mask 过滤
         if isinstance(key, Series):
             return self._filter_with_mask(list(key.values))
@@ -287,14 +430,52 @@ class DataFrame:
             return {c: self._inner.get_column(c).values[key] for c in self._columns}
         # slice -> 行切片
         if isinstance(key, slice):
-            start, stop, step = key.indices(self._nrows)
-            idx = list(range(start, stop, step))
+            # 处理字符串索引切片 (如 df["20130102":"20130104"])
+            if isinstance(key.start, str) or isinstance(key.stop, str):
+                from ._datetime import to_datetime
+
+                start_idx = None
+                stop_idx = None
+                if isinstance(key.start, str):
+                    # 将字符串解析为 datetime，然后在 index 中查找
+                    target = to_datetime(key.start)
+                    for i, idx in enumerate(self._index):
+                        if idx == target:
+                            start_idx = i
+                            break
+                    if start_idx is None:
+                        raise KeyError(f"index '{key.start}' not found")
+                if isinstance(key.stop, str):
+                    target = to_datetime(key.stop)
+                    for i, idx in enumerate(self._index):
+                        if idx == target:
+                            stop_idx = i + 1  # 切片时 stop 是包含的
+                            break
+                    if stop_idx is None:
+                        raise KeyError(f"index '{key.stop}' not found")
+                if start_idx is None:
+                    start_idx = 0
+                if stop_idx is None:
+                    stop_idx = self._nrows
+                step = key.step or 1
+                idx = list(range(start_idx, stop_idx, step))
+            else:
+                start, stop, step = key.indices(self._nrows)
+                idx = list(range(start, stop, step))
             new_data = {
                 c: [self._inner.get_column(c).values[i] for i in idx]
                 for c in self._columns
             }
             return DataFrame(new_data)
         raise TypeError(f"Cannot index DataFrame with {type(key).__name__}")
+
+    def __getattr__(self, name: str):
+        """支持通过属性访问列 (如 df.A)。"""
+        if name.startswith("_"):
+            raise AttributeError(f"'DataFrame' object has no attribute '{name}'")
+        if name in self._columns:
+            return self._get_column_as_series(name)
+        raise AttributeError(f"'DataFrame' object has no attribute '{name}'")
 
     def _filter_with_mask(self, mask: list) -> "DataFrame":
         if len(mask) != self._nrows:
@@ -306,8 +487,32 @@ class DataFrame:
             new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
         return DataFrame(new_data)
 
-    def __setitem__(self, key: str, value) -> None:
-        """df['new_col'] = values 添加/更新列。"""
+    def _filter_with_dataframe_mask(self, mask_df: "DataFrame") -> "DataFrame":
+        """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 None/NaN。"""
+        new_data = {}
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            values = list(ser.values)
+            if c in mask_df._columns:
+                mask_ser = mask_df._inner.get_column(c)
+                mask_values = list(mask_ser.values)
+                new_data[c] = [v if m else None for v, m in zip(values, mask_values)]
+            else:
+                new_data[c] = values
+        return DataFrame(new_data)
+
+    def __setitem__(self, key, value) -> None:
+        """df['new_col'] = values 添加/更新列，或 df[bool_mask] = value 布尔掩码赋值。"""
+        # 如果 key 是 DataFrame，使用布尔掩码赋值
+        if isinstance(key, DataFrame):
+            self._setitem_with_mask(key, value)
+            return
+
+        if isinstance(key, list) and all(isinstance(x, bool) for x in key):
+            self._setitem_with_list_mask(key, value)
+            return
+
+        # 原有逻辑：df['col'] = values
         if isinstance(value, Series):
             values = list(value.values)
         elif isinstance(value, _PySeries):
@@ -335,6 +540,68 @@ class DataFrame:
             new_data[key] = values
             self._reload(new_data)
             self._columns.append(key)
+
+    def _setitem_with_mask(self, mask_df: "DataFrame", value) -> None:
+        """使用布尔 DataFrame 作为掩码进行赋值。"""
+        new_data = {}
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            values = list(ser.values)
+            if c in mask_df._columns:
+                mask_ser = mask_df._inner.get_column(c)
+                mask_values = list(mask_ser.values)
+                if isinstance(value, DataFrame) and c in value._columns:
+                    val_ser = value._inner.get_column(c)
+                    val_values = list(val_ser.values)
+                    values = [
+                        v if not m else val_v
+                        for v, m, val_v in zip(values, mask_values, val_values)
+                    ]
+                elif isinstance(value, (int, float)):
+                    values = [
+                        v if not m else value for v, m in zip(values, mask_values)
+                    ]
+                else:
+                    values = [
+                        v if not m else val
+                        for v, m, val in zip(
+                            values,
+                            mask_values,
+                            (
+                                list(value)
+                                if hasattr(value, "__iter__")
+                                and not isinstance(value, str)
+                                else [value] * self._nrows
+                            ),
+                        )
+                    ]
+            new_data[c] = values
+        self._reload(new_data)
+
+    def _setitem_with_list_mask(self, mask: list, value) -> None:
+        """使用布尔列表作为掩码进行行赋值。"""
+        new_data = {}
+        values_list = (
+            list(value)
+            if hasattr(value, "__iter__") and not isinstance(value, str)
+            else [value] * self._nrows
+        )
+        for c in self._columns:
+            ser = self._inner.get_column(c)
+            values = list(ser.values)
+            new_values = []
+            val_idx = 0
+            for i, m in enumerate(mask):
+                if m:
+                    if val_idx < len(values_list):
+                        new_values.append(values_list[val_idx])
+                        val_idx += 1
+                    else:
+                        new_values.append(values_list[-1] if values_list else None)
+                else:
+                    new_values.append(values[i])
+            new_data[c] = new_values
+        self._reload(new_data)
 
     def __contains__(self, col) -> bool:
         return col in self._columns
@@ -2617,14 +2884,52 @@ class DataFrame:
         return DataFrame(new_data)
 
     def _select_indices(self, indices: list) -> "DataFrame":
+        from datetime import datetime
+
         n = self._nrows
         norm = []
         for i in indices:
-            if i < 0:
-                i += n
-            if i < 0 or i >= n:
-                raise IndexError(f"index {i} out of range")
-            norm.append(i)
+            if isinstance(i, datetime):
+                # datetime key: 在索引中查找位置
+                found = False
+                for j, idx in enumerate(self._index):
+                    if idx == i:
+                        norm.append(j)
+                        found = True
+                        break
+                if not found:
+                    raise KeyError(f"index {i} not found")
+            elif isinstance(i, str):
+                # 字符串键: 尝试在索引中查找
+                found = False
+                for j, idx in enumerate(self._index):
+                    if str(idx) == i:
+                        norm.append(j)
+                        found = True
+                        break
+                if not found:
+                    # 尝试解析为 datetime
+                    try:
+                        from ._datetime import to_datetime
+
+                        target = to_datetime(i)
+                        for j, idx in enumerate(self._index):
+                            if idx == target:
+                                norm.append(j)
+                                found = True
+                                break
+                    except Exception:
+                        pass
+                if not found:
+                    raise KeyError(f"index '{i}' not found")
+            else:
+                # 整数索引
+                idx = int(i)
+                if idx < 0:
+                    idx += n
+                if idx < 0 or idx >= n:
+                    raise IndexError(f"index {idx} out of range")
+                norm.append(idx)
         new_data = {
             c: [self._inner.get_column(c).values[i] for i in norm]
             for c in self._columns
@@ -2942,6 +3247,20 @@ class DataFrame:
         for c in self._columns:
             ser = self._inner.get_column(c)
             svec = ser.to_string_vec()
+            # 格式化浮点数: pandas 默认显示 6 位小数
+            dtype = ser.dtype
+            if dtype in ("float64", "float32", "float16", "float"):
+                formatted = []
+                for s in svec:
+                    if s == "NaN" or s == "None" or s == "inf" or s == "-inf":
+                        formatted.append(s)
+                    else:
+                        try:
+                            v = float(s)
+                            formatted.append(f"{v:.6g}")
+                        except (ValueError, TypeError):
+                            formatted.append(s)
+                svec = formatted
             col_strs[c] = svec
             col_widths[c] = max(len(c), max((len(s) for s in svec), default=0))
 
@@ -6280,7 +6599,7 @@ class DataFrame:
         from .io import StreamDataFrame
 
         nrows = self._nrows
-        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
+        chunks = [self.iloc[i:i + chunk_size] for i in range(0, nrows, chunk_size)]
         return StreamDataFrame(chunks)
 
     def pipeline(self, *funcs):
@@ -7391,27 +7710,46 @@ class _IndexerBase:
 class _AtIndexer(_IndexerBase):
     """基于标签的标量索引器。"""
 
+    def _find_row_idx(self, row_label) -> int:
+        """在索引中查找行标签的位置。"""
+        index = self._df._index
+        for i, idx in enumerate(index):
+            if idx == row_label:
+                return i
+            if isinstance(row_label, str) and str(idx) == row_label:
+                return i
+
+        # 如果是字符串，尝试解析为 datetime
+        if isinstance(row_label, str):
+            try:
+                from ._datetime import to_datetime
+
+                target = to_datetime(row_label)
+                for i, idx in enumerate(index):
+                    if idx == target:
+                        return i
+            except Exception:
+                pass
+
+        raise KeyError(f"row label {row_label!r} not found")
+
     def __getitem__(self, key):
         if not isinstance(key, tuple) or len(key) != 2:
             raise KeyError("at[] requires a tuple (row_label, col_label)")
         row_label, col_label = key
-        if row_label not in self._df._index:
-            raise KeyError(f"row label {row_label!r} not found")
         if col_label not in self._df._columns:
             raise KeyError(f"column label {col_label!r} not found")
-        row_idx = self._df._index.index(row_label)
+        row_idx = self._find_row_idx(row_label)
         return self._df[col_label].values[row_idx]
 
     def __setitem__(self, key, value):
         if not isinstance(key, tuple) or len(key) != 2:
             raise KeyError("at[] requires a tuple (row_label, col_label)")
         row_label, col_label = key
-        if row_label not in self._df._index:
-            raise KeyError(f"row label {row_label!r} not found")
         if col_label not in self._df._columns:
             raise KeyError(f"column label {col_label!r} not found")
         # 简化实现：通过重建 DataFrame 修改值
-        row_idx = self._df._index.index(row_label)
+        row_idx = self._find_row_idx(row_label)
         new_data = {c: list(self._df[c].values) for c in self._df._columns}
         new_data[col_label][row_idx] = value
         self._df._reload_inplace(new_data)
@@ -7467,9 +7805,130 @@ class _LocIndexer(_IndexerBase):
             raise TypeError(f"loc: unsupported column key {type(col_key).__name__}")
         return rows_df
 
+    def __setitem__(self, key, value):
+        """df.loc[row_key, col_key] = value 支持赋值。"""
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise KeyError("loc[] requires a tuple (row_key, col_key) for assignment")
+        row_key, col_key = key
+
+        # 找到行索引
+        row_indices = []
+        from datetime import datetime
+
+        if isinstance(row_key, datetime):
+            for i, idx in enumerate(self._df._index):
+                if idx == row_key:
+                    row_indices.append(i)
+                    break
+        elif isinstance(row_key, str):
+            for i, idx in enumerate(self._df._index):
+                if str(idx) == row_key:
+                    row_indices.append(i)
+                    break
+            if not row_indices:
+                try:
+                    from ._datetime import to_datetime
+
+                    target = to_datetime(row_key)
+                    for i, idx in enumerate(self._df._index):
+                        if idx == target:
+                            row_indices.append(i)
+                            break
+                except Exception:
+                    pass
+        elif isinstance(row_key, slice):
+            # 切片赋值: 直接用整数索引
+            start, stop, step = row_key.start, row_key.stop, row_key.step
+            if start is None:
+                start = 0
+            if stop is None:
+                stop = self._df._nrows - 1
+            if start < 0:
+                start += self._df._nrows
+            if stop < 0:
+                stop += self._df._nrows
+            if step is None:
+                step = 1
+            row_indices = list(range(start, stop + 1, step))
+        elif isinstance(row_key, list):
+            row_indices = list(row_key)
+        elif isinstance(row_key, int):
+            row_indices = [row_key]
+        else:
+            raise TypeError(f"loc: unsupported row key {type(row_key).__name__}")
+
+        if not row_indices:
+            return
+
+        # 处理列赋值
+        if isinstance(col_key, str):
+            # df.loc[:, "D"] = value
+            values = (
+                list(value)
+                if hasattr(value, "__iter__") and not isinstance(value, str)
+                else [value] * len(row_indices)
+            )
+            new_data = {c: list(self._df[c].values) for c in self._df._columns}
+            for i, row_idx in enumerate(row_indices):
+                if row_idx < len(new_data[col_key]):
+                    new_data[col_key][row_idx] = (
+                        values[i] if i < len(values) else values[0]
+                    )
+            self._df._reload_inplace(new_data)
+        elif (
+            isinstance(col_key, slice)
+            and col_key.start is None
+            and col_key.stop is None
+        ):
+            # df.loc[:, col_key] = value  (对所有列赋值)
+            values = (
+                list(value)
+                if hasattr(value, "__iter__") and not isinstance(value, str)
+                else [value] * len(row_indices)
+            )
+            new_data = {c: list(self._df[c].values) for c in self._df._columns}
+            for col_name in self._df._columns:
+                for i, row_idx in enumerate(row_indices):
+                    if row_idx < len(new_data[col_name]):
+                        new_data[col_name][row_idx] = (
+                            values[i] if i < len(values) else values[0]
+                        )
+            self._df._reload_inplace(new_data)
+        else:
+            raise TypeError(
+                f"loc: unsupported column key {type(col_key).__name__} for assignment"
+            )
+
     def _select_rows(self, key):
+        from datetime import datetime
+
+        # datetime 或 str 键: 在索引中查找位置
+        if isinstance(key, datetime):
+            for i, idx in enumerate(self._df._index):
+                if idx == key:
+                    return self._df._select_row(i)
+            raise KeyError(f"loc: key {key} not found in index")
+
+        if isinstance(key, str):
+            # 尝试直接匹配
+            for i, idx in enumerate(self._df._index):
+                if str(idx) == key:
+                    return self._df._select_row(i)
+            # 尝试解析为 datetime
+            try:
+                from ._datetime import to_datetime
+
+                target = to_datetime(key)
+                for i, idx in enumerate(self._df._index):
+                    if idx == target:
+                        return self._df._select_row(i)
+            except Exception:
+                pass
+            raise KeyError(f"loc: key '{key}' not found in index")
+
         if isinstance(key, int):
             return self._df._select_row(int(key))
+
         if isinstance(key, slice):
             # loc 切片: 双闭区间 (与 pandas 一致)
             start, stop, step = key.start, key.stop, key.step
@@ -7478,23 +7937,63 @@ class _LocIndexer(_IndexerBase):
             if step <= 0:
                 raise ValueError("loc slice step must be positive")
             n = self._df._nrows
-            if start is None:
-                start = 0
-            if stop is None:
-                stop = n - 1
-            if start < 0:
-                start += n
-            if stop < 0:
-                stop += n
-            if start >= n:
-                return DataFrame({})
-            stop = min(stop, n - 1)
-            idx = list(range(start, stop + 1, step))
+
+            # 处理字符串/日期索引切片
+            if (
+                isinstance(start, str)
+                or isinstance(stop, str)
+                or isinstance(start, datetime)
+                or isinstance(stop, datetime)
+            ):
+                from ._datetime import to_datetime
+
+                start_idx = None
+                stop_idx = None
+
+                if isinstance(start, (str, datetime)):
+                    target = to_datetime(start) if isinstance(start, str) else start
+                    for i, idx in enumerate(self._df._index):
+                        if idx == target:
+                            start_idx = i
+                            break
+                    if start_idx is None:
+                        raise KeyError(f"loc: start key '{start}' not found")
+
+                if isinstance(stop, (str, datetime)):
+                    target = to_datetime(stop) if isinstance(stop, str) else stop
+                    for i, idx in enumerate(self._df._index):
+                        if idx == target:
+                            stop_idx = i
+                            break
+                    if stop_idx is None:
+                        raise KeyError(f"loc: stop key '{stop}' not found")
+
+                if start_idx is None:
+                    start_idx = 0
+                if stop_idx is None:
+                    stop_idx = n - 1
+
+                idx = list(range(start_idx, stop_idx + 1, step))
+            else:
+                if start is None:
+                    start = 0
+                if stop is None:
+                    stop = n - 1
+                if start < 0:
+                    start += n
+                if stop < 0:
+                    stop += n
+                if start >= n:
+                    return DataFrame({})
+                stop = min(stop, n - 1)
+                idx = list(range(start, stop + 1, step))
+
             new_data = {
                 c: [self._df._inner.get_column(c).values[i] for i in idx]
                 for c in self._df._columns
             }
             return DataFrame(new_data)
+
         if isinstance(key, list):
             if not key:
                 return DataFrame({})
@@ -7503,8 +8002,10 @@ class _LocIndexer(_IndexerBase):
             # list of labels
             idx = list(key)
             return self._df._select_indices(idx)
+
         if isinstance(key, Series):
             return self._df[key]
+
         raise TypeError(f"loc: unsupported key {type(key).__name__}")
 
 

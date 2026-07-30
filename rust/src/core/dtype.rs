@@ -31,8 +31,9 @@ impl DType {
 
     pub fn parse(s: &str) -> Option<DType> {
         match s.to_lowercase().as_str() {
-            "int64" | "int" | "i64" => Some(DType::Int64),
-            "float64" | "float" | "f64" => Some(DType::Float64),
+            "int64" | "int" | "i64" | "int32" | "i32" | "int16" | "int8" | "uint64" | "uint32"
+            | "uint8" => Some(DType::Int64),
+            "float64" | "float" | "f64" | "float32" | "f32" | "float16" => Some(DType::Float64),
             "bool" | "boolean" => Some(DType::Bool),
             "object" | "str" | "string" => Some(DType::Object),
             "category" | "categorical" => Some(DType::Categorical),
