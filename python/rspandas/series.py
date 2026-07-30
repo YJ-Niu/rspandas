@@ -2126,6 +2126,24 @@ class Series:
         :param ascending: 是否升序排名 (默认 True)
         :param pct: 是否返回百分比排名 (默认 False)
         """
+        # 优先调用 Rust 层（支持 average/min/max/first，na_option=keep）
+        if (
+            method in ("average", "min", "max", "first")
+            and na_option == "keep"
+            and numeric_only is None
+        ):
+            try:
+                ranks = self._inner.rank(method, ascending)
+                if pct:
+                    # pct=True: 除以最大排名
+                    valid_ranks = [r for r in ranks if r is not None]
+                    max_rank = max(valid_ranks) if valid_ranks else 1
+                    ranks = [(r / max_rank) if r is not None else None for r in ranks]
+                return Series(ranks, name=self.name, index=self._index)
+            except Exception:
+                pass
+
+        # 回退到 Python 实现
         values = self.values
         n = len(values)
 
@@ -2208,6 +2226,16 @@ class Series:
         :param q: 分位数值 (0.0-1.0) 或列表
         :param interpolation: 插值方法 ('linear'/'lower'/'higher'/'midpoint'/'nearest')
         """
+        # 优先调用 Rust 层（仅支持单个 q 且 linear 插值）
+        if not isinstance(q, (list, tuple)) and interpolation == "linear":
+            try:
+                result = self._inner.quantile(q)
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+
+        # 回退到 Python 实现
         values = [v for v in self.values if v is not None]
         if not values:
             return None
@@ -3651,12 +3679,28 @@ class Rolling:
         return Series(out, name=self._s.name, index=self._s._index)
 
     def sum(self) -> _PySeries:
+        # 优先调用 Rust 层（仅支持默认参数: center=False, win_type=None, closed=right）
+        if not self._center and self._win_type is None and self._closed == "right":
+            try:
+                result = self._s._inner.rolling_sum(self._window, self._min_periods)
+                return Series(result, name=self._s.name, index=self._s._index)
+            except Exception:
+                pass
+
         def f(win, w=None):
             return sum(v for v in win if v is not None)
 
         return self._apply(f)
 
     def mean(self) -> _PySeries:
+        # 优先调用 Rust 层（仅支持默认参数: center=False, win_type=None, closed=right）
+        if not self._center and self._win_type is None and self._closed == "right":
+            try:
+                result = self._s._inner.rolling_mean(self._window, self._min_periods)
+                return Series(result, name=self._s.name, index=self._s._index)
+            except Exception:
+                pass
+
         def f(win, w=None):
             if w is not None:
                 nums = [(v, wt) for v, wt in zip(win, w) if v is not None]
@@ -3685,6 +3729,14 @@ class Rolling:
         return self._apply(f)
 
     def std(self) -> _PySeries:
+        # 优先调用 Rust 层（仅支持默认参数: center=False, win_type=None, closed=right）
+        if not self._center and self._win_type is None and self._closed == "right":
+            try:
+                result = self._s._inner.rolling_std(self._window, self._min_periods)
+                return Series(result, name=self._s.name, index=self._s._index)
+            except Exception:
+                pass
+
         def f(win, w=None):
             nums = [v for v in win if v is not None]
             if len(nums) < 2:
@@ -3877,9 +3929,22 @@ class Expanding:
         return Series(out, name=self._s.name, index=self._s._index)
 
     def sum(self) -> _PySeries:
+        # 优先调用 Rust 层
+        try:
+            result = self._s._inner.expanding_sum(self._min_periods)
+            return Series(result, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
         return self._apply(lambda win: sum(v for v in win if v is not None))
 
     def mean(self) -> _PySeries:
+        # 优先调用 Rust 层
+        try:
+            result = self._s._inner.expanding_mean(self._min_periods)
+            return Series(result, name=self._s.name, index=self._s._index)
+        except Exception:
+            pass
+
         def f(win):
             nums = [v for v in win if v is not None]
             return sum(nums) / len(nums) if nums else None
@@ -4007,6 +4072,15 @@ class EWM:
 
     def mean(self):
         """指数加权均值。"""
+        # 优先调用 Rust 层（仅支持非调整版 adjust=False，使用递推公式）
+        if not self._adjust:
+            try:
+                result = self._s._inner.ewm_mean(self._alpha, 0)
+                return Series(result, name=self._s.name, index=self._s._index)
+            except Exception:
+                pass
+
+        # 回退到 Python 实现
         values = self._s.values
         n = len(values)
 

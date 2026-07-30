@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 use super::dtype::{ColumnData, DType};
 use super::series::{PySeries, Series};
@@ -351,6 +352,380 @@ impl DataFrame {
         DataFrame {
             columns: self.columns.clone(),
             data: n_data,
+        }
+    }
+
+    /// 基于键列的哈希连接
+    /// left_on/right_on: 左右表的键列索引
+    /// how: "inner"=内连接, "left"=左连接, "right"=右连接, "outer"=外连接
+    pub fn merge(
+        &self,
+        right: &DataFrame,
+        left_on: usize,
+        right_on: usize,
+        how: &str,
+    ) -> DataFrame {
+        let n_left = self.data.first().map(|s| s.len()).unwrap_or(0);
+        let n_right = right.data.first().map(|s| s.len()).unwrap_or(0);
+
+        // 构建 right 表的键到行索引的映射
+        let mut right_map: HashMap<String, Vec<usize>> = HashMap::new();
+        if let Some(right_key_col) = right.data.get(right_on) {
+            for i in 0..n_right {
+                let key = right_key_col.get_str_at(i);
+                right_map.entry(key).or_default().push(i);
+            }
+        }
+
+        // 左表键列
+        let left_key_col = self.data.get(left_on);
+
+        // 收集匹配的行对 (左行索引, 右行索引)
+        // 左表无匹配时右索引为 None；右表无匹配时左索引为 usize::MAX
+        let mut matched: Vec<(usize, Option<usize>)> = Vec::new();
+        let mut right_matched: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        if let Some(lkc) = left_key_col {
+            for i in 0..n_left {
+                let key = lkc.get_str_at(i);
+                if let Some(right_indices) = right_map.get(&key) {
+                    for &j in right_indices {
+                        matched.push((i, Some(j)));
+                        right_matched.insert(j);
+                    }
+                } else if how == "left" || how == "outer" {
+                    matched.push((i, None));
+                }
+            }
+        }
+
+        // 右连接/外连接：补充未匹配的右表行
+        if how == "right" || how == "outer" {
+            for j in 0..n_right {
+                if !right_matched.contains(&j) {
+                    // usize::MAX 表示左表无匹配
+                    matched.push((usize::MAX, Some(j)));
+                }
+            }
+        }
+
+        // 构建结果列
+        let mut result_columns: Vec<String> = Vec::new();
+        let mut result_data: Vec<Series> = Vec::new();
+
+        // 左表所有列（保留全部列，pandas 风格）
+        for (col_idx, col_name) in self.columns.iter().enumerate() {
+            result_columns.push(col_name.clone());
+            let series = &self.data[col_idx];
+            let mut values: Vec<Option<String>> = Vec::with_capacity(matched.len());
+            for &(li, _) in &matched {
+                if li != usize::MAX && li < n_left {
+                    let val = series.get_str_at(li);
+                    values.push(if val.is_empty() { None } else { Some(val) });
+                } else {
+                    values.push(None);
+                }
+            }
+            // 统一转为 String 列（保持原列名）
+            result_data.push(Series::from_options_string(col_name.clone(), &values));
+        }
+
+        // 右表列（跳过键列以避免重复）
+        for (col_idx, col_name) in right.columns.iter().enumerate() {
+            if col_idx == right_on {
+                continue;
+            }
+            result_columns.push(col_name.clone());
+            let series = &right.data[col_idx];
+            let mut values: Vec<Option<String>> = Vec::with_capacity(matched.len());
+            for &(_, rj) in &matched {
+                if let Some(j) = rj {
+                    if j < n_right {
+                        let val = series.get_str_at(j);
+                        values.push(if val.is_empty() { None } else { Some(val) });
+                    } else {
+                        values.push(None);
+                    }
+                } else {
+                    values.push(None);
+                }
+            }
+            result_data.push(Series::from_options_string(col_name.clone(), &values));
+        }
+
+        DataFrame {
+            columns: result_columns,
+            data: result_data,
+        }
+    }
+
+    /// 按 by 列分组并对每列执行聚合函数
+    /// by: 分组键列索引
+    /// agg: 聚合函数名 ("sum"/"mean"/"count"/"min"/"max")
+    /// 返回 (group_keys, aggregated_data) — 每组一行结果
+    pub fn groupby_agg(&self, by: usize, agg: &str) -> (Vec<String>, DataFrame) {
+        let n = self.data.first().map(|s| s.len()).unwrap_or(0);
+
+        // 按键列分组，记录每组的行索引；group_order 保留首次出现顺序
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut group_order: Vec<String> = Vec::new();
+
+        if let Some(key_col) = self.data.get(by) {
+            for i in 0..n {
+                let key = key_col.get_str_at(i);
+                if !groups.contains_key(&key) {
+                    group_order.push(key.clone());
+                }
+                groups.entry(key).or_default().push(i);
+            }
+        }
+
+        // 构建结果
+        let mut result_columns = vec![self.columns[by].clone()];
+        let mut result_data: Vec<Series> = Vec::new();
+
+        // 键列
+        let key_values: Vec<Option<String>> = group_order.iter().map(|s| Some(s.clone())).collect();
+        result_data.push(Series::from_options_string(
+            self.columns[by].clone(),
+            &key_values,
+        ));
+
+        // 对每列（除键列外）执行聚合
+        for (col_idx, col_name) in self.columns.iter().enumerate() {
+            if col_idx == by {
+                continue;
+            }
+            let series = &self.data[col_idx];
+            let mut agg_values: Vec<Option<f64>> = Vec::with_capacity(group_order.len());
+
+            for key in &group_order {
+                let indices = &groups[key];
+                match agg {
+                    "count" => {
+                        let count = indices
+                            .iter()
+                            .filter(|&&i| {
+                                let v = series.get_str_at(i);
+                                !v.is_empty() && v != "NaN"
+                            })
+                            .count();
+                        agg_values.push(Some(count as f64));
+                    }
+                    "sum" => {
+                        let sum: f64 = indices
+                            .iter()
+                            .filter_map(|&i| series.get_str_at(i).parse::<f64>().ok())
+                            .sum();
+                        agg_values.push(Some(sum));
+                    }
+                    "mean" => {
+                        let values: Vec<f64> = indices
+                            .iter()
+                            .filter_map(|&i| series.get_str_at(i).parse::<f64>().ok())
+                            .collect();
+                        if values.is_empty() {
+                            agg_values.push(None);
+                        } else {
+                            agg_values.push(Some(values.iter().sum::<f64>() / values.len() as f64));
+                        }
+                    }
+                    "min" => {
+                        let min_val = indices
+                            .iter()
+                            .filter_map(|&i| series.get_str_at(i).parse::<f64>().ok())
+                            .fold(f64::INFINITY, f64::min);
+                        if min_val.is_infinite() {
+                            agg_values.push(None);
+                        } else {
+                            agg_values.push(Some(min_val));
+                        }
+                    }
+                    "max" => {
+                        let max_val = indices
+                            .iter()
+                            .filter_map(|&i| series.get_str_at(i).parse::<f64>().ok())
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        if max_val.is_infinite() {
+                            agg_values.push(None);
+                        } else {
+                            agg_values.push(Some(max_val));
+                        }
+                    }
+                    _ => agg_values.push(None),
+                }
+            }
+
+            // 数值聚合结果统一使用 Float 类型
+            result_columns.push(col_name.clone());
+            result_data.push(Series::new_float(Some(col_name.clone()), agg_values));
+        }
+
+        (
+            group_order,
+            DataFrame {
+                columns: result_columns,
+                data: result_data,
+            },
+        )
+    }
+
+    /// 透视表：按 index_col 分组，columns_col 的值作为新列名，values_col 聚合
+    pub fn pivot(
+        &self,
+        index_col: usize,
+        columns_col: usize,
+        values_col: usize,
+        agg_func: &str,
+    ) -> DataFrame {
+        let n = self.data.first().map(|s| s.len()).unwrap_or(0);
+
+        // 收集所有 index 值和 column 值（保持出现顺序、去重）
+        let mut index_values: Vec<String> = Vec::new();
+        let mut index_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut column_values: Vec<String> = Vec::new();
+        let mut column_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        let index_series = &self.data[index_col];
+        let columns_series = &self.data[columns_col];
+        let values_series = &self.data[values_col];
+
+        for i in 0..n {
+            let idx = index_series.get_str_at(i);
+            if !index_seen.contains(&idx) {
+                index_seen.insert(idx.clone());
+                index_values.push(idx);
+            }
+            let col = columns_series.get_str_at(i);
+            if !column_seen.contains(&col) {
+                column_seen.insert(col.clone());
+                column_values.push(col);
+            }
+        }
+
+        // 构建 (index, column) -> Vec<f64> 映射
+        let mut pivot_map: HashMap<(String, String), Vec<f64>> = HashMap::new();
+        for i in 0..n {
+            let idx = index_series.get_str_at(i);
+            let col = columns_series.get_str_at(i);
+            if let Ok(v) = values_series.get_str_at(i).parse::<f64>() {
+                pivot_map.entry((idx, col)).or_default().push(v);
+            }
+        }
+
+        // 构建结果
+        let mut result_columns = vec![self.columns[index_col].clone()];
+        for col in &column_values {
+            result_columns.push(col.clone());
+        }
+
+        let mut result_data: Vec<Series> = Vec::new();
+        // 索引列
+        result_data.push(Series::from_options_string(
+            self.columns[index_col].clone(),
+            &index_values
+                .iter()
+                .map(|s| Some(s.clone()))
+                .collect::<Vec<_>>(),
+        ));
+
+        // 每个 column 值一列
+        for col in &column_values {
+            let mut values: Vec<Option<f64>> = Vec::with_capacity(index_values.len());
+            for idx in &index_values {
+                if let Some(vals) = pivot_map.get(&(idx.clone(), col.clone())) {
+                    match agg_func {
+                        "mean" => {
+                            if vals.is_empty() {
+                                values.push(None);
+                            } else {
+                                values.push(Some(vals.iter().sum::<f64>() / vals.len() as f64));
+                            }
+                        }
+                        "count" => values.push(Some(vals.len() as f64)),
+                        "min" => {
+                            values.push(Some(vals.iter().copied().fold(f64::INFINITY, f64::min)))
+                        }
+                        "max" => values
+                            .push(Some(vals.iter().copied().fold(f64::NEG_INFINITY, f64::max))),
+                        // sum 及其它未知函数默认按 sum 聚合
+                        _ => values.push(Some(vals.iter().sum())),
+                    }
+                } else {
+                    values.push(None);
+                }
+            }
+            result_data.push(Series::new_float(Some(col.clone()), values));
+        }
+
+        DataFrame {
+            columns: result_columns,
+            data: result_data,
+        }
+    }
+
+    /// 宽转长：将指定的值列转为 (variable, value) 两列
+    pub fn melt(&self, id_cols: &[usize], value_cols: &[usize]) -> DataFrame {
+        let n = self.data.first().map(|s| s.len()).unwrap_or(0);
+
+        // 结果列 = id_cols + ["variable", "value"]
+        let mut result_columns: Vec<String> = Vec::new();
+        for &i in id_cols {
+            result_columns.push(self.columns[i].clone());
+        }
+        result_columns.push("variable".to_string());
+        result_columns.push("value".to_string());
+
+        // 每行 x 每个值列 -> 展开为多行
+        let n_value_cols = value_cols.len();
+        let n_result_rows = n * n_value_cols;
+
+        let mut result_data: Vec<Series> = Vec::new();
+
+        // id 列
+        for &id_idx in id_cols {
+            let series = &self.data[id_idx];
+            let mut values: Vec<Option<String>> = Vec::with_capacity(n_result_rows);
+            for i in 0..n {
+                for _ in 0..n_value_cols {
+                    let v = series.get_str_at(i);
+                    values.push(if v.is_empty() { None } else { Some(v) });
+                }
+            }
+            result_data.push(Series::from_options_string(
+                self.columns[id_idx].clone(),
+                &values,
+            ));
+        }
+
+        // variable 列
+        let mut var_values: Vec<Option<String>> = Vec::with_capacity(n_result_rows);
+        for _ in 0..n {
+            for &vc in value_cols {
+                var_values.push(Some(self.columns[vc].clone()));
+            }
+        }
+        result_data.push(Series::from_options_string(
+            "variable".to_string(),
+            &var_values,
+        ));
+
+        // value 列
+        let mut val_values: Vec<Option<String>> = Vec::with_capacity(n_result_rows);
+        for i in 0..n {
+            for &vc in value_cols {
+                let v = self.data[vc].get_str_at(i);
+                val_values.push(if v.is_empty() { None } else { Some(v) });
+            }
+        }
+        result_data.push(Series::from_options_string(
+            "value".to_string(),
+            &val_values,
+        ));
+
+        DataFrame {
+            columns: result_columns,
+            data: result_data,
         }
     }
 }
@@ -730,6 +1105,57 @@ impl PyDataFrame {
     fn dtypes_dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         self.dtypes(py)
     }
+
+    // ---------- 合并 ----------
+
+    /// 基于键列的哈希连接
+    /// how: "inner"/"left"/"right"/"outer"
+    fn merge(
+        &self,
+        py: Python<'_>,
+        right: &PyDataFrame,
+        left_on: usize,
+        right_on: usize,
+        how: &str,
+    ) -> Self {
+        let inner = py.detach(|| self.inner.merge(&right.inner, left_on, right_on, how));
+        PyDataFrame { inner }
+    }
+
+    // ---------- 分组聚合 ----------
+
+    /// 按 by 列分组并对每列执行聚合
+    /// agg: "sum"/"mean"/"count"/"min"/"max"
+    /// 返回 (group_keys, aggregated_df)
+    fn groupby_agg(&self, py: Python<'_>, by: usize, agg: &str) -> (Vec<String>, PyDataFrame) {
+        let (keys, df) = py.detach(|| self.inner.groupby_agg(by, agg));
+        (keys, PyDataFrame { inner: df })
+    }
+
+    // ---------- 透视与逆透视 ----------
+
+    /// 透视表：按 index_col 分组，columns_col 的值作为新列名，values_col 聚合
+    /// agg_func: "sum"/"mean"/"count"/"min"/"max"
+    fn pivot(
+        &self,
+        py: Python<'_>,
+        index_col: usize,
+        columns_col: usize,
+        values_col: usize,
+        agg_func: &str,
+    ) -> Self {
+        let inner = py.detach(|| {
+            self.inner
+                .pivot(index_col, columns_col, values_col, agg_func)
+        });
+        PyDataFrame { inner }
+    }
+
+    /// 宽转长：将指定的值列转为 (variable, value) 两列
+    fn melt(&self, py: Python<'_>, id_cols: Vec<usize>, value_cols: Vec<usize>) -> Self {
+        let inner = py.detach(|| self.inner.melt(&id_cols, &value_cols));
+        PyDataFrame { inner }
+    }
 }
 
 #[cfg(test)]
@@ -983,5 +1409,147 @@ mod tests {
     #[test]
     fn test_dtype_compile() {
         let _ = DType::Int64;
+    }
+
+    #[test]
+    fn test_dataframe_merge() {
+        // 构建左表: id, name
+        let left = DataFrame {
+            columns: vec!["id".to_string(), "name".to_string()],
+            data: vec![
+                Series::from_options_i64("id".to_string(), &[Some(1), Some(2), Some(3)]),
+                Series::from_options_string(
+                    "name".to_string(),
+                    &[
+                        Some("a".to_string()),
+                        Some("b".to_string()),
+                        Some("c".to_string()),
+                    ],
+                ),
+            ],
+        };
+
+        // 构建右表: id, value
+        let right = DataFrame {
+            columns: vec!["id".to_string(), "value".to_string()],
+            data: vec![
+                Series::from_options_i64("id".to_string(), &[Some(1), Some(2), Some(4)]),
+                Series::from_options_string(
+                    "value".to_string(),
+                    &[
+                        Some("x".to_string()),
+                        Some("y".to_string()),
+                        Some("z".to_string()),
+                    ],
+                ),
+            ],
+        };
+
+        // 内连接
+        let merged = left.merge(&right, 0, 0, "inner");
+        // 列: id(左), name, value(右表 id 被跳过)
+        assert_eq!(merged.columns.len(), 3);
+        // 应匹配 id=1 和 id=2 两行
+        assert_eq!(merged.data[0].len(), 2);
+    }
+
+    #[test]
+    fn test_dataframe_groupby() {
+        // 构建表: category, value
+        let df = DataFrame {
+            columns: vec!["category".to_string(), "value".to_string()],
+            data: vec![
+                Series::from_options_string(
+                    "category".to_string(),
+                    &[
+                        Some("A".to_string()),
+                        Some("B".to_string()),
+                        Some("A".to_string()),
+                    ],
+                ),
+                Series::from_options_f64(
+                    "value".to_string(),
+                    &[Some(10.0), Some(20.0), Some(30.0)],
+                ),
+            ],
+        };
+
+        let (keys, result) = df.groupby_agg(0, "sum");
+        // A, B 两组
+        assert_eq!(keys.len(), 2);
+        // category, value
+        assert_eq!(result.columns.len(), 2);
+        // A 组 sum = 10.0 + 30.0 = 40.0, B 组 sum = 20.0
+        if let ColumnData::Float(v) = &result.data[1].data {
+            assert!((v[0].unwrap() - 40.0).abs() < 1e-10);
+            assert!((v[1].unwrap() - 20.0).abs() < 1e-10);
+        } else {
+            panic!("应为 Float 类型");
+        }
+    }
+
+    #[test]
+    fn test_dataframe_pivot() {
+        // 构建表: id, category, value
+        let df = DataFrame {
+            columns: vec![
+                "id".to_string(),
+                "category".to_string(),
+                "value".to_string(),
+            ],
+            data: vec![
+                Series::from_options_string(
+                    "id".to_string(),
+                    &[
+                        Some("a".to_string()),
+                        Some("a".to_string()),
+                        Some("b".to_string()),
+                    ],
+                ),
+                Series::from_options_string(
+                    "category".to_string(),
+                    &[
+                        Some("X".to_string()),
+                        Some("Y".to_string()),
+                        Some("X".to_string()),
+                    ],
+                ),
+                Series::from_options_f64("value".to_string(), &[Some(1.0), Some(2.0), Some(3.0)]),
+            ],
+        };
+
+        let pivoted = df.pivot(0, 1, 2, "sum");
+        // 列: id, X, Y
+        assert_eq!(pivoted.columns.len(), 3);
+        assert_eq!(pivoted.data[0].len(), 2); // a, b 两行
+        if let ColumnData::Float(v) = &pivoted.data[1].data {
+            // a 的 X 列 = 1.0, b 的 X 列 = 3.0
+            assert!((v[0].unwrap() - 1.0).abs() < 1e-10);
+            assert!((v[1].unwrap() - 3.0).abs() < 1e-10);
+        } else {
+            panic!("应为 Float 类型");
+        }
+    }
+
+    #[test]
+    fn test_dataframe_melt() {
+        // 构建表: id, A, B
+        let df = DataFrame {
+            columns: vec!["id".to_string(), "A".to_string(), "B".to_string()],
+            data: vec![
+                Series::from_options_string(
+                    "id".to_string(),
+                    &[Some("x".to_string()), Some("y".to_string())],
+                ),
+                Series::from_options_f64("A".to_string(), &[Some(1.0), Some(2.0)]),
+                Series::from_options_f64("B".to_string(), &[Some(3.0), Some(4.0)]),
+            ],
+        };
+
+        let melted = df.melt(&[0], &[1, 2]);
+        // 列: id, variable, value
+        assert_eq!(melted.columns.len(), 3);
+        // 行数 = 2 * 2 = 4
+        assert_eq!(melted.data[0].len(), 4);
     }
 }

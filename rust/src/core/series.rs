@@ -770,6 +770,495 @@ impl Series {
         }
     }
 
+    // ---------- 日期时间方法（对 Float 类型有效，值为 Unix 纪元秒） ----------
+
+    /// 提取年份
+    pub fn dt_year(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let years: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| {
+                        x.map(|ts| {
+                            // 简单日期计算：从 Unix 纪元秒提取年份
+                            let days = (ts / 86400.0) as i64;
+                            let mut year = 1970i64;
+                            let mut remaining = days;
+                            loop {
+                                let is_leap =
+                                    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                                let days_in_year = if is_leap { 366 } else { 365 };
+                                if remaining < days_in_year {
+                                    break;
+                                }
+                                remaining -= days_in_year;
+                                year += 1;
+                            }
+                            year
+                        })
+                    })
+                    .collect();
+                ColumnData::Int(years)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 提取月份 (1-12)
+    pub fn dt_month(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let months: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| {
+                        x.map(|ts| {
+                            let days = (ts / 86400.0) as i64;
+                            let mut year = 1970i64;
+                            let mut remaining = days;
+                            loop {
+                                let is_leap =
+                                    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                                let days_in_year = if is_leap { 366 } else { 365 };
+                                if remaining < days_in_year {
+                                    break;
+                                }
+                                remaining -= days_in_year;
+                                year += 1;
+                            }
+                            // remaining 是当年第几天（0-based）
+                            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                            let month_days = if is_leap {
+                                [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                            } else {
+                                [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                            };
+                            let mut month = 1;
+                            let mut day = remaining;
+                            for &md in &month_days {
+                                if day < md {
+                                    break;
+                                }
+                                day -= md;
+                                month += 1;
+                            }
+                            month as i64
+                        })
+                    })
+                    .collect();
+                ColumnData::Int(months)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 提取日 (1-31)
+    pub fn dt_day(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let days_vec: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| {
+                        x.map(|ts| {
+                            let days = (ts / 86400.0) as i64;
+                            let mut year = 1970i64;
+                            let mut remaining = days;
+                            loop {
+                                let is_leap =
+                                    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                                let days_in_year = if is_leap { 366 } else { 365 };
+                                if remaining < days_in_year {
+                                    break;
+                                }
+                                remaining -= days_in_year;
+                                year += 1;
+                            }
+                            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                            let month_days = if is_leap {
+                                [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                            } else {
+                                [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                            };
+                            let mut day = remaining;
+                            for &md in &month_days {
+                                if day < md {
+                                    break;
+                                }
+                                day -= md;
+                            }
+                            day + 1 // 1-based
+                        })
+                    })
+                    .collect();
+                ColumnData::Int(days_vec)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 提取小时 (0-23)
+    pub fn dt_hour(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let hours: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| {
+                        x.map(|ts| {
+                            let day_remainder = ts.rem_euclid(86400.0);
+                            (day_remainder / 3600.0) as i64
+                        })
+                    })
+                    .collect();
+                ColumnData::Int(hours)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 提取分钟 (0-59)
+    pub fn dt_minute(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let minutes: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| {
+                        x.map(|ts| {
+                            let hour_remainder = ts.rem_euclid(3600.0);
+                            (hour_remainder / 60.0) as i64
+                        })
+                    })
+                    .collect();
+                ColumnData::Int(minutes)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 提取秒 (0-59)
+    pub fn dt_second(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let seconds: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| x.map(|ts| ts.rem_euclid(60.0) as i64))
+                    .collect();
+                ColumnData::Int(seconds)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 提取星期几 (0=周一, 6=周日)
+    pub fn dt_dayofweek(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Float(v) => {
+                let dows: Vec<Option<i64>> = v
+                    .par_iter()
+                    .map(|x| {
+                        x.map(|ts| {
+                            let days = (ts / 86400.0) as i64;
+                            // 1970-01-01 是周四 (3)
+                            (days + 3) % 7
+                        })
+                    })
+                    .collect();
+                ColumnData::Int(dows)
+            }
+            _ => ColumnData::Int(vec![None; self.len()]),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    // ---------- 分位数 / 排名 / 窗口计算 ----------
+
+    /// 将 Series 转为 Vec<Option<f64>>（用于窗口计算）
+    pub fn as_f64_vec(&self) -> Vec<Option<f64>> {
+        match &self.data {
+            ColumnData::Int(v) => v.par_iter().map(|x| x.map(|v| v as f64)).collect(),
+            ColumnData::Float(v) => v.par_iter().map(|x| *x).collect(),
+            ColumnData::Bool(v) => v
+                .par_iter()
+                .map(|x| x.map(|b| if b { 1.0 } else { 0.0 }))
+                .collect(),
+            _ => vec![None; self.len()],
+        }
+    }
+
+    /// 计算分位数（线性插值法）
+    /// q: 0.0-1.0 之间的分位数
+    pub fn quantile(&self, q: f64) -> Option<f64> {
+        // 收集非 None 的 f64 值
+        let mut vs: Vec<f64> = match &self.data {
+            ColumnData::Int(v) => v.par_iter().filter_map(|x| *x).map(|x| x as f64).collect(),
+            ColumnData::Float(v) => v.par_iter().filter_map(|x| *x).collect(),
+            _ => return None,
+        };
+        if vs.is_empty() {
+            return None;
+        }
+        vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = vs.len();
+        if n == 1 {
+            return Some(vs[0]);
+        }
+        let pos = q * (n - 1) as f64;
+        let lower = pos.floor() as usize;
+        let upper = pos.ceil() as usize;
+        let frac = pos - lower as f64;
+        Some(vs[lower] * (1.0 - frac) + vs[upper] * frac)
+    }
+
+    /// 计算排名
+    /// method: "average"=平均排名, "min"=最小排名, "max"=最大排名, "first"=出现顺序
+    /// ascending: true=升序, false=降序
+    pub fn rank(&self, method: &str, ascending: bool) -> Vec<Option<f64>> {
+        let n = self.len();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+
+        // 收集 (value, index) 对，跳过 None
+        let mut indexed: Vec<(f64, usize)> = match &self.data {
+            ColumnData::Int(v) => v
+                .iter()
+                .enumerate()
+                .filter_map(|(i, x)| x.map(|val| (val as f64, i)))
+                .collect(),
+            ColumnData::Float(v) => v
+                .iter()
+                .enumerate()
+                .filter_map(|(i, x)| x.map(|val| (val, i)))
+                .collect(),
+            _ => return result,
+        };
+
+        // 排序
+        indexed.sort_by(|a, b| {
+            if ascending {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
+
+        // 分配排名
+        let m = indexed.len();
+        let mut i = 0;
+        while i < m {
+            let mut j = i + 1;
+            while j < m && indexed[j].0 == indexed[i].0 {
+                j += 1;
+            }
+            // [i, j) 是相同值的范围
+            match method {
+                "average" => {
+                    let avg = (i + j + 1) as f64 / 2.0; // 1-based 平均
+                    for k in i..j {
+                        result[indexed[k].1] = Some(avg);
+                    }
+                }
+                "min" => {
+                    for k in i..j {
+                        result[indexed[k].1] = Some((i + 1) as f64);
+                    }
+                }
+                "max" => {
+                    for k in i..j {
+                        result[indexed[k].1] = Some(j as f64);
+                    }
+                }
+                "first" => {
+                    for k in i..j {
+                        result[indexed[k].1] = Some((k + 1) as f64);
+                    }
+                }
+                _ => {
+                    // 默认 average
+                    let avg = (i + j - 1) as f64 / 2.0 + 0.5;
+                    for k in i..j {
+                        result[indexed[k].1] = Some(avg);
+                    }
+                }
+            }
+            i = j;
+        }
+        result
+    }
+
+    /// 滑动窗口求和
+    pub fn rolling_sum(&self, window: usize, min_periods: Option<usize>) -> Vec<Option<f64>> {
+        let n = self.len();
+        let min_per = min_periods.unwrap_or(window);
+        let values = self.as_f64_vec();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+
+        for (i, result_slot) in result.iter_mut().enumerate() {
+            if i + 1 < min_per {
+                continue;
+            }
+            let start = (i + 1).saturating_sub(window);
+            let end = i + 1;
+            let mut sum = 0.0;
+            let mut count = 0;
+            for v in values[start..end].iter().copied().flatten() {
+                sum += v;
+                count += 1;
+            }
+            if count >= min_per {
+                *result_slot = Some(sum);
+            }
+        }
+        result
+    }
+
+    /// 滑动窗口均值
+    pub fn rolling_mean(&self, window: usize, min_periods: Option<usize>) -> Vec<Option<f64>> {
+        let n = self.len();
+        let min_per = min_periods.unwrap_or(window);
+        let values = self.as_f64_vec();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+
+        for (i, result_slot) in result.iter_mut().enumerate() {
+            if i + 1 < min_per {
+                continue;
+            }
+            let start = (i + 1).saturating_sub(window);
+            let end = i + 1;
+            let mut sum = 0.0;
+            let mut count = 0;
+            for v in values[start..end].iter().copied().flatten() {
+                sum += v;
+                count += 1;
+            }
+            if count >= min_per {
+                *result_slot = Some(sum / count as f64);
+            }
+        }
+        result
+    }
+
+    /// 滑动窗口标准差
+    pub fn rolling_std(&self, window: usize, min_periods: Option<usize>) -> Vec<Option<f64>> {
+        let n = self.len();
+        let min_per = min_periods.unwrap_or(window);
+        let values = self.as_f64_vec();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+
+        for (i, result_slot) in result.iter_mut().enumerate() {
+            if i + 1 < min_per {
+                continue;
+            }
+            let start = (i + 1).saturating_sub(window);
+            let end = i + 1;
+            let mut sum = 0.0;
+            let mut sum_sq = 0.0;
+            let mut count = 0;
+            for v in values[start..end].iter().copied().flatten() {
+                sum += v;
+                sum_sq += v * v;
+                count += 1;
+            }
+            if count >= min_per && count > 0 {
+                let mean = sum / count as f64;
+                let var = (sum_sq / count as f64) - mean * mean;
+                *result_slot = Some(var.max(0.0).sqrt());
+            }
+        }
+        result
+    }
+
+    /// 扩展窗口求和
+    pub fn expanding_sum(&self, min_periods: Option<usize>) -> Vec<Option<f64>> {
+        let n = self.len();
+        let min_per = min_periods.unwrap_or(1);
+        let values = self.as_f64_vec();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+        let mut cumsum = 0.0;
+        let mut count = 0;
+
+        for i in 0..n {
+            if let Some(v) = values[i] {
+                cumsum += v;
+                count += 1;
+            }
+            if count >= min_per {
+                result[i] = Some(cumsum);
+            }
+        }
+        result
+    }
+
+    /// 扩展窗口均值
+    pub fn expanding_mean(&self, min_periods: Option<usize>) -> Vec<Option<f64>> {
+        let n = self.len();
+        let min_per = min_periods.unwrap_or(1);
+        let values = self.as_f64_vec();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+        let mut cumsum = 0.0;
+        let mut count = 0;
+
+        for i in 0..n {
+            if let Some(v) = values[i] {
+                cumsum += v;
+                count += 1;
+            }
+            if count >= min_per && count > 0 {
+                result[i] = Some(cumsum / count as f64);
+            }
+        }
+        result
+    }
+
+    /// 指数加权移动平均
+    /// alpha: 平滑因子 (0, 1]
+    pub fn ewm_mean(&self, alpha: f64, min_periods: Option<usize>) -> Vec<Option<f64>> {
+        let n = self.len();
+        let min_per = min_periods.unwrap_or(0);
+        let values = self.as_f64_vec();
+        let mut result: Vec<Option<f64>> = vec![None; n];
+
+        let mut prev_ema: Option<f64> = None;
+        let mut count = 0;
+
+        for i in 0..n {
+            if let Some(v) = values[i] {
+                count += 1;
+                match prev_ema {
+                    None => prev_ema = Some(v),
+                    Some(prev) => prev_ema = Some(alpha * v + (1.0 - alpha) * prev),
+                }
+            }
+            if count > min_per && prev_ema.is_some() {
+                result[i] = prev_ema;
+            }
+        }
+        result
+    }
+
     // ---------- 排序 ----------
 
     /// 按值排序
@@ -2054,6 +2543,176 @@ impl PySeries {
         let inner = py.detach(|| self.inner.str_replace(&from_owned, &to_owned));
         PySeries { inner }
     }
+
+    // ---------- 分位数 / 排名 ----------
+
+    fn quantile<'py>(&self, py: Python<'py>, q: f64) -> PyResult<Bound<'py, PyAny>> {
+        match py.detach(|| self.inner.quantile(q)) {
+            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    fn rank<'py>(
+        &self,
+        py: Python<'py>,
+        method: &str,
+        ascending: bool,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let ranks = py.detach(|| self.inner.rank(method, ascending));
+        // 将 Option<f64> 转为 Python list
+        let list = PyList::empty(py);
+        for r in ranks {
+            match r {
+                Some(v) => list.append(v)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    // ---------- 滚动窗口 ----------
+
+    fn rolling_sum<'py>(
+        &self,
+        py: Python<'py>,
+        window: usize,
+        min_periods: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.rolling_sum(window, min_periods));
+        let list = PyList::empty(py);
+        for v in result {
+            match v {
+                Some(val) => list.append(val)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    fn rolling_mean<'py>(
+        &self,
+        py: Python<'py>,
+        window: usize,
+        min_periods: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.rolling_mean(window, min_periods));
+        let list = PyList::empty(py);
+        for v in result {
+            match v {
+                Some(val) => list.append(val)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    fn rolling_std<'py>(
+        &self,
+        py: Python<'py>,
+        window: usize,
+        min_periods: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.rolling_std(window, min_periods));
+        let list = PyList::empty(py);
+        for v in result {
+            match v {
+                Some(val) => list.append(val)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    // ---------- 扩展窗口 ----------
+
+    fn expanding_sum<'py>(
+        &self,
+        py: Python<'py>,
+        min_periods: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.expanding_sum(min_periods));
+        let list = PyList::empty(py);
+        for v in result {
+            match v {
+                Some(val) => list.append(val)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    fn expanding_mean<'py>(
+        &self,
+        py: Python<'py>,
+        min_periods: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.expanding_mean(min_periods));
+        let list = PyList::empty(py);
+        for v in result {
+            match v {
+                Some(val) => list.append(val)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    // ---------- 指数加权 ----------
+
+    fn ewm_mean<'py>(
+        &self,
+        py: Python<'py>,
+        alpha: f64,
+        min_periods: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let result = py.detach(|| self.inner.ewm_mean(alpha, min_periods));
+        let list = PyList::empty(py);
+        for v in result {
+            match v {
+                Some(val) => list.append(val)?,
+                None => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    // ---------- 日期时间方法 ----------
+
+    fn dt_year(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_year());
+        PySeries { inner }
+    }
+
+    fn dt_month(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_month());
+        PySeries { inner }
+    }
+
+    fn dt_day(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_day());
+        PySeries { inner }
+    }
+
+    fn dt_hour(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_hour());
+        PySeries { inner }
+    }
+
+    fn dt_minute(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_minute());
+        PySeries { inner }
+    }
+
+    fn dt_second(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_second());
+        PySeries { inner }
+    }
+
+    fn dt_dayofweek(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dt_dayofweek());
+        PySeries { inner }
+    }
 }
 
 // =====================================================================
@@ -2455,5 +3114,131 @@ mod tests {
         let s_unused = s.cat_remove_unused_categories().expect("应能移除未使用");
         let cats4 = s_unused.cat_categories().expect("应有 categories");
         assert_eq!(cats4.len(), 3);
+    }
+
+    #[test]
+    fn test_series_quantile() {
+        let s = Series::new_float(
+            None,
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0)],
+        );
+        assert!((s.quantile(0.5).unwrap() - 3.0).abs() < 1e-10);
+        assert!((s.quantile(0.0).unwrap() - 1.0).abs() < 1e-10);
+        assert!((s.quantile(1.0).unwrap() - 5.0).abs() < 1e-10);
+        assert!((s.quantile(0.25).unwrap() - 2.0).abs() < 1e-10);
+        assert!((s.quantile(0.75).unwrap() - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_series_rank() {
+        let s = Series::new_float(None, vec![Some(3.0), Some(1.0), Some(2.0), Some(1.0)]);
+        let ranks = s.rank("average", true);
+        // 3.0 -> rank 4.0, 1.0 -> rank 1.5, 2.0 -> rank 3.0, 1.0 -> rank 1.5
+        assert!((ranks[0].unwrap() - 4.0).abs() < 1e-10);
+        assert!((ranks[1].unwrap() - 1.5).abs() < 1e-10);
+        assert!((ranks[2].unwrap() - 3.0).abs() < 1e-10);
+        assert!((ranks[3].unwrap() - 1.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_series_rolling() {
+        let s = Series::new_float(
+            None,
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0)],
+        );
+        let sums = s.rolling_sum(3, None);
+        assert_eq!(sums[0], None); // 窗口不足
+        assert_eq!(sums[1], None);
+        assert!((sums[2].unwrap() - 6.0).abs() < 1e-10); // 1+2+3
+        assert!((sums[3].unwrap() - 9.0).abs() < 1e-10); // 2+3+4
+        assert!((sums[4].unwrap() - 12.0).abs() < 1e-10); // 3+4+5
+
+        let means = s.rolling_mean(3, None);
+        assert!((means[2].unwrap() - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_series_expanding() {
+        let s = Series::new_float(None, vec![Some(1.0), Some(2.0), Some(3.0)]);
+        let sums = s.expanding_sum(Some(1));
+        assert!((sums[0].unwrap() - 1.0).abs() < 1e-10);
+        assert!((sums[1].unwrap() - 3.0).abs() < 1e-10);
+        assert!((sums[2].unwrap() - 6.0).abs() < 1e-10);
+
+        let means = s.expanding_mean(Some(1));
+        assert!((means[0].unwrap() - 1.0).abs() < 1e-10);
+        assert!((means[1].unwrap() - 1.5).abs() < 1e-10);
+        assert!((means[2].unwrap() - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_series_ewm() {
+        let s = Series::new_float(None, vec![Some(1.0), Some(2.0), Some(3.0)]);
+        let ema = s.ewm_mean(0.5, Some(0));
+        assert!((ema[0].unwrap() - 1.0).abs() < 1e-10);
+        assert!((ema[1].unwrap() - 1.5).abs() < 1e-10);
+        assert!((ema[2].unwrap() - 2.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_series_dt_year() {
+        // 2020-01-01 00:00:00 UTC = 1577836800
+        let s = Series::new_float(None, vec![Some(1577836800.0), Some(1609459200.0)]); // 2020, 2021
+        let years = s.dt_year();
+        if let ColumnData::Int(v) = &years.data {
+            assert_eq!(v[0], Some(2020));
+            assert_eq!(v[1], Some(2021));
+        } else {
+            panic!("应为 Int 类型");
+        }
+    }
+
+    #[test]
+    fn test_series_dt_month_day() {
+        // 2020-03-15 12:30:45 UTC
+        let ts = 1584275445.0;
+        let s = Series::new_float(None, vec![Some(ts)]);
+        let month = s.dt_month();
+        let day = s.dt_day();
+        let hour = s.dt_hour();
+        let minute = s.dt_minute();
+        let second = s.dt_second();
+        if let ColumnData::Int(v) = &month.data {
+            assert_eq!(v[0], Some(3));
+        } else {
+            panic!("月份应为3");
+        }
+        if let ColumnData::Int(v) = &day.data {
+            assert_eq!(v[0], Some(15));
+        } else {
+            panic!("日应为15");
+        }
+        if let ColumnData::Int(v) = &hour.data {
+            assert_eq!(v[0], Some(12));
+        } else {
+            panic!("小时应为12");
+        }
+        if let ColumnData::Int(v) = &minute.data {
+            assert_eq!(v[0], Some(30));
+        } else {
+            panic!("分钟应为30");
+        }
+        if let ColumnData::Int(v) = &second.data {
+            assert_eq!(v[0], Some(45));
+        } else {
+            panic!("秒应为45");
+        }
+    }
+
+    #[test]
+    fn test_series_dt_dayofweek() {
+        // 1970-01-01 = 周四 = 3
+        let s = Series::new_float(None, vec![Some(0.0)]);
+        let dow = s.dt_dayofweek();
+        if let ColumnData::Int(v) = &dow.data {
+            assert_eq!(v[0], Some(3));
+        } else {
+            panic!("dayofweek 应为3（周四）");
+        }
     }
 }

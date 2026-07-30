@@ -487,6 +487,34 @@ class DataFrame:
         :param indicator: 是否添加 _merge 指示列
         :param validate: 验证方式 ('one_to_one'/'1:1'/'one_to_many'/'1:m'/'many_to_one'/'m:1'/'many_to_many'/'m:m')
         """
+        # 优先调用 Rust 层（仅支持单列连接、无 indicator/validate/left_index/right_index）
+        if (
+            isinstance(on, str)
+            and left_on is None
+            and right_on is None
+            and not left_index
+            and not right_index
+            and not indicator
+            and validate is None
+            and how in ("inner", "left", "right", "outer")
+            and on in self._columns
+            and on in right._columns
+        ):
+            try:
+                # 检查列名冲突（右表非键列与左表列名冲突时不调用 Rust 层）
+                right_non_key_cols = [c for c in right._columns if c != on]
+                conflict = [c for c in right_non_key_cols if c in self._columns]
+                if not conflict:
+                    left_idx = self._columns.index(on)
+                    right_idx = right._columns.index(on)
+                    result_inner = self._inner.merge(
+                        right._inner, left_idx, right_idx, how
+                    )
+                    return DataFrame._from_inner(result_inner)
+            except Exception:
+                pass
+
+        # 回退到 Python 实现
         # 确定连接键
         other = right  # 兼容性
         if left_on is not None or right_on is not None:
@@ -3005,6 +3033,31 @@ class DataFrame:
         if not value_vars:
             raise ValueError("value_vars cannot be empty")
 
+        # 优先调用 Rust 层
+        try:
+            id_indices = [self._columns.index(c) for c in id_vars]
+            value_indices = [self._columns.index(c) for c in value_vars]
+            result_inner = self._inner.melt(id_indices, value_indices)
+            result_df = DataFrame._from_inner(result_inner)
+            # Rust 层输出列名固定为 "variable" 和 "value"，按需重命名
+            if var_name != "variable" or value_name != "value":
+                rename_map = {}
+                if var_name != "variable":
+                    rename_map["variable"] = var_name
+                if value_name != "value":
+                    rename_map["value"] = value_name
+                result_df = result_df.rename(columns=rename_map)
+            # ignore_index=True 时 _from_inner 默认 RangeIndex 已满足；False 时保留原索引
+            if not ignore_index:
+                # 还原原索引（每行重复 len(value_vars) 次）
+                result_df._index = [
+                    self._index[i // len(value_vars)] for i in range(result_df._nrows)
+                ]
+            return result_df
+        except Exception:
+            pass
+
+        # 回退到 Python 实现
         # 构造结果
         new_data: Dict[str, list] = {c: [] for c in id_vars}
         new_data[var_name] = []
@@ -3063,6 +3116,24 @@ class DataFrame:
         for c in [columns] + values + index:
             if c not in self._columns:
                 raise KeyError(f"column not found: {c}")
+
+        # 优先调用 Rust 层（仅支持单一 index/columns/values，且数据无重复）
+        if len(index) == 1 and len(values) == 1 and isinstance(columns, str):
+            try:
+                # 检查数据无重复（每个 (index, columns) 组合唯一）
+                idx_vals = self._inner.get_column(index[0]).values
+                col_vals = self._inner.get_column(columns).values
+                if len(set(zip(idx_vals, col_vals))) == self._nrows:
+                    index_idx = self._columns.index(index[0])
+                    columns_idx = self._columns.index(columns)
+                    values_idx = self._columns.index(values[0])
+                    # pivot 不聚合，数据无重复时 sum 等于取值本身
+                    result_inner = self._inner.pivot(
+                        index_idx, columns_idx, values_idx, "sum"
+                    )
+                    return DataFrame._from_inner(result_inner)
+            except Exception:
+                pass
 
         n = self._nrows
         # 取出关键列
@@ -3185,6 +3256,26 @@ class DataFrame:
         for c in col_cols:
             if c not in self._columns:
                 raise KeyError(f"column key not found: {c}")
+
+        # 优先调用 Rust 层（仅支持单一 index/columns/values，且 aggfunc 在 Rust 支持列表中）
+        if (
+            len(index_cols) == 1
+            and len(col_cols) == 1
+            and len(values) == 1
+            and aggfunc in ("sum", "mean", "count", "min", "max")
+            and fill_value is None
+            and not margins
+        ):
+            try:
+                index_idx = self._columns.index(index_cols[0])
+                columns_idx = self._columns.index(col_cols[0])
+                values_idx = self._columns.index(values[0])
+                result_inner = self._inner.pivot(
+                    index_idx, columns_idx, values_idx, aggfunc
+                )
+                return DataFrame._from_inner(result_inner)
+            except Exception:
+                pass
 
         n = self._nrows
         idx_tuples = [
@@ -6206,6 +6297,39 @@ class DataFrameGroupBy:
         分组键不作为列输出（与 pandas as_index=True 行为一致）。
         """
         agg_cols = list(agg_funcs.keys())
+        # 优先调用 Rust 层（仅支持单列 by、所有列同一 agg 且在 Rust 支持列表中）
+        if len(self._by) == 1 and len(set(agg_funcs.values())) == 1:
+            single_agg = agg_funcs[agg_cols[0]]
+            if single_agg in ("sum", "mean", "count", "min", "max"):
+                by_col = self._by[0]
+                by_idx = self._df._columns.index(by_col)
+                # 检查 by 列是否有 None 值（Rust 层 None 处理为空字符串，行为不一致）
+                by_values = self._df._inner.get_column(by_col).values
+                has_none = any(v is None for v in by_values)
+                if not has_none:
+                    try:
+                        rust_keys, rust_df = self._df._inner.groupby_agg(
+                            by_idx, single_agg
+                        )
+                        # 构建 {rust_key: row_idx} 映射
+                        rust_key_to_idx = {k: i for i, k in enumerate(rust_keys)}
+                        # 按 self._groups 的顺序提取行（保持 sort/dropna 行为一致）
+                        ordered_indices = []
+                        for key_tuple in self._groups.keys():
+                            key_str = str(key_tuple[0])
+                            if key_str in rust_key_to_idx:
+                                ordered_indices.append(rust_key_to_idx[key_str])
+                        # 所有组都找到时按顺序提取结果
+                        if len(ordered_indices) == len(self._groups):
+                            new_data = {c: [] for c in agg_cols}
+                            for c in agg_cols:
+                                col_vals = rust_df.get_column(c).values
+                                new_data[c] = [col_vals[i] for i in ordered_indices]
+                            return DataFrame(new_data)
+                    except Exception:
+                        pass
+
+        # 回退到 Python 实现
         result: Dict[str, list] = {c: [] for c in agg_cols}
 
         for key, idxs in self._groups.items():
