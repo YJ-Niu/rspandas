@@ -2241,6 +2241,8 @@ impl PySeries {
         let mut all_bool = true;
         let mut all_int = true;
         let mut all_float = true;
+        let mut all_int_or_float = true;
+        let mut all_numeric = true;
         let mut any_non_null = false;
 
         for item in pylist.iter() {
@@ -2257,6 +2259,15 @@ impl PySeries {
             if !item.is_instance_of::<PyFloat>() {
                 all_float = false;
             }
+            if !item.is_instance_of::<PyInt>() && !item.is_instance_of::<PyFloat>() {
+                all_int_or_float = false;
+            }
+            if !item.is_instance_of::<PyBool>()
+                && !item.is_instance_of::<PyInt>()
+                && !item.is_instance_of::<PyFloat>()
+            {
+                all_numeric = false;
+            }
         }
 
         // 全 None 时默认 object (避免误判为 bool)
@@ -2266,7 +2277,7 @@ impl PySeries {
             DType::Bool
         } else if all_int {
             DType::Int64
-        } else if all_float {
+        } else if all_float || all_int_or_float || all_numeric {
             DType::Float64
         } else {
             DType::Object

@@ -313,9 +313,23 @@ class DataFrame:
             if isinstance(other, DataFrame):
                 other_ser = other._inner.get_column(c)
                 other_values = list(other_ser.values)
-                new_data[c] = [op(a, b) for a, b in zip(values, other_values)]
+                new_data[c] = [
+                    (
+                        op(a, b)
+                        if isinstance(a, (int, float)) and isinstance(b, (int, float))
+                        else False
+                    )
+                    for a, b in zip(values, other_values)
+                ]
             elif isinstance(other, (int, float, bool)):
-                new_data[c] = [op(a, other) for a in values]
+                new_data[c] = [
+                    (
+                        op(a, other)
+                        if isinstance(a, (int, float)) and a is not None
+                        else False
+                    )
+                    for a in values
+                ]
             else:
                 raise TypeError(
                     f"comparison not supported between DataFrame and {type(other).__name__}"
@@ -323,69 +337,55 @@ class DataFrame:
         return DataFrame(new_data)
 
     def __gt__(self, other) -> "DataFrame":
-        return self._apply_comparison(
-            other, lambda a, b: a > b if a is not None and b is not None else False
-        )
+        return self._apply_comparison(other, lambda a, b: a > b)
 
     def __lt__(self, other) -> "DataFrame":
-        return self._apply_comparison(
-            other, lambda a, b: a < b if a is not None and b is not None else False
-        )
+        return self._apply_comparison(other, lambda a, b: a < b)
 
     def __ge__(self, other) -> "DataFrame":
-        return self._apply_comparison(
-            other, lambda a, b: a >= b if a is not None and b is not None else False
-        )
+        return self._apply_comparison(other, lambda a, b: a >= b)
 
     def __le__(self, other) -> "DataFrame":
-        return self._apply_comparison(
-            other, lambda a, b: a <= b if a is not None and b is not None else False
-        )
+        return self._apply_comparison(other, lambda a, b: a <= b)
 
     def __eq__(self, other) -> "DataFrame":
-        return self._apply_comparison(
-            other, lambda a, b: a == b if a is not None and b is not None else False
-        )
+        return self._apply_comparison(other, lambda a, b: a == b)
 
     def __ne__(self, other) -> "DataFrame":
-        return self._apply_comparison(
-            other, lambda a, b: a != b if a is not None and b is not None else False
-        )
+        return self._apply_comparison(other, lambda a, b: a != b)
 
     # ---------- 算术操作 ----------
 
     def __neg__(self) -> "DataFrame":
-        """取反操作 (-df)。"""
-        new_data = {}
-        for c in self._columns:
-            ser = self._inner.get_column(c)
-            values = list(ser.values)
-            new_data[c] = [-v if v is not None and v == v else v for v in values]
-        return DataFrame(new_data)
+        return self._apply_arithmetic(-1, lambda a, b: a * b)
 
     def __add__(self, other) -> "DataFrame":
-        return self._apply_arithmetic(
-            other, lambda a, b: a + b if a is not None and b is not None else None
-        )
+        return self._apply_arithmetic(other, lambda a, b: a + b)
 
     def __sub__(self, other) -> "DataFrame":
-        return self._apply_arithmetic(
-            other, lambda a, b: a - b if a is not None and b is not None else None
-        )
+        return self._apply_arithmetic(other, lambda a, b: a - b)
 
     def __mul__(self, other) -> "DataFrame":
-        return self._apply_arithmetic(
-            other, lambda a, b: a * b if a is not None and b is not None else None
-        )
+        return self._apply_arithmetic(other, lambda a, b: a * b)
 
     def __truediv__(self, other) -> "DataFrame":
-        return self._apply_arithmetic(
-            other,
-            lambda a, b: a / b if a is not None and b is not None and b != 0 else None,
-        )
+        return self._apply_arithmetic(other, lambda a, b: a / b if b != 0 else None)
 
-    def _apply_arithmetic(self, other, op) -> "DataFrame":
+    def _apply_arithmetic(self, other, op, axis=0) -> "DataFrame":
         """应用算术操作。"""
+        # 规范化 axis 参数
+        if isinstance(axis, str):
+            if axis == "index" or axis == "rows":
+                axis = 0
+            elif axis == "columns" or axis == "cols":
+                axis = 1
+            else:
+                raise ValueError(
+                    f"axis must be 0, 1, 'index', or 'columns', got {axis}"
+                )
+        elif axis not in (0, 1):
+            raise ValueError(f"axis must be 0 or 1, got {axis}")
+
         new_data = {}
         for c in self._columns:
             ser = self._inner.get_column(c)
@@ -394,16 +394,54 @@ class DataFrame:
                 if c in other._columns:
                     other_ser = other._inner.get_column(c)
                     other_values = list(other_ser.values)
-                    new_data[c] = [op(a, b) for a, b in zip(values, other_values)]
+                    new_data[c] = [
+                        op(a, b) if a is not None and b is not None else None
+                        for a, b in zip(values, other_values)
+                    ]
                 else:
                     new_data[c] = values
+            elif isinstance(other, Series):
+                if axis == 0:
+                    # 按行对齐 (index) - 构建从 index label 到 value 的映射
+                    other_index = (
+                        other._index
+                        if other._index is not None
+                        else list(range(len(other)))
+                    )
+                    other_values = list(other.values)
+                    other_map = dict(zip(other_index, other_values))
+                    # 根据 self._index 对齐
+                    aligned_values = [other_map.get(idx) for idx in self._index]
+                    new_data[c] = [
+                        op(a, b) if a is not None and b is not None else None
+                        for a, b in zip(values, aligned_values)
+                    ]
+                elif axis == 1:
+                    # 按列对齐 (columns)
+                    other_val = other.get(c)
+                    new_data[c] = [
+                        (
+                            op(a, other_val)
+                            if a is not None and other_val is not None
+                            else None
+                        )
+                        for a in values
+                    ]
             elif isinstance(other, (int, float)):
-                new_data[c] = [op(a, other) for a in values]
+                new_data[c] = [op(a, other) if a is not None else None for a in values]
             else:
                 raise TypeError(
                     f"arithmetic not supported between DataFrame and {type(other).__name__}"
                 )
         return DataFrame(new_data)
+
+    def sub(self, other, axis=0) -> "DataFrame":
+        """减法操作。"""
+        return self._apply_arithmetic(
+            other,
+            lambda a, b: a - b if a is not None and b is not None else None,
+            axis=axis,
+        )
 
     def __getitem__(self, key) -> Union[Series, "DataFrame"]:
         # str -> 单列
@@ -3754,8 +3792,11 @@ class DataFrame:
         """返回 index 列名 (None 表示 RangeIndex)。"""
         return None
 
-    def unstack(self) -> "DataFrame":
-        """stack 的反操作 (v1.0.0) - 简化版。"""
+    def unstack(self, level=-1) -> "DataFrame":
+        """stack 的反操作 (v1.0.0) - 简化版。
+
+        :param level: 要 unstack 的级别 (默认 -1，即最后一级)
+        """
         # 优先调用 Rust 层 unstack（要求包含 variable/value 列）
         try:
             if "variable" in self._columns and "value" in self._columns:
@@ -6673,6 +6714,24 @@ class DataFrameGroupBy:
                 # 不可排序键类型（含 None/混合类型）保持原顺序
                 pass
 
+    def __getitem__(self, key):
+        """按列名或列名列表选择分组后的列。"""
+        if isinstance(key, str):
+            # 返回 SeriesGroupBy
+            from .series import SeriesGroupBy
+
+            return SeriesGroupBy(self._df, self._by, key)
+        elif isinstance(key, list):
+            # 返回仅包含指定列的新 DataFrameGroupBy
+            # 需要包含分组键列，因为它们需要用于分组
+            all_cols = self._by + [c for c in key if c not in self._by]
+            new_df = self._df[all_cols]
+            return DataFrameGroupBy(
+                new_df, self._by, self._as_index, self._sort, self._dropna
+            )
+        else:
+            raise TypeError(f"GroupBy 不支持的 key 类型: {type(key).__name__}")
+
     def _agg(self, agg_funcs: Dict[str, str]) -> "DataFrame":
         """对每列应用聚合函数。
 
@@ -7837,19 +7896,78 @@ class _LocIndexer(_IndexerBase):
                 except Exception:
                     pass
         elif isinstance(row_key, slice):
-            # 切片赋值: 直接用整数索引
+            # 切片赋值: 处理 datetime/str 起始值
             start, stop, step = row_key.start, row_key.stop, row_key.step
-            if start is None:
+            from datetime import datetime
+
+            # 解析起始位置
+            if isinstance(start, datetime):
+                for i, idx in enumerate(self._df._index):
+                    if idx == start:
+                        start = i
+                        break
+                else:
+                    start = 0
+            elif isinstance(start, str):
+                for i, idx in enumerate(self._df._index):
+                    if str(idx) == start:
+                        start = i
+                        break
+                else:
+                    try:
+                        from ._datetime import to_datetime
+
+                        target = to_datetime(start)
+                        for i, idx in enumerate(self._df._index):
+                            if idx == target:
+                                start = i
+                                break
+                        else:
+                            start = 0
+                    except Exception:
+                        start = 0
+            elif start is None:
                 start = 0
-            if stop is None:
+
+            # 解析结束位置
+            if isinstance(stop, datetime):
+                for i, idx in enumerate(self._df._index):
+                    if idx == stop:
+                        stop = i
+                        break
+                else:
+                    stop = self._df._nrows - 1
+            elif isinstance(stop, str):
+                for i, idx in enumerate(self._df._index):
+                    if str(idx) == stop:
+                        stop = i
+                        break
+                else:
+                    try:
+                        from ._datetime import to_datetime
+
+                        target = to_datetime(stop)
+                        for i, idx in enumerate(self._df._index):
+                            if idx == target:
+                                stop = i
+                                break
+                        else:
+                            stop = self._df._nrows - 1
+                    except Exception:
+                        stop = self._df._nrows - 1
+            elif stop is None:
                 stop = self._df._nrows - 1
-            if start < 0:
+
+            if isinstance(start, int) and start < 0:
                 start += self._df._nrows
-            if stop < 0:
+            if isinstance(stop, int) and stop < 0:
                 stop += self._df._nrows
             if step is None:
                 step = 1
-            row_indices = list(range(start, stop + 1, step))
+            if isinstance(start, int) and isinstance(stop, int):
+                row_indices = list(range(start, stop + 1, step))
+            else:
+                row_indices = []
         elif isinstance(row_key, list):
             row_indices = list(row_key)
         elif isinstance(row_key, int):

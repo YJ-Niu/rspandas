@@ -163,8 +163,11 @@ class Series:
             values, index = _to_python_list_and_index(data)
         else:
             # 检查是否为标量输入（int/float/str/bool），如果是且有 index，则广播
-            if index is not None and not isinstance(
-                data, (list, tuple, _PySeries, Series, dict)
+            # 排除 list/tuple/_PySeries/Series/dict 以及有 tolist 方法的数组类型（如 numpy.ndarray）
+            if (
+                index is not None
+                and not isinstance(data, (list, tuple, _PySeries, Series, dict))
+                and not hasattr(data, "tolist")
             ):
                 # 标量广播到 index 长度
                 index_len = (
@@ -296,6 +299,13 @@ class Series:
             # bool mask
             return self._filter_mask(key)
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
+
+    def get(self, key, default=None):
+        """获取指定索引处的值，若不存在则返回默认值。"""
+        try:
+            return self[key]
+        except (KeyError, IndexError):
+            return default
 
     def _filter_mask(self, mask: list, preserve_dtype: bool = False) -> _PySeries:
         if len(mask) != len(self):
@@ -4393,32 +4403,58 @@ class Resampler:
         "H": "hour",
         "h": "hour",
         "S": "second",
+        "s": "second",
+        "T": "minute",
+        "min": "minute",
+        "Min": "minute",
+        "m": "minute",
     }
 
     def __init__(self, series: _PySeries, freq: str, index: list):
-        if freq not in self._FREQ_MAP:
+        # 解析频率字符串，支持数字前缀如 "5Min"
+        self._freq_num = 1
+        self._freq_unit = freq
+
+        # 尝试解析数字前缀
+        import re
+
+        match = re.match(r"^(\d+)(.*)", freq)
+        if match:
+            self._freq_num = int(match.group(1))
+            self._freq_unit = match.group(2)
+
+        if self._freq_unit not in self._FREQ_MAP:
             raise ValueError(f"unsupported freq: {freq!r}")
         self._s = series
-        self._freq = freq
+        self._freq = self._freq_unit
         self._index = index
         self._values = series.values
 
     def _bucket_key(self, dt):
         """生成桶 key。"""
-        if self._freq == "D":
+        # 根据频率单位和倍数计算桶
+        if self._freq_unit == "D":
             return dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        if self._freq == "W":
+        if self._freq_unit == "W":
             # 周一开始
             start = dt - timedelta(days=dt.weekday())
             return start.replace(hour=0, minute=0, second=0, microsecond=0)
-        if self._freq == "M":
+        if self._freq_unit == "M":
             return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if self._freq == "Y":
+        if self._freq_unit == "Y":
             return dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        if self._freq in ("H", "h"):
-            return dt.replace(minute=0, second=0, microsecond=0)
-        if self._freq == "S":
-            return dt.replace(microsecond=0)
+        if self._freq_unit in ("H", "h"):
+            # 小时桶，支持倍数
+            hour_bucket = (dt.hour // self._freq_num) * self._freq_num
+            return dt.replace(hour=hour_bucket, minute=0, second=0, microsecond=0)
+        if self._freq_unit in ("T", "min", "Min", "m"):
+            # 分钟桶，支持倍数如 "5Min"
+            minute_bucket = (dt.minute // self._freq_num) * self._freq_num
+            return dt.replace(minute=minute_bucket, second=0, microsecond=0)
+        if self._freq_unit in ("S", "s"):
+            # 秒桶，支持倍数
+            second_bucket = (dt.second // self._freq_num) * self._freq_num
+            return dt.replace(second=second_bucket, microsecond=0)
         return dt
 
     def _aggregate(self, aggfunc: str) -> _PySeries:
@@ -4435,17 +4471,24 @@ class Resampler:
                     timestamps.append(float(dt))
                 else:
                     timestamps.append(0.0)
-            # 计算 freq_seconds
+            # 计算 freq_seconds，支持倍数
             freq_map = {
                 "D": 86400.0,
                 "W": 86400.0 * 7,
+                "M": 86400.0 * 30,
+                "Y": 86400.0 * 365,
                 "H": 3600.0,
                 "h": 3600.0,
+                "T": 60.0,
+                "min": 60.0,
+                "Min": 60.0,
+                "m": 60.0,
                 "S": 1.0,
+                "s": 1.0,
             }
-            if self._freq not in freq_map:
-                raise ValueError(f"unsupported freq for Rust: {self._freq}")
-            freq_seconds = freq_map[self._freq]
+            if self._freq_unit not in freq_map:
+                raise ValueError(f"unsupported freq for Rust: {self._freq_unit}")
+            freq_seconds = freq_map[self._freq_unit] * self._freq_num
             ts_list, val_list = self._s._inner.resample(
                 timestamps, freq_seconds, aggfunc
             )
