@@ -2152,12 +2152,46 @@ def crosstab(
             sum(v for v in df[c].values if v is not None) for c in df.columns if c != ""
         )
         if total > 0:
-            for c in df.columns:
-                if c != "":
-                    _ = [v / total for v in df[c].values]  # noqa: F841
+            # 使用字典推导式批量归一化所有列
+            df_data = {
+                c: (
+                    [v / total for v in df[c].values] if c != "" else list(df[c].values)
+                )
+                for c in df.columns
+            }
+            df = _DataFrame(df_data)
     elif normalize == "index":
-        pass  # 按行归一化 (预留)
+        # 按行归一化：每行总和为 1
+        row_totals = [
+            sum(df[c].values[i] for c in df.columns if c != "") for i in range(len(df))
+        ]
+        df_data = {
+            c: (
+                [
+                    df[c].values[i] / row_totals[i] if row_totals[i] > 0 else 0
+                    for i in range(len(df))
+                ]
+                if c != ""
+                else list(df[c].values)
+            )
+            for c in df.columns
+        }
+        df = _DataFrame(df_data)
     elif normalize == "columns":
-        pass  # 按列归一化 (预留)
+        # 按列归一化：每列总和为 1
+        col_totals = {
+            c: sum(v for v in df[c].values if v is not None)
+            for c in df.columns
+            if c != ""
+        }
+        df_data = {
+            c: (
+                [v / col_totals[c] if col_totals[c] > 0 else 0 for v in df[c].values]
+                if c != ""
+                else list(df[c].values)
+            )
+            for c in df.columns
+        }
+        df = _DataFrame(df_data)
 
     return df

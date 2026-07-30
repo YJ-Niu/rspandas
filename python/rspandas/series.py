@@ -1466,28 +1466,40 @@ class Series:
         ]
         return Series(out, name=self.name, dtype=self._dtype_str, index=self._index)
 
-    def compare(self, other, align_axis: int = 1) -> _PySeries:
+    def compare(self, other, align_axis: int = 1) -> "DataFrame":
         """与另一个 Series 比较差异。
 
         :param other: 另一个 Series
         :param align_axis: 对齐轴 (1=按索引对齐)
         """
+        from .dataframe import DataFrame
+
         if not isinstance(other, Series):
             raise TypeError("other must be Series")
         self_idx = self._index if self._index is not None else range(len(self))
         other_idx = other._index if other._index is not None else range(len(other))
         all_keys = sorted(set(self_idx) | set(other_idx))
-        # 先构造 (key, self_val, other_val) 三元组，再用字典推导式筛选差异
-        pairs = [
-            (
-                key,
-                self[key] if key in self_idx else None,
-                other[key] if key in other_idx else None,
+        # 列表推导式构造三元组并筛选差异
+        diff_pairs = [
+            (k, v1, v2)
+            for k, v1, v2 in (
+                (
+                    key,
+                    self[key] if key in self_idx else None,
+                    other[key] if key in other_idx else None,
+                )
+                for key in all_keys
             )
-            for key in all_keys
+            if v1 != v2
         ]
-        result = {k: {"self": v1, "other": v2} for k, v1, v2 in pairs if v1 != v2}
-        return Series(list(result.values()), index=list(result.keys()), name=self.name)
+        if not diff_pairs:
+            return DataFrame({"self": [], "other": []})
+        keys = [k for k, _, _ in diff_pairs]
+        self_vals = [v for _, v, _ in diff_pairs]
+        other_vals = [v for _, _, v in diff_pairs]
+        df = DataFrame({"self": self_vals, "other": other_vals})
+        df._index = keys
+        return df
 
     def transform(self, func, axis: int = 0, *args, **kwargs) -> _PySeries:
         """对 Series 应用函数并返回相同长度的结果。
@@ -1717,10 +1729,8 @@ class Series:
         :param numeric_only: 是否仅计算数值 (未实现)
         :param min_count: 最少非空值数 (默认 0)
         """
-        values = [v for v in self.values if v is not None] if skipna else self.values
-        if min_count > 0 and len([v for v in values if v is not None]) < min_count:
-            return None
-        return sum(v for v in values if v is not None) if values else None
+        # 使用 Rust 层实现
+        return self._inner.sum()
 
     def mean(
         self,
@@ -3406,6 +3416,65 @@ class Series:
 
         result = [_ma_at(i) for i in range(n)]
         return Series(result, name=self.name, index=self._index)
+
+    def detect_encoding(self) -> str:
+        """检测 Series 中字符串的编码。
+
+        通过采样非空字符串值，判断是否包含 ASCII / UTF-8 / GBK 等编码特征。
+        底层使用 chardet 库（若安装），否则使用启发式检测。
+
+        Returns:
+            str: 检测到的编码名（'ascii' / 'utf-8' / 'gbk' / 'unknown'）
+
+        Examples:
+            >>> Series(['hello', 'world']).detect_encoding()
+            'ascii'
+            >>> Series(['你好', '世界']).detect_encoding()
+            'utf-8'
+        """
+        # 收集非空字符串值
+        str_vals = [
+            v
+            for v in self.values
+            if v is not None and isinstance(v, str) and len(v) > 0
+        ]
+        if not str_vals:
+            return "unknown"
+
+        # 优先使用 chardet（若安装）
+        try:
+            import chardet
+
+            sample = " ".join(str_vals[:100]).encode("utf-8", errors="replace")
+            result = chardet.detect(sample)
+            encoding = result.get("encoding", None)
+            if encoding:
+                return encoding.lower()
+        except ImportError:
+            pass
+
+        # 启发式检测：检查是否纯 ASCII
+        all_ascii = all(v.isascii() for v in str_vals)
+        if all_ascii:
+            return "ascii"
+
+        # 尝试 UTF-8 解码
+        try:
+            for v in str_vals:
+                v.encode("utf-8")
+            return "utf-8"
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+
+        # 尝试 GBK 解码
+        try:
+            for v in str_vals:
+                v.encode("gbk")
+            return "gbk"
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+
+        return "unknown"
 
 
 def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:

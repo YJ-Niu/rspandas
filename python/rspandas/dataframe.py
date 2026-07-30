@@ -11,7 +11,11 @@ from rspandas.rspandas import (
     read_csv_path,
     read_csv_string,
 )
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    from .io import StreamDataFrame
+    from .lazyframe import LazyFrame
 
 
 def _is_ndarray(data: Any) -> bool:
@@ -1164,6 +1168,9 @@ class DataFrame:
 
         return DataFrame(corr_data)
 
+    # corr_matrix 作为 corr 的别名（扩展功能命名）
+    corr_matrix = corr
+
     def cov(self, min_periods: int = 1, ddof: int = 1) -> "DataFrame":
         """计算列之间的协方差矩阵。
 
@@ -1516,41 +1523,67 @@ class DataFrame:
         :param regex: 是否正则表达式
         :param method: 填充方法（已弃用）
         """
-        new_data: Dict[str, list] = {}
-
-        for c in self._columns:
-            ser = self[c]
-            col_vals = list(ser.values)
-            replaced_vals = []
-            replace_count = 0
-
-            for v in col_vals:
-                if limit is not None and replace_count >= limit:
-                    replaced_vals.append(v)
-                    continue
-
-                if regex and isinstance(to_replace, str) and isinstance(v, str):
-                    import re
-
-                    if re.search(to_replace, v):
-                        replaced_vals.append(value)
-                        replace_count += 1
-                    else:
-                        replaced_vals.append(v)
-                elif isinstance(to_replace, dict):
-                    # 字典映射
-                    if v in to_replace:
-                        replaced_vals.append(to_replace[v])
-                        replace_count += 1
-                    else:
-                        replaced_vals.append(v)
-                elif v == to_replace:
-                    replaced_vals.append(value)
-                    replace_count += 1
+        # 先将 to_replace 形式归一化，避免每列重复判断类型
+        if isinstance(to_replace, dict):
+            to_map = to_replace
+            new_data: Dict[str, list] = {}
+            for c in self._columns:
+                col_vals = list(self[c].values)
+                if limit is not None:
+                    # 有 limit 状态依赖 -> 保持循环但用 enumerate 内联
+                    replaced, rc = [], 0
+                    for v in col_vals:
+                        if rc >= limit:
+                            replaced.append(v)
+                        elif v in to_map:
+                            replaced.append(to_map[v])
+                            rc += 1
+                        else:
+                            replaced.append(v)
+                    new_data[c] = replaced
                 else:
-                    replaced_vals.append(v)
+                    new_data[c] = [to_map.get(v, v) for v in col_vals]
+        elif regex and isinstance(to_replace, str):
+            import re
 
-            new_data[c] = replaced_vals
+            pattern = re.compile(to_replace)
+            new_data = {}
+            for c in self._columns:
+                col_vals = list(self[c].values)
+                if limit is not None:
+                    replaced, rc = [], 0
+                    for v in col_vals:
+                        if rc >= limit:
+                            replaced.append(v)
+                        elif isinstance(v, str) and pattern.search(v):
+                            replaced.append(value)
+                            rc += 1
+                        else:
+                            replaced.append(v)
+                    new_data[c] = replaced
+                else:
+                    new_data[c] = [
+                        value if isinstance(v, str) and pattern.search(v) else v
+                        for v in col_vals
+                    ]
+        else:
+            # 标量 to_replace 形式
+            new_data = {}
+            for c in self._columns:
+                col_vals = list(self[c].values)
+                if limit is not None:
+                    replaced, rc = [], 0
+                    for v in col_vals:
+                        if rc >= limit:
+                            replaced.append(v)
+                        elif v == to_replace:
+                            replaced.append(value)
+                            rc += 1
+                        else:
+                            replaced.append(v)
+                    new_data[c] = replaced
+                else:
+                    new_data[c] = [value if v == to_replace else v for v in col_vals]
 
         if inplace:
             self._reload(new_data)
@@ -2634,16 +2667,8 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
 
-        def _sum_col(c):
-            """计算单列的和。"""
-            vals = list(self._inner.get_column(c).values)
-            non_null = [v for v in vals if v is not None] if skipna else vals
-            if min_count > 0 and len(non_null) < min_count:
-                return None
-            return sum(v for v in non_null if isinstance(v, (int, float)))
-
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: _sum_col(c) for c in target_cols})
+        # 使用 Rust 层实现：逐列调用 _get_column_as_series(c).sum()
+        return Series({c: self._get_column_as_series(c).sum() for c in target_cols})
 
     def mean(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求均值。
@@ -4549,6 +4574,131 @@ class DataFrame:
         else:
             return self.T.clip(lower, upper, axis=0).T
 
+    def where(
+        self,
+        cond,
+        other=None,
+        axis=None,
+        level=None,
+        errors: str = "raise",
+        try_cast: bool = False,
+    ) -> "DataFrame":
+        """条件取值：cond 为 True 保留原值，否则用 other 替换。
+
+        :param cond: bool DataFrame，或按列对齐的 bool 值容器
+        :param other: 替换值（标量、Series、DataFrame、可调用）
+        """
+        from .series import Series
+
+        if isinstance(cond, DataFrame):
+            # cond 是 DataFrame -> 按列对齐
+            cond_cols = {c: cond[c].values for c in cond._columns if c in self._columns}
+        elif hasattr(cond, "keys"):
+            cond_cols = {c: cond[c] for c in cond if c in self._columns}
+        else:
+            cond_cols = None  # 全表标量条件
+
+        # 处理 other 的 callable 情况
+        other_val = other(self) if callable(other) else other
+
+        # 按列用列表推导式替代显式 for 循环
+        if isinstance(other_val, DataFrame):
+            # 逐列对齐替换
+            new_data: Dict[str, list] = {}
+            for c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                if cond_cols is None:
+                    # cond 是可广播的 True/False 标量 -> 保持 cond 默认 True
+                    mask_col = [
+                        (
+                            bool(cond)
+                            if not hasattr(cond, "__len__")
+                            else (
+                                cond[i % len(cond)]
+                                if hasattr(cond, "__getitem__")
+                                else True
+                            )
+                        )
+                        for i in range(len(self_vals))
+                    ]
+                else:
+                    mask_col = cond_cols.get(c, [True] * len(self_vals))
+                other_vals = (
+                    list(other_val[c].values)
+                    if c in other_val._columns
+                    else [None] * len(self_vals)
+                )
+                new_data[c] = [
+                    v if m else ov for v, m, ov in zip(self_vals, mask_col, other_vals)
+                ]
+            return DataFrame(new_data, index=self._index)
+        elif isinstance(other_val, dict):
+            new_data = {}
+            for c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                mask_col = (
+                    cond_cols.get(c, [True] * len(self_vals))
+                    if cond_cols
+                    else [True] * len(self_vals)
+                )
+                fill_val = other_val.get(c, None)
+                new_data[c] = [
+                    v if m else fill_val for v, m in zip(self_vals, mask_col)
+                ]
+            return DataFrame(new_data, index=self._index)
+        else:
+            # 标量替换
+            new_data = {}
+            for c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                if cond_cols is None:
+                    if isinstance(cond, (Series, DataFrame)):
+                        mask_col = (
+                            list(cond.values)
+                            if isinstance(cond, Series)
+                            else list(cond._inner.get_column(cond._columns[0]).values)
+                        )
+                    else:
+                        mask_col = [True] * len(self_vals)
+                else:
+                    mask_col = cond_cols.get(c, [True] * len(self_vals))
+                new_data[c] = [
+                    v if m else other_val for v, m in zip(self_vals, mask_col)
+                ]
+            return DataFrame(new_data, index=self._index)
+
+    def mask(
+        self,
+        cond,
+        other=None,
+        axis=None,
+        level=None,
+        errors: str = "raise",
+        try_cast: bool = False,
+    ) -> "DataFrame":
+        """where 的反义：cond 为 True 时替换为 other，否则保留原值。"""
+        from .series import Series
+
+        def _invert(c):
+            """取反条件（支持 Series/DataFrame/list）。"""
+            if isinstance(c, DataFrame):
+                inv_data = {col: [not m for m in c[col].values] for col in c._columns}
+                return DataFrame(inv_data, index=c._index)
+            if isinstance(c, Series):
+                return Series([not m for m in c.values], index=c._index)
+            if isinstance(c, dict):
+                return {k: [not m for m in v] for k, v in c.items()}
+            return [not m for m in c]
+
+        return self.where(
+            _invert(cond),
+            other,
+            axis=axis,
+            level=level,
+            errors=errors,
+            try_cast=try_cast,
+        )
+
     def astype(self, dtype: str) -> "DataFrame":
         """转换每列的数据类型。
 
@@ -4734,6 +4884,8 @@ class DataFrame:
     def itertuples(self, index: bool = True, name: str = "Pandas") -> list:
         """迭代行，返回 namedtuple。
 
+        优化：批量预取所有列的值列表（每列 1 次 FFI 调用），避免逐行 N*M 次跨 FFI 访问。
+
         :param index: 是否包含索引
         :param name: namedtuple 名称
         """
@@ -4745,16 +4897,15 @@ class DataFrame:
         fields.extend([str(c) for c in self._columns])
 
         TupleClass = namedtuple(name, fields, rename=True)
-        # 使用列表推导式替代显式 for 循环
+        # 一次性预取所有列的值
+        col_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        idx = self._index if self._index else list(range(self._nrows))
+        # 使用列表推导式构建 namedtuple 列表
         return [
             TupleClass(
                 *(
-                    (
-                        [self._index[i] if self._index and i < len(self._index) else i]
-                        if index
-                        else []
-                    )
-                    + [self._inner.get_column(c).values[i] for c in self._columns]
+                    ([idx[i]] if index else [])
+                    + [col_values[c][i] for c in self._columns]
                 )
             )
             for i in range(self._nrows)
@@ -5094,11 +5245,15 @@ class DataFrame:
         return self.items()
 
     def iterrows(self):
-        """迭代 (索引, 行数据) 对。"""
+        """迭代 (索引, 行数据) 对。
+
+        优化：批量预取所有列的值，避免逐行调用 _inner.get_column().values[i] 造成的 N*M 次跨 FFI 访问。
+        """
+        # 一次性预取所有列的值列表（每列 1 次 FFI 调用，共 M 次）
+        col_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        index = self._index if self._index else list(range(self._nrows))
         for i in range(self._nrows):
-            idx = self._index[i] if self._index else i
-            row_data = {c: self._inner.get_column(c).values[i] for c in self._columns}
-            yield idx, row_data
+            yield index[i], {c: col_values[c][i] for c in self._columns}
 
     def keys(self) -> list:
         """返回列名列表。"""
@@ -5242,6 +5397,8 @@ class DataFrame:
     ) -> None:
         """用 other 的值原地更新 self 中的对应位置。
 
+        优化：按列处理，每列单次遍历同时考虑 other_vals/filter_func/overwrite 三种条件。
+
         :param other: 另一个 DataFrame
         :param join: 连接方式 ('left'/'right')，目前仅支持 'left'
         :param overwrite: 是否覆盖非 NA 值
@@ -5253,20 +5410,38 @@ class DataFrame:
         if errors not in ("ignore", "raise"):
             raise ValueError("errors must be 'ignore' or 'raise'")
 
-        new_data = {}
-        for c in self._columns:
+        # 预计算 filter_func 的有效位置集合（仅保留通过过滤的索引）
+        if filter_func is not None:
+            valid_idx_set = {i for i in range(self._nrows) if filter_func(i)}
+        else:
+            valid_idx_set = None
+
+        def _update_col(c):
+            """合并单列：用 other 中对应位置的非空值更新 self。"""
             vals = list(self._inner.get_column(c).values)
-            if c in other._columns:
-                other_vals = list(other._inner.get_column(c).values)
-                for i in range(min(len(vals), len(other_vals))):
-                    if other_vals[i] is None:
-                        continue
-                    if filter_func is not None and not filter_func(i):
-                        continue
-                    if vals[i] is not None and not overwrite:
-                        continue
-                    vals[i] = other_vals[i]
-            new_data[c] = vals
+            if c not in other._columns:
+                return vals
+            other_vals = list(other._inner.get_column(c).values)
+            n = min(len(vals), len(other_vals))
+
+            def _pick(i):
+                """返回位置 i 的最终值。"""
+                ov = other_vals[i]
+                # other 为空 → 保留原值
+                if ov is None:
+                    return vals[i]
+                # 过滤未通过 → 保留原值
+                if valid_idx_set is not None and i not in valid_idx_set:
+                    return vals[i]
+                # 原值非空且不覆盖 → 保留原值
+                if vals[i] is not None and not overwrite:
+                    return vals[i]
+                return ov
+
+            # 前 n 位走合并逻辑，超出部分保留原值
+            return [_pick(i) for i in range(n)] + vals[n:]
+
+        new_data = {c: _update_col(c) for c in self._columns}
         self._reload(new_data)
 
     # ---------- 重索引扩展 ----------
@@ -5879,6 +6054,56 @@ class DataFrame:
         # 使用字典推导式构建归一化结果
         result = {col: _normalize_col(col) for col in columns}
         return DataFrame(result)
+
+    # ------------------------------------------------------------------
+    # 流式处理接口
+    # ------------------------------------------------------------------
+
+    def to_stream(self, chunk_size: int = 1000) -> "StreamDataFrame":
+        """将当前 DataFrame 转为流式对象，按 chunk_size 切分。
+
+        :param chunk_size: 每块行数（默认 1000）
+        :return: StreamDataFrame 流式对象
+
+        Examples:
+            >>> sdf = df.to_stream(chunk_size=100)
+            >>> result = sdf.filter(lambda c: c['x'].sum() > 0).collect()
+        """
+        from .io import StreamDataFrame
+
+        nrows = self._nrows
+        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
+        return StreamDataFrame(chunks)
+
+    def pipeline(self, *funcs):
+        """链式管道：依次对 DataFrame 应用 funcs 中的每个函数。
+
+        :param funcs: 一组接受 DataFrame 并返回 DataFrame 的函数
+        :return: 处理后的 DataFrame
+
+        Examples:
+            >>> result = df.pipeline(
+            ...     lambda d: d[d['x'] > 0],
+            ...     lambda d: d.assign(y=d['x'] * 2),
+            ... )
+        """
+        result = self
+        for func in funcs:
+            result = func(result)
+        return result
+
+    def lazy(self) -> "LazyFrame":
+        """将 DataFrame 包装为 LazyFrame，支持惰性求值。
+
+        :return: LazyFrame 实例
+
+        Examples:
+            >>> from rspandas import col
+            >>> result = df.lazy().filter(col('x') > 0).select(['x', 'y']).collect()
+        """
+        from .lazyframe import LazyFrame
+
+        return LazyFrame(self)
 
 
 class DataFrameGroupBy:
