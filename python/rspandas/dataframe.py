@@ -5669,8 +5669,7 @@ class DataFrame:
                     return [False] * len(values)
                 # 工业标准：|z| > 2 视为异常值
                 return [
-                    (v is not None and abs((v - mean_v) / std_v) > 2)
-                    for v in values
+                    (v is not None and abs((v - mean_v) / std_v) > 2) for v in values
                 ]
             raise ValueError(f"Unsupported method: {method}")
 
@@ -5902,23 +5901,25 @@ class DataFrameGroupBy:
         self._sort = sort
         self._dropna = dropna
 
-        # 分组: { key_tuple: [row_indices] }
+        # 分组: { key_tuple: [row_indices] } （优化：预取列 + 列表推导式提取 key）
         self._groups: Dict[tuple, list] = {}
         n = df._nrows
+        by_cols = [df._inner.get_column(c).values for c in self._by]
 
         for i in range(n):
-            key = tuple(df._inner.get_column(c).values[i] for c in self._by)
-
-            # 处理 dropna
-            if not dropna and any(v is None for v in key):
+            key = tuple(col[i] for col in by_cols)
+            # dropna=True 时丢弃含 None 的键；dropna=False 保留所有键
+            if dropna and any(v is None for v in key):
                 continue
-
             self._groups.setdefault(key, []).append(i)
 
         # 排序组
         if sort:
-            sorted_groups = dict(sorted(self._groups.items()))
-            self._groups = sorted_groups
+            try:
+                self._groups = dict(sorted(self._groups.items()))
+            except TypeError:
+                # 不可排序键类型（含 None/混合类型）保持原顺序
+                pass
 
     def _agg(self, agg_funcs: Dict[str, str]) -> "DataFrame":
         """对每列应用聚合函数。
@@ -5982,12 +5983,46 @@ class DataFrameGroupBy:
         return self._agg({c: "count" for c in self._df._columns if c not in self._by})
 
     def agg(self, func) -> "DataFrame":
-        """通用聚合: 可以传 str 或 dict[列名->str]。"""
+        """通用聚合: 支持 str / dict[列名->str] / list[func]。"""
         if isinstance(func, str):
             return self._agg({c: func for c in self._df._columns if c not in self._by})
         if isinstance(func, dict):
+            # 允许 dict 值为 list: {col: [func1, func2]} -> 展开为 MultiIndex 风格列
+            flat_funcs: Dict[str, str] = {}
+            multi_mode = False
+            for col, f in func.items():
+                if isinstance(f, (list, tuple)):
+                    multi_mode = True
+                    for single_f in f:
+                        flat_funcs[f"{col}_{single_f}"] = single_f
+                else:
+                    flat_funcs[col] = f
+            if multi_mode:
+                return self._agg(flat_funcs)
             return self._agg(func)
-        raise TypeError("agg must be str or dict")
+        if isinstance(func, (list, tuple)):
+            # 所有列都应用这些函数
+            result_parts: Dict[str, "DataFrame"] = {}
+            other_cols = [c for c in self._df._columns if c not in self._by]
+            for fname in func:
+                sub = self._agg({c: fname for c in other_cols})
+                # 重命名列以避免冲突
+                rename_map = {c: f"{c}_{fname}" for c in other_cols}
+                sub = sub.rename(columns=rename_map)
+                result_parts[str(fname)] = sub
+            # 横向拼接：取第一个 DataFrame 为基准，追加其他列
+            if not result_parts:
+                return DataFrame()
+            it = iter(result_parts.values())
+            merged = next(it)
+            for rest_df in it:
+                # 简单按列顺序横向合并
+                for col in rest_df._columns:
+                    merged[col] = rest_df[col].to_list()
+            return merged
+        raise TypeError("agg must be str, dict or list")
+
+    aggregate = agg
 
     # ---------- 分组取值扩展 (v1.4.0) ----------
 
@@ -6412,22 +6447,16 @@ class DataFrameGroupBy:
         return DataFrame(result)
 
     def prod(self) -> "DataFrame":
-        """分组乘积。"""
+        """分组乘积（math.prod 优化版）。"""
+        import math
+
         other_cols = [c for c in self._df._columns if c not in self._by]
-        result: Dict[str, list] = {}
-        for c in other_cols:
-            result[c] = []
+        result: Dict[str, list] = {c: [] for c in other_cols}
 
         for key, idxs in self._groups.items():
             for c in other_cols:
                 vals = [v for v in self._df[c].iloc(idxs).values if v is not None]
-                if not vals:
-                    result[c].append(None)
-                    continue
-                p = 1
-                for v in vals:
-                    p *= v
-                result[c].append(p)
+                result[c].append(math.prod(vals) if vals else None)
         return DataFrame(result)
 
     def skew(self) -> "DataFrame":

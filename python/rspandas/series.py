@@ -458,11 +458,21 @@ class Series:
 
     def __and__(self, other):
         """按位与: self & other"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(v) & int(other)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(v) & int(other_vals[i])
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(v) & int(other)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __rand__(self, other):
@@ -471,11 +481,21 @@ class Series:
 
     def __or__(self, other):
         """按位或: self | other"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(v) | int(other)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(v) | int(other_vals[i])
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(v) | int(other)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __ror__(self, other):
@@ -484,11 +504,21 @@ class Series:
 
     def __xor__(self, other):
         """按位异或: self ^ other"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(v) ^ int(other)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(v) ^ int(other_vals[i])
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(v) ^ int(other)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __rxor__(self, other):
@@ -497,38 +527,78 @@ class Series:
 
     def __lshift__(self, other):
         """左移: self << other"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(v) << int(other)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(v) << int(other_vals[i])
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(v) << int(other)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __rlshift__(self, other):
         """反向左移: other << self"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(other) << int(v)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(other_vals[i]) << int(v)
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(other) << int(v)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __rshift__(self, other):
         """右移: self >> other"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(v) >> int(other)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(v) >> int(other_vals[i])
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(v) >> int(other)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __rrshift__(self, other):
         """反向右移: other >> self"""
-        # 使用列表推导式替代显式 for 循环
-        result = [
-            None if (v is None or other is None) else int(other) >> int(v)
-            for v in self.values
-        ]
+        if isinstance(other, Series):
+            other_vals = other.values
+            result = [
+                (
+                    None
+                    if (v is None or i >= len(other_vals) or other_vals[i] is None)
+                    else int(other_vals[i]) >> int(v)
+                )
+                for i, v in enumerate(self.values)
+            ]
+        else:
+            result = [
+                None if (v is None or other is None) else int(other) >> int(v)
+                for v in self.values
+            ]
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __neg__(self) -> _PySeries:
@@ -4747,17 +4817,15 @@ class SeriesGroupBy:
         self._groups = self._compute_groups()
 
     def _compute_groups(self) -> dict:
-        """计算分组。"""
+        """计算分组（列表推导式优化版）。"""
         values = self._s.values
-        groups = {}
-        for i, v in enumerate(values):
-            key = self._by_key(i, v)
-            # 根据 dropna 决定是否包含 None 键
+        keys = [self._by_key(i, v) for i, v in enumerate(values)]
+        # 使用 dict.setdefault + enumerate 一步构建分组，避免 if/else 嵌套
+        groups: dict = {}
+        for i, (v, key) in enumerate(zip(values, keys)):
             if key is None and self._dropna:
                 continue
-            if key not in groups:
-                groups[key] = []
-            groups[key].append((i, v))
+            groups.setdefault(key, []).append((i, v))
         return groups
 
     def _by_key(self, i: int, v) -> Any:
@@ -5196,14 +5264,10 @@ class SeriesGroupBy:
                 keep_indices.extend(i for i, _ in items)
         return self._s.iloc(keep_indices)
 
-    def agg(self, func, axis: int = 0, *args, **kwargs) -> Series:
-        """聚合操作。
+    def _agg_single(self, func, axis: int = 0, *args, **kwargs) -> Series:
+        """单函数聚合（原始 agg 逻辑）。"""
+        import math
 
-        :param func: 聚合函数或函数名
-        :param axis: 轴 (未使用，保持兼容性)
-        :param args: 传递给 func 的额外位置参数
-        :param kwargs: 传递给 func 的关键字参数
-        """
         result = {}
         for key, items in self._groups.items():
             vals = [v for _, v in items if v is not None]
@@ -5254,10 +5318,7 @@ class SeriesGroupBy:
                         sv[n // 2] if n % 2 == 1 else (sv[n // 2 - 1] + sv[n // 2]) / 2
                     )
                 elif func == "prod":
-                    p = 1
-                    for v in vals:
-                        p *= v
-                    result[key] = p
+                    result[key] = math.prod(vals)
                 elif func == "first":
                     result[key] = vals[0]
                 elif func == "last":
@@ -5293,32 +5354,43 @@ class SeriesGroupBy:
 
     def sum(self) -> Series:
         """分组求和。"""
-        return self.agg("sum")
+        return self._agg_single("sum")
 
     def mean(self) -> Series:
         """分组求均值。"""
-        return self.agg("mean")
+        return self._agg_single("mean")
 
     def min(self) -> Series:
         """分组求最小值。"""
-        return self.agg("min")
+        return self._agg_single("min")
 
     def max(self) -> Series:
         """分组求最大值。"""
-        return self.agg("max")
+        return self._agg_single("max")
 
     def count(self) -> Series:
         """分组计数。"""
-        return self.agg("count")
+        return self._agg_single("count")
 
     def transform(self, func, axis: int = 0, *args, **kwargs) -> Series:
         """对每个分组应用函数并返回原始长度的 Series。
 
-        :param func: 可调用函数
+        :param func: 可调用函数，或聚合函数名字符串 ('sum'/'mean' 等)
         :param axis: 轴 (未使用，保持兼容性)
         :param args: 传递给 func 的额外位置参数
         :param kwargs: 传递给 func 的关键字参数
         """
+        # 字符串形式：映射到 _agg_single 的内置聚合名，取聚合结果做广播
+        if isinstance(func, str):
+            agg_result = self._agg_single(func, *args, **kwargs)
+            agg_map = dict(zip(agg_result._index or [], agg_result.values))
+            result = [None] * len(self._s)
+            for key, items in self._groups.items():
+                val = agg_map.get(key, None)
+                for i, _ in items:
+                    result[i] = val
+            return Series(result, name=self._s.name, index=self._s._index)
+
         result = [None] * len(self._s)
         for key, items in self._groups.items():
             group_series = Series([v for _, v in items], name=self._s.name)
@@ -5330,6 +5402,169 @@ class SeriesGroupBy:
                 for i, _ in items:
                     result[i] = transformed
         return Series(result, name=self._s.name, index=self._s._index)
+
+    def quantile(self, q=0.5) -> Series:
+        """分组分位数。
+
+        :param q: 分位数值 (0.0-1.0) 或列表
+        """
+        from .dataframe import DataFrame
+
+        if isinstance(q, (list, tuple)):
+            # 多分位数 -> 返回 DataFrame
+            result_rows = {}
+            for q_val in q:
+                result_rows[q_val] = [
+                    self._quantile_for_group(items, q_val)
+                    for items in self._groups.values()
+                ]
+            keys = self._sorted_keys(self._groups.keys())
+            df = DataFrame(result_rows)
+            df = df.T
+            df._columns = list(keys)
+            df._index = list(q)
+            return df
+        return self._build_grouped_series(
+            lambda _, items: self._quantile_for_group(items, q)
+        )
+
+    @staticmethod
+    def _quantile_for_group(items, q):
+        """单组分位数计算。"""
+        vals = sorted(v for _, v in items if v is not None)
+        if not vals:
+            return None
+        n = len(vals)
+        if n == 1:
+            return vals[0]
+        pos = q * (n - 1)
+        lo = int(pos)
+        hi = min(lo + 1, n - 1)
+        frac = pos - lo
+        return vals[lo] + (vals[hi] - vals[lo]) * frac
+
+    def skew(self) -> Series:
+        """分组偏度。"""
+
+        def _skew(key, items):
+            vals = [v for _, v in items if v is not None]
+            n = len(vals)
+            if n < 3:
+                return None
+            m = sum(vals) / n
+            s = (sum((x - m) ** 2 for x in vals) / (n - 1)) ** 0.5
+            if s == 0:
+                return None
+            return sum((x - m) ** 3 for x in vals) / ((n - 1) * s**3)
+
+        return self._build_grouped_series(_skew)
+
+    def kurt(self) -> Series:
+        """分组峰度（excess kurtosis）。"""
+
+        def _kurt(key, items):
+            vals = [v for _, v in items if v is not None]
+            n = len(vals)
+            if n < 4:
+                return None
+            m = sum(vals) / n
+            s2 = sum((x - m) ** 2 for x in vals) / (n - 1)
+            if s2 == 0:
+                return None
+            s4 = sum((x - m) ** 4 for x in vals) / (n - 1)
+            return s4 / (s2**2) - 3
+
+        return self._build_grouped_series(_kurt)
+
+    def mad(self) -> Series:
+        """分组平均绝对偏差。"""
+
+        def _mad(key, items):
+            vals = [v for _, v in items if v is not None]
+            if not vals:
+                return None
+            m = sum(vals) / len(vals)
+            return sum(abs(x - m) for x in vals) / len(vals)
+
+        return self._build_grouped_series(_mad)
+
+    def ngroup(self, ascending: bool = True) -> Series:
+        """返回每个元素所属的分组编号 (0-based)。"""
+        n = len(self._s)
+        result = [None] * n
+        if ascending:
+            id_map = {
+                k: i for i, k in enumerate(self._sorted_keys(self._groups.keys()))
+            }
+        else:
+            id_map = {
+                k: i
+                for i, k in enumerate(reversed(self._sorted_keys(self._groups.keys())))
+            }
+        for key, items in self._groups.items():
+            gid = id_map[key]
+            for i, _ in items:
+                result[i] = gid
+        return Series(result, name=self._s.name, index=self._s._index, dtype="int64")
+
+    def cumcount(self, ascending: bool = True) -> Series:
+        """返回每个分组内的累计计数 (0-based)。"""
+        n = len(self._s)
+        result = [None] * n
+        for items in self._groups.values():
+            if ascending:
+                for j, (i, _) in enumerate(items):
+                    result[i] = j
+            else:
+                m = len(items)
+                for j, (i, _) in enumerate(items):
+                    result[i] = m - j - 1
+        return Series(result, name=self._s.name, index=self._s._index, dtype="int64")
+
+    def agg(self, func, axis: int = 0, *args, **kwargs) -> Series:
+        """聚合操作（扩展支持 list/dict 多函数）。
+
+        :param func: 聚合函数/名，或函数名列表，或 {新列名: 函数} 字典
+        :param axis: 轴 (未使用，保持兼容性)
+        """
+        from .dataframe import DataFrame
+
+        # 单函数/名单函数调用 -> 保持原始行为，返回 Series
+        if (
+            isinstance(func, (str,))
+            or callable(func)
+            and not isinstance(func, (list, tuple, dict))
+        ):
+            return self._agg_single(func, *args, **kwargs)
+        if isinstance(func, dict):
+            # dict: {新列名: 聚合函数名} -> 返回 DataFrame
+            result: Dict[str, list] = {}
+            keys = self._sorted_keys(self._groups.keys())
+            for col_name, f in func.items():
+                series_result = self._agg_single(f, *args, **kwargs)
+                result[col_name] = [
+                    series_result[k] if k in (series_result._index or []) else None
+                    for k in keys
+                ]
+            df = DataFrame(result)
+            df._index = list(keys)
+            return df
+        if isinstance(func, (list, tuple)):
+            # list: [函数名1, 函数名2] -> 返回 MultiIndex 风格 DataFrame
+            result: Dict[str, list] = {}
+            keys = self._sorted_keys(self._groups.keys())
+            for fname in func:
+                series_result = self._agg_single(fname, *args, **kwargs)
+                result[str(fname)] = [
+                    series_result[k] if k in (series_result._index or []) else None
+                    for k in keys
+                ]
+            df = DataFrame(result)
+            df._index = list(keys)
+            return df
+        raise TypeError(f"agg: unsupported func type {type(func).__name__}")
+
+    aggregate = agg
 
 
 class _LocIndexer:
