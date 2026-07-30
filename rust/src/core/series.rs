@@ -18,6 +18,17 @@ pub struct Series {
     pub data: ColumnData,
 }
 
+/// 聚合结果统一类型
+/// 用于在 `py.detach` 闭包中跨 GIL 边界返回不同类型的结果
+enum AggResult {
+    Int(i64),
+    Float(f64),
+    Usize(usize),
+    Bool(bool),
+    Str(String),
+    None,
+}
+
 impl Series {
     // ---------- 构造器 ----------
 
@@ -758,6 +769,480 @@ impl Series {
                 .collect(),
         }
     }
+
+    // ---------- 排序 ----------
+
+    /// 按值排序
+    /// ascending=true: 升序，None 放最后
+    /// ascending=false: 降序，None 放最前
+    pub fn sort_values(&self, ascending: bool) -> Series {
+        let data = match &self.data {
+            ColumnData::Int(v) => {
+                let mut indexed: Vec<(Option<i64>, usize)> =
+                    v.iter().enumerate().map(|(i, x)| (*x, i)).collect();
+                indexed.sort_by(|a, b| match (a.0, b.0) {
+                    (Some(x), Some(y)) => {
+                        if ascending {
+                            x.cmp(&y)
+                        } else {
+                            y.cmp(&x)
+                        }
+                    }
+                    (Some(_), None) => {
+                        if ascending {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    }
+                    (None, Some(_)) => {
+                        if ascending {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    }
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                let sorted: Vec<Option<i64>> = indexed.into_iter().map(|(x, _)| x).collect();
+                ColumnData::Int(sorted)
+            }
+            ColumnData::Float(v) => {
+                let mut indexed: Vec<(Option<f64>, usize)> =
+                    v.iter().enumerate().map(|(i, x)| (*x, i)).collect();
+                indexed.sort_by(|a, b| match (a.0, b.0) {
+                    (Some(x), Some(y)) => {
+                        if ascending {
+                            x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+                        } else {
+                            y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal)
+                        }
+                    }
+                    (Some(_), None) => {
+                        if ascending {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    }
+                    (None, Some(_)) => {
+                        if ascending {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    }
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                let sorted: Vec<Option<f64>> = indexed.into_iter().map(|(x, _)| x).collect();
+                ColumnData::Float(sorted)
+            }
+            ColumnData::Bool(v) => {
+                let mut indexed: Vec<(Option<bool>, usize)> =
+                    v.iter().enumerate().map(|(i, x)| (*x, i)).collect();
+                indexed.sort_by(|a, b| match (a.0, b.0) {
+                    (Some(x), Some(y)) => {
+                        if ascending {
+                            x.cmp(&y)
+                        } else {
+                            y.cmp(&x)
+                        }
+                    }
+                    (Some(_), None) => {
+                        if ascending {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    }
+                    (None, Some(_)) => {
+                        if ascending {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    }
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                let sorted: Vec<Option<bool>> = indexed.into_iter().map(|(x, _)| x).collect();
+                ColumnData::Bool(sorted)
+            }
+            ColumnData::String(v) => {
+                let mut indexed: Vec<(Option<String>, usize)> =
+                    v.iter().enumerate().map(|(i, x)| (x.clone(), i)).collect();
+                indexed.sort_by(|a, b| match (&a.0, &b.0) {
+                    (Some(x), Some(y)) => {
+                        if ascending {
+                            x.cmp(y)
+                        } else {
+                            y.cmp(x)
+                        }
+                    }
+                    (Some(_), None) => {
+                        if ascending {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    }
+                    (None, Some(_)) => {
+                        if ascending {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    }
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                let sorted: Vec<Option<String>> = indexed.into_iter().map(|(x, _)| x).collect();
+                ColumnData::String(sorted)
+            }
+            ColumnData::Categorical(c) => {
+                // 对 categorical 按其字符串值排序
+                let mut indexed: Vec<(Option<String>, usize)> = c
+                    .codes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, code)| {
+                        let s = code.and_then(|idx| c.categories.get(idx as usize).cloned());
+                        (s, i)
+                    })
+                    .collect();
+                indexed.sort_by(|a, b| match (&a.0, &b.0) {
+                    (Some(x), Some(y)) => {
+                        if ascending {
+                            x.cmp(y)
+                        } else {
+                            y.cmp(x)
+                        }
+                    }
+                    (Some(_), None) => {
+                        if ascending {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        }
+                    }
+                    (None, Some(_)) => {
+                        if ascending {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    }
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                let sorted_codes: Vec<Option<i32>> = indexed
+                    .into_iter()
+                    .map(|(_, i)| c.codes.get(i).copied().flatten())
+                    .collect();
+                ColumnData::Categorical(super::dtype::CategoricalData {
+                    categories: c.categories.clone(),
+                    codes: sorted_codes,
+                    ordered: c.ordered,
+                })
+            }
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 按索引排序
+    /// ascending=true: 保持原始顺序
+    /// ascending=false: 反转原始顺序
+    pub fn sort_index(&self, ascending: bool) -> Series {
+        if ascending {
+            return self.clone();
+        }
+        let data = match &self.data {
+            ColumnData::Int(v) => ColumnData::Int(v.iter().rev().cloned().collect()),
+            ColumnData::Float(v) => ColumnData::Float(v.iter().rev().cloned().collect()),
+            ColumnData::Bool(v) => ColumnData::Bool(v.iter().rev().cloned().collect()),
+            ColumnData::String(v) => ColumnData::String(v.iter().rev().cloned().collect()),
+            ColumnData::Categorical(c) => ColumnData::Categorical(super::dtype::CategoricalData {
+                categories: c.categories.clone(),
+                codes: c.codes.iter().rev().cloned().collect(),
+                ordered: c.ordered,
+            }),
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    // ---------- 前向/后向填充 ----------
+
+    /// 前向填充：将 None 填充为前一个非 None 值
+    /// 若开头连续 None，则保持 None
+    pub fn ffill(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Int(v) => {
+                let mut result: Vec<Option<i64>> = Vec::with_capacity(v.len());
+                let mut last: Option<i64> = None;
+                for x in v.iter() {
+                    if let Some(val) = x {
+                        last = Some(*val);
+                        result.push(Some(*val));
+                    } else if let Some(l) = last {
+                        result.push(Some(l));
+                    } else {
+                        result.push(None);
+                    }
+                }
+                ColumnData::Int(result)
+            }
+            ColumnData::Float(v) => {
+                let mut result: Vec<Option<f64>> = Vec::with_capacity(v.len());
+                let mut last: Option<f64> = None;
+                for x in v.iter() {
+                    if let Some(val) = x {
+                        last = Some(*val);
+                        result.push(Some(*val));
+                    } else if let Some(l) = last {
+                        result.push(Some(l));
+                    } else {
+                        result.push(None);
+                    }
+                }
+                ColumnData::Float(result)
+            }
+            ColumnData::Bool(v) => {
+                let mut result: Vec<Option<bool>> = Vec::with_capacity(v.len());
+                let mut last: Option<bool> = None;
+                for x in v.iter() {
+                    if let Some(val) = x {
+                        last = Some(*val);
+                        result.push(Some(*val));
+                    } else if let Some(l) = last {
+                        result.push(Some(l));
+                    } else {
+                        result.push(None);
+                    }
+                }
+                ColumnData::Bool(result)
+            }
+            ColumnData::String(v) => {
+                let mut result: Vec<Option<String>> = Vec::with_capacity(v.len());
+                let mut last: Option<String> = None;
+                for x in v.iter() {
+                    if let Some(val) = x {
+                        last = Some(val.clone());
+                        result.push(Some(val.clone()));
+                    } else if let Some(l) = &last {
+                        result.push(Some(l.clone()));
+                    } else {
+                        result.push(None);
+                    }
+                }
+                ColumnData::String(result)
+            }
+            ColumnData::Categorical(c) => {
+                let mut result: Vec<Option<i32>> = Vec::with_capacity(c.codes.len());
+                let mut last: Option<i32> = None;
+                for code in c.codes.iter() {
+                    if let Some(val) = code {
+                        last = Some(*val);
+                        result.push(Some(*val));
+                    } else if let Some(l) = last {
+                        result.push(Some(l));
+                    } else {
+                        result.push(None);
+                    }
+                }
+                ColumnData::Categorical(super::dtype::CategoricalData {
+                    categories: c.categories.clone(),
+                    codes: result,
+                    ordered: c.ordered,
+                })
+            }
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    /// 后向填充：将 None 填充为后一个非 None 值
+    /// 若末尾连续 None，则保持 None
+    pub fn bfill(&self) -> Series {
+        let data = match &self.data {
+            ColumnData::Int(v) => {
+                let n = v.len();
+                let mut result: Vec<Option<i64>> = vec![None; n];
+                let mut last: Option<i64> = None;
+                for i in (0..n).rev() {
+                    if let Some(val) = v[i] {
+                        last = Some(val);
+                        result[i] = Some(val);
+                    } else if let Some(l) = last {
+                        result[i] = Some(l);
+                    }
+                }
+                ColumnData::Int(result)
+            }
+            ColumnData::Float(v) => {
+                let n = v.len();
+                let mut result: Vec<Option<f64>> = vec![None; n];
+                let mut last: Option<f64> = None;
+                for i in (0..n).rev() {
+                    if let Some(val) = v[i] {
+                        last = Some(val);
+                        result[i] = Some(val);
+                    } else if let Some(l) = last {
+                        result[i] = Some(l);
+                    }
+                }
+                ColumnData::Float(result)
+            }
+            ColumnData::Bool(v) => {
+                let n = v.len();
+                let mut result: Vec<Option<bool>> = vec![None; n];
+                let mut last: Option<bool> = None;
+                for i in (0..n).rev() {
+                    if let Some(val) = v[i] {
+                        last = Some(val);
+                        result[i] = Some(val);
+                    } else if let Some(l) = last {
+                        result[i] = Some(l);
+                    }
+                }
+                ColumnData::Bool(result)
+            }
+            ColumnData::String(v) => {
+                let n = v.len();
+                let mut result: Vec<Option<String>> = vec![None; n];
+                let mut last: Option<String> = None;
+                for i in (0..n).rev() {
+                    if let Some(val) = &v[i] {
+                        last = Some(val.clone());
+                        result[i] = Some(val.clone());
+                    } else if let Some(l) = &last {
+                        result[i] = Some(l.clone());
+                    }
+                }
+                ColumnData::String(result)
+            }
+            ColumnData::Categorical(c) => {
+                let n = c.codes.len();
+                let mut result: Vec<Option<i32>> = vec![None; n];
+                let mut last: Option<i32> = None;
+                for i in (0..n).rev() {
+                    if let Some(val) = c.codes[i] {
+                        last = Some(val);
+                        result[i] = Some(val);
+                    } else if let Some(l) = last {
+                        result[i] = Some(l);
+                    }
+                }
+                ColumnData::Categorical(super::dtype::CategoricalData {
+                    categories: c.categories.clone(),
+                    codes: result,
+                    ordered: c.ordered,
+                })
+            }
+        };
+        Series {
+            name: self.name.clone(),
+            data,
+        }
+    }
+
+    // ---------- 字符串方法（仅对 String 类型有效） ----------
+
+    /// 转大写
+    pub fn str_upper(&self) -> Series {
+        if let ColumnData::String(v) = &self.data {
+            let new_v: Vec<Option<String>> = v
+                .par_iter()
+                .map(|x| x.as_ref().map(|s| s.to_uppercase()))
+                .collect();
+            Series {
+                name: self.name.clone(),
+                data: ColumnData::String(new_v),
+            }
+        } else {
+            self.clone()
+        }
+    }
+
+    /// 转小写
+    pub fn str_lower(&self) -> Series {
+        if let ColumnData::String(v) = &self.data {
+            let new_v: Vec<Option<String>> = v
+                .par_iter()
+                .map(|x| x.as_ref().map(|s| s.to_lowercase()))
+                .collect();
+            Series {
+                name: self.name.clone(),
+                data: ColumnData::String(new_v),
+            }
+        } else {
+            self.clone()
+        }
+    }
+
+    /// 字符串长度（返回 Int 类型 Series）
+    pub fn str_len(&self) -> Series {
+        if let ColumnData::String(v) = &self.data {
+            let new_v: Vec<Option<i64>> = v
+                .par_iter()
+                .map(|x| x.as_ref().map(|s| s.chars().count() as i64))
+                .collect();
+            Series {
+                name: self.name.clone(),
+                data: ColumnData::Int(new_v),
+            }
+        } else {
+            // 非 String 类型：返回全 None 的 Int 系列
+            Series::new_null(self.name.clone(), DType::Int64, self.len())
+        }
+    }
+
+    /// 去除首尾空白
+    pub fn str_strip(&self) -> Series {
+        if let ColumnData::String(v) = &self.data {
+            let new_v: Vec<Option<String>> = v
+                .par_iter()
+                .map(|x| x.as_ref().map(|s| s.trim().to_string()))
+                .collect();
+            Series {
+                name: self.name.clone(),
+                data: ColumnData::String(new_v),
+            }
+        } else {
+            self.clone()
+        }
+    }
+
+    /// 是否包含子串（返回 Vec<bool>，None 视为 false）
+    pub fn str_contains(&self, pattern: &str) -> Vec<bool> {
+        if let ColumnData::String(v) = &self.data {
+            v.par_iter()
+                .map(|x| x.as_ref().map(|s| s.contains(pattern)).unwrap_or(false))
+                .collect()
+        } else {
+            vec![false; self.len()]
+        }
+    }
+
+    /// 子串替换
+    pub fn str_replace(&self, from: &str, to: &str) -> Series {
+        if let ColumnData::String(v) = &self.data {
+            let new_v: Vec<Option<String>> = v
+                .par_iter()
+                .map(|x| x.as_ref().map(|s| s.replace(from, to)))
+                .collect();
+            Series {
+                name: self.name.clone(),
+                data: ColumnData::String(new_v),
+            }
+        } else {
+            self.clone()
+        }
+    }
 }
 
 // =====================================================================
@@ -1087,17 +1572,15 @@ impl PySeries {
 
     // ---------- 切片 / 过滤 ----------
 
-    fn head(&self, n: usize) -> Self {
-        PySeries {
-            inner: self.inner.head(n),
-        }
+    fn head(&self, py: Python<'_>, n: usize) -> Self {
+        let inner = py.detach(|| self.inner.head(n));
+        PySeries { inner }
     }
-    fn tail(&self, n: usize) -> Self {
-        PySeries {
-            inner: self.inner.tail(n),
-        }
+    fn tail(&self, py: Python<'_>, n: usize) -> Self {
+        let inner = py.detach(|| self.inner.tail(n));
+        PySeries { inner }
     }
-    fn filter(&self, mask: Vec<bool>) -> PyResult<Self> {
+    fn filter(&self, py: Python<'_>, mask: Vec<bool>) -> PyResult<Self> {
         if mask.len() != self.inner.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "mask length {} != series length {}",
@@ -1105,9 +1588,8 @@ impl PySeries {
                 self.inner.len()
             )));
         }
-        Ok(PySeries {
-            inner: self.inner.filter(&mask),
-        })
+        let inner = py.detach(|| self.inner.filter(&mask));
+        Ok(PySeries { inner })
     }
 
     // ---------- 比较 (返回 Python list[bool]) ----------
@@ -1117,14 +1599,19 @@ impl PySeries {
         py: Python<'py>,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let mask = if let Ok(i) = value.cast::<PyInt>() {
-            self.inner.eq_scalar_i64(i.extract::<i64>()?)
+        // 在 GIL 内提取 Rust 值，然后释放 GIL 计算掩码
+        let mask: Vec<bool> = if let Ok(i) = value.cast::<PyInt>() {
+            let v = i.extract::<i64>()?;
+            py.detach(|| self.inner.eq_scalar_i64(v))
         } else if let Ok(f) = value.cast::<PyFloat>() {
-            self.inner.eq_scalar_f64(f.extract::<f64>()?)
+            let v = f.extract::<f64>()?;
+            py.detach(|| self.inner.eq_scalar_f64(v))
         } else if let Ok(b) = value.cast::<PyBool>() {
-            self.inner.eq_scalar_bool(b.is_true())
+            let v = b.is_true();
+            py.detach(|| self.inner.eq_scalar_bool(v))
         } else if let Ok(s) = value.cast::<PyString>() {
-            self.inner.eq_scalar_str(&s.extract::<String>()?)
+            let v = s.extract::<String>()?;
+            py.detach(|| self.inner.eq_scalar_str(&v))
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
                 "value type not supported",
@@ -1138,10 +1625,12 @@ impl PySeries {
         py: Python<'py>,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let mask = if let Ok(i) = value.cast::<PyInt>() {
-            self.inner.gt_scalar_i64(i.extract::<i64>()?)
+        let mask: Vec<bool> = if let Ok(i) = value.cast::<PyInt>() {
+            let v = i.extract::<i64>()?;
+            py.detach(|| self.inner.gt_scalar_i64(v))
         } else if let Ok(f) = value.cast::<PyFloat>() {
-            self.inner.gt_scalar_f64(f.extract::<f64>()?)
+            let v = f.extract::<f64>()?;
+            py.detach(|| self.inner.gt_scalar_f64(v))
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
                 "gt only supports int/float",
@@ -1155,10 +1644,12 @@ impl PySeries {
         py: Python<'py>,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let mask = if let Ok(i) = value.cast::<PyInt>() {
-            self.inner.lt_scalar_i64(i.extract::<i64>()?)
+        let mask: Vec<bool> = if let Ok(i) = value.cast::<PyInt>() {
+            let v = i.extract::<i64>()?;
+            py.detach(|| self.inner.lt_scalar_i64(v))
         } else if let Ok(f) = value.cast::<PyFloat>() {
-            self.inner.lt_scalar_f64(f.extract::<f64>()?)
+            let v = f.extract::<f64>()?;
+            py.detach(|| self.inner.lt_scalar_f64(v))
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
                 "lt only supports int/float",
@@ -1172,10 +1663,12 @@ impl PySeries {
         py: Python<'py>,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let mask = if let Ok(i) = value.cast::<PyInt>() {
-            self.inner.ge_scalar_i64(i.extract::<i64>()?)
+        let mask: Vec<bool> = if let Ok(i) = value.cast::<PyInt>() {
+            let v = i.extract::<i64>()?;
+            py.detach(|| self.inner.ge_scalar_i64(v))
         } else if let Ok(f) = value.cast::<PyFloat>() {
-            self.inner.ge_scalar_f64(f.extract::<f64>()?)
+            let v = f.extract::<f64>()?;
+            py.detach(|| self.inner.ge_scalar_f64(v))
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
                 "ge only supports int/float",
@@ -1189,10 +1682,12 @@ impl PySeries {
         py: Python<'py>,
         value: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let mask = if let Ok(i) = value.cast::<PyInt>() {
-            self.inner.le_scalar_i64(i.extract::<i64>()?)
+        let mask: Vec<bool> = if let Ok(i) = value.cast::<PyInt>() {
+            let v = i.extract::<i64>()?;
+            py.detach(|| self.inner.le_scalar_i64(v))
         } else if let Ok(f) = value.cast::<PyFloat>() {
-            self.inner.le_scalar_f64(f.extract::<f64>()?)
+            let v = f.extract::<f64>()?;
+            py.detach(|| self.inner.le_scalar_f64(v))
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
                 "le only supports int/float",
@@ -1203,181 +1698,224 @@ impl PySeries {
 
     // ---------- 聚合 ----------
 
-    fn count(&self) -> usize {
-        self.inner.count()
+    fn count(&self, py: Python<'_>) -> usize {
+        py.detach(|| self.inner.count())
     }
 
     fn sum<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.dtype() {
-            DType::Int64 => match self.inner.sum_i64() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Float64 => match self.inner.sum_f64() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Bool => {
-                let v = self.inner.sum_bool();
-                Ok(v.into_pyobject(py)?.into_any())
-            }
-            DType::Object => Ok(py.None().into_bound(py)),
-            DType::Categorical => Ok(py.None().into_bound(py)),
+        let dtype = self.inner.dtype();
+        let result = py.detach(|| match dtype {
+            DType::Int64 => self
+                .inner
+                .sum_i64()
+                .map(AggResult::Int)
+                .unwrap_or(AggResult::None),
+            DType::Float64 => self
+                .inner
+                .sum_f64()
+                .map(AggResult::Float)
+                .unwrap_or(AggResult::None),
+            DType::Bool => AggResult::Usize(self.inner.sum_bool()),
+            _ => AggResult::None,
+        });
+        match result {
+            AggResult::Int(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Float(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Usize(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Bool(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
+            AggResult::Str(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::None => Ok(py.None().into_bound(py)),
         }
     }
 
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.mean() {
-            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+        let result = py.detach(|| self.inner.mean().map(AggResult::Float));
+        match result {
+            Some(AggResult::Float(v)) => Ok(v.into_pyobject(py)?.into_any()),
             None => Ok(py.None().into_bound(py)),
+            _ => Ok(py.None().into_bound(py)),
         }
     }
 
     fn min<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.dtype() {
-            DType::Int64 => match self.inner.min_i64() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Float64 => match self.inner.min_f64() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Object => match self.inner.min_str() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Bool => Ok(py.None().into_bound(py)),
-            DType::Categorical => Ok(py.None().into_bound(py)),
+        let dtype = self.inner.dtype();
+        let result = py.detach(|| match dtype {
+            DType::Int64 => self
+                .inner
+                .min_i64()
+                .map(AggResult::Int)
+                .unwrap_or(AggResult::None),
+            DType::Float64 => self
+                .inner
+                .min_f64()
+                .map(AggResult::Float)
+                .unwrap_or(AggResult::None),
+            DType::Object => self
+                .inner
+                .min_str()
+                .map(AggResult::Str)
+                .unwrap_or(AggResult::None),
+            _ => AggResult::None,
+        });
+        match result {
+            AggResult::Int(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Float(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Usize(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Bool(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
+            AggResult::Str(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::None => Ok(py.None().into_bound(py)),
         }
     }
 
     fn max<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.dtype() {
-            DType::Int64 => match self.inner.max_i64() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Float64 => match self.inner.max_f64() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Object => match self.inner.max_str() {
-                Some(v) => Ok(v.into_pyobject(py)?.into_any()),
-                None => Ok(py.None().into_bound(py)),
-            },
-            DType::Bool => Ok(py.None().into_bound(py)),
-            DType::Categorical => Ok(py.None().into_bound(py)),
+        let dtype = self.inner.dtype();
+        let result = py.detach(|| match dtype {
+            DType::Int64 => self
+                .inner
+                .max_i64()
+                .map(AggResult::Int)
+                .unwrap_or(AggResult::None),
+            DType::Float64 => self
+                .inner
+                .max_f64()
+                .map(AggResult::Float)
+                .unwrap_or(AggResult::None),
+            DType::Object => self
+                .inner
+                .max_str()
+                .map(AggResult::Str)
+                .unwrap_or(AggResult::None),
+            _ => AggResult::None,
+        });
+        match result {
+            AggResult::Int(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Float(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Usize(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::Bool(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
+            AggResult::Str(v) => Ok(v.into_pyobject(py)?.into_any()),
+            AggResult::None => Ok(py.None().into_bound(py)),
         }
     }
 
     fn std<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.std() {
-            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+        let result = py.detach(|| self.inner.std().map(AggResult::Float));
+        match result {
+            Some(AggResult::Float(v)) => Ok(v.into_pyobject(py)?.into_any()),
             None => Ok(py.None().into_bound(py)),
+            _ => Ok(py.None().into_bound(py)),
         }
     }
 
     fn var<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.var() {
-            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+        let result = py.detach(|| self.inner.var().map(AggResult::Float));
+        match result {
+            Some(AggResult::Float(v)) => Ok(v.into_pyobject(py)?.into_any()),
             None => Ok(py.None().into_bound(py)),
+            _ => Ok(py.None().into_bound(py)),
         }
     }
 
     fn median<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.median() {
-            Some(v) => Ok(v.into_pyobject(py)?.into_any()),
+        let result = py.detach(|| self.inner.median().map(AggResult::Float));
+        match result {
+            Some(AggResult::Float(v)) => Ok(v.into_pyobject(py)?.into_any()),
             None => Ok(py.None().into_bound(py)),
+            _ => Ok(py.None().into_bound(py)),
         }
     }
 
     fn any<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.any() {
-            Some(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
+        let result = py.detach(|| self.inner.any().map(AggResult::Bool));
+        match result {
+            Some(AggResult::Bool(v)) => Ok(v.into_pyobject(py)?.as_any().clone()),
             None => Ok(py.None().into_bound(py)),
+            _ => Ok(py.None().into_bound(py)),
         }
     }
 
     fn all<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.all() {
-            Some(v) => Ok(v.into_pyobject(py)?.as_any().clone()),
+        let result = py.detach(|| self.inner.all().map(AggResult::Bool));
+        match result {
+            Some(AggResult::Bool(v)) => Ok(v.into_pyobject(py)?.as_any().clone()),
             None => Ok(py.None().into_bound(py)),
+            _ => Ok(py.None().into_bound(py)),
         }
     }
 
     // ---------- 缺失值 ----------
 
     fn isnull<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(py, self.inner.isnull().iter().copied())
+        let mask = py.detach(|| self.inner.isnull());
+        PyList::new(py, mask.iter().copied())
     }
 
     fn notnull<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(py, self.inner.notnull().iter().copied())
+        let mask = py.detach(|| self.inner.notnull());
+        PyList::new(py, mask.iter().copied())
     }
 
-    fn dropna(&self) -> Self {
-        PySeries {
-            inner: self.inner.dropna(),
-        }
+    fn dropna(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.dropna());
+        PySeries { inner }
     }
 
     /// 填充缺失值 (根据 dtype 自动选择)
     fn fillna<'py>(&self, py: Python<'py>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let inner = match self.inner.dtype() {
+        let dtype = self.inner.dtype();
+        let inner = match dtype {
             DType::Int64 => {
                 let v: i64 = value.extract::<i64>()?;
-                self.inner.fillna_i64(v)
+                py.detach(|| self.inner.fillna_i64(v))
             }
             DType::Float64 => {
                 let v: f64 = value.extract::<f64>()?;
-                self.inner.fillna_f64(v)
+                py.detach(|| self.inner.fillna_f64(v))
             }
             DType::Bool => {
                 let v: bool = value.extract::<bool>()?;
-                self.inner.fillna_bool(v)
+                py.detach(|| self.inner.fillna_bool(v))
             }
             DType::Object => {
                 let v: String = value.extract::<String>()?;
-                self.inner.fillna_string(&v)
+                py.detach(|| self.inner.fillna_string(&v))
             }
             DType::Categorical => {
                 let v: String = value.extract::<String>()?;
-                self.inner.fillna_categorical(&v)
+                py.detach(|| self.inner.fillna_categorical(&v))
             }
         };
-        let _ = py;
         Ok(PySeries { inner })
     }
 
     // ---------- 唯一值 ----------
 
-    fn unique(&self) -> Self {
-        PySeries {
-            inner: self.inner.unique(),
-        }
+    fn unique(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.unique());
+        PySeries { inner }
     }
 
-    fn nunique(&self) -> usize {
-        self.inner.nunique()
+    fn nunique(&self, py: Python<'_>) -> usize {
+        py.detach(|| self.inner.nunique())
     }
 
     // ---------- Categorical 访问器 ----------
 
     fn cat_categories<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.cat_categories() {
-            Some(cats) => Ok(cats.into_pyobject(py)?.into_any()),
+        let cats: Option<Vec<String>> = py.detach(|| self.inner.cat_categories().cloned());
+        match cats {
+            Some(c) => Ok(c.into_pyobject(py)?.into_any()),
             None => Ok(py.None().into_bound(py)),
         }
     }
 
     fn cat_codes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match self.inner.cat_codes() {
+        let codes: Option<Vec<Option<i32>>> = py.detach(|| self.inner.cat_codes().cloned());
+        match codes {
             Some(codes) => {
                 let list = PyList::empty(py);
                 for c in codes {
                     match c {
-                        Some(v) => list.append(*v).unwrap(),
+                        Some(v) => list.append(v).unwrap(),
                         None => list.append(py.None()).unwrap(),
                     }
                 }
@@ -1391,22 +1929,28 @@ impl PySeries {
         self.inner.cat_ordered()
     }
 
-    fn cat_add_categories(&self, new_cats: Vec<String>) -> Option<PySeries> {
-        self.inner
-            .cat_add_categories(&new_cats)
-            .map(|s| PySeries { inner: s })
+    fn cat_add_categories(&self, py: Python<'_>, new_cats: Vec<String>) -> Option<PySeries> {
+        py.detach(|| {
+            self.inner
+                .cat_add_categories(&new_cats)
+                .map(|s| PySeries { inner: s })
+        })
     }
 
-    fn cat_remove_unused_categories(&self) -> Option<PySeries> {
-        self.inner
-            .cat_remove_unused_categories()
-            .map(|s| PySeries { inner: s })
+    fn cat_remove_unused_categories(&self, py: Python<'_>) -> Option<PySeries> {
+        py.detach(|| {
+            self.inner
+                .cat_remove_unused_categories()
+                .map(|s| PySeries { inner: s })
+        })
     }
 
-    fn cat_rename_categories(&self, new_names: Vec<String>) -> Option<PySeries> {
-        self.inner
-            .cat_rename_categories(&new_names)
-            .map(|s| PySeries { inner: s })
+    fn cat_rename_categories(&self, py: Python<'_>, new_names: Vec<String>) -> Option<PySeries> {
+        py.detach(|| {
+            self.inner
+                .cat_rename_categories(&new_names)
+                .map(|s| PySeries { inner: s })
+        })
     }
 
     fn cat_as_ordered(&self) -> Option<PySeries> {
@@ -1422,21 +1966,24 @@ impl PySeries {
         &self,
         py: Python<'py>,
     ) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        let mut order: Vec<String> = Vec::new();
-        for s in self.inner.to_string_vec() {
-            // NaN 跳过
-            if s == "NaN" {
-                continue;
+        let (order, cnts): (Vec<String>, Vec<usize>) = py.detach(|| {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            let mut order: Vec<String> = Vec::new();
+            for s in self.inner.to_string_vec() {
+                // NaN 跳过
+                if s == "NaN" {
+                    continue;
+                }
+                if let std::collections::hash_map::Entry::Vacant(e) = counts.entry(s.clone()) {
+                    order.push(s.clone());
+                    e.insert(0);
+                }
+                *counts.get_mut(&s).unwrap() += 1;
             }
-            if let std::collections::hash_map::Entry::Vacant(e) = counts.entry(s.clone()) {
-                order.push(s.clone());
-                e.insert(0);
-            }
-            *counts.get_mut(&s).unwrap() += 1;
-        }
+            let cnts: Vec<usize> = order.iter().map(|s| counts[s]).collect();
+            (order, cnts)
+        });
         let values: Vec<&str> = order.iter().map(|s| s.as_str()).collect();
-        let cnts: Vec<usize> = order.iter().map(|s| counts[s]).collect();
         Ok((PyList::new(py, values)?, PyList::new(py, cnts)?))
     }
 
@@ -1444,8 +1991,68 @@ impl PySeries {
 
     /// 转换为字符串列表 (None -> "NaN")
     fn to_string_vec<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let svec = self.inner.to_string_vec();
+        let svec: Vec<String> = py.detach(|| self.inner.to_string_vec());
         PyList::new(py, svec.iter().map(|s| s.as_str()))
+    }
+
+    // ---------- 排序 ----------
+
+    fn sort_values(&self, py: Python<'_>, ascending: bool) -> Self {
+        let inner = py.detach(|| self.inner.sort_values(ascending));
+        PySeries { inner }
+    }
+
+    fn sort_index(&self, py: Python<'_>, ascending: bool) -> Self {
+        let inner = py.detach(|| self.inner.sort_index(ascending));
+        PySeries { inner }
+    }
+
+    // ---------- 前向/后向填充 ----------
+
+    fn ffill(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.ffill());
+        PySeries { inner }
+    }
+
+    fn bfill(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.bfill());
+        PySeries { inner }
+    }
+
+    // ---------- 字符串方法 ----------
+
+    fn str_upper(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.str_upper());
+        PySeries { inner }
+    }
+
+    fn str_lower(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.str_lower());
+        PySeries { inner }
+    }
+
+    fn str_len(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.str_len());
+        PySeries { inner }
+    }
+
+    fn str_strip(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.str_strip());
+        PySeries { inner }
+    }
+
+    fn str_contains<'py>(&self, py: Python<'py>, pattern: &str) -> PyResult<Bound<'py, PyList>> {
+        // pattern 是 &str，闭包需要捕获它；&str 是 Sync，可以用
+        let mask: Vec<bool> = py.detach(|| self.inner.str_contains(pattern));
+        PyList::new(py, mask.iter().copied())
+    }
+
+    fn str_replace(&self, py: Python<'_>, from: &str, to: &str) -> Self {
+        // 将 &str 转为 String，避免闭包捕获引用生命期问题
+        let from_owned = from.to_string();
+        let to_owned = to.to_string();
+        let inner = py.detach(|| self.inner.str_replace(&from_owned, &to_owned));
+        PySeries { inner }
     }
 }
 
@@ -1522,5 +2129,331 @@ mod tests {
         let s = Series::new_int(None, vec![Some(1), Some(2), Some(3)]);
         let filtered = s.filter(&[true, false, true]);
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_series_sort_values() {
+        // 整型升序：None 放最后
+        let s = Series::new_int(None, vec![Some(3), None, Some(1), Some(2)]);
+        let sorted = s.sort_values(true);
+        if let ColumnData::Int(v) = &sorted.data {
+            assert_eq!(v[0], Some(1));
+            assert_eq!(v[1], Some(2));
+            assert_eq!(v[2], Some(3));
+            assert_eq!(v[3], None);
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 整型降序：None 放最前
+        let sorted_desc = s.sort_values(false);
+        if let ColumnData::Int(v) = &sorted_desc.data {
+            assert_eq!(v[0], None);
+            assert_eq!(v[1], Some(3));
+            assert_eq!(v[2], Some(2));
+            assert_eq!(v[3], Some(1));
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 浮点型排序
+        let sf = Series::new_float(None, vec![Some(3.0), Some(1.0), Some(2.0)]);
+        let sorted_f = sf.sort_values(true);
+        if let ColumnData::Float(v) = &sorted_f.data {
+            assert_eq!(v[0], Some(1.0));
+            assert_eq!(v[1], Some(2.0));
+            assert_eq!(v[2], Some(3.0));
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 字符串排序
+        let ss = Series::new_string(
+            None,
+            vec![Some("banana".to_string()), Some("apple".to_string())],
+        );
+        let sorted_s = ss.sort_values(true);
+        if let ColumnData::String(v) = &sorted_s.data {
+            assert_eq!(v[0], Some("apple".to_string()));
+            assert_eq!(v[1], Some("banana".to_string()));
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_sort_index() {
+        let s = Series::new_int(None, vec![Some(1), Some(2), Some(3)]);
+        // 升序：保持原顺序
+        let sorted_asc = s.sort_index(true);
+        if let ColumnData::Int(v) = &sorted_asc.data {
+            assert_eq!(v[0], Some(1));
+            assert_eq!(v[1], Some(2));
+            assert_eq!(v[2], Some(3));
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 降序：反转原顺序
+        let sorted_desc = s.sort_index(false);
+        if let ColumnData::Int(v) = &sorted_desc.data {
+            assert_eq!(v[0], Some(3));
+            assert_eq!(v[1], Some(2));
+            assert_eq!(v[2], Some(1));
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_ffill() {
+        // 前向填充：None 被前一个非 None 替代
+        let s = Series::new_int(None, vec![None, Some(1), None, None, Some(2), None]);
+        let filled = s.ffill();
+        if let ColumnData::Int(v) = &filled.data {
+            assert_eq!(v[0], None); // 开头 None 保持
+            assert_eq!(v[1], Some(1));
+            assert_eq!(v[2], Some(1));
+            assert_eq!(v[3], Some(1));
+            assert_eq!(v[4], Some(2));
+            assert_eq!(v[5], Some(2));
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 浮点型 ffill
+        let sf = Series::new_float(None, vec![Some(1.5), None, Some(2.5)]);
+        let filled_f = sf.ffill();
+        if let ColumnData::Float(v) = &filled_f.data {
+            assert_eq!(v[0], Some(1.5));
+            assert_eq!(v[1], Some(1.5));
+            assert_eq!(v[2], Some(2.5));
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 字符串 ffill
+        let ss = Series::new_string(
+            None,
+            vec![Some("a".to_string()), None, Some("b".to_string())],
+        );
+        let filled_s = ss.ffill();
+        if let ColumnData::String(v) = &filled_s.data {
+            assert_eq!(v[0], Some("a".to_string()));
+            assert_eq!(v[1], Some("a".to_string()));
+            assert_eq!(v[2], Some("b".to_string()));
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_bfill() {
+        // 后向填充：None 被后一个非 None 替代
+        let s = Series::new_int(None, vec![None, Some(1), None, None, Some(2), None]);
+        let filled = s.bfill();
+        if let ColumnData::Int(v) = &filled.data {
+            assert_eq!(v[0], Some(1));
+            assert_eq!(v[1], Some(1));
+            assert_eq!(v[2], Some(2));
+            assert_eq!(v[3], Some(2));
+            assert_eq!(v[4], Some(2));
+            assert_eq!(v[5], None); // 末尾 None 保持
+        } else {
+            panic!("dtype 错误");
+        }
+
+        // 浮点型 bfill
+        let sf = Series::new_float(None, vec![Some(1.5), None, Some(2.5)]);
+        let filled_f = sf.bfill();
+        if let ColumnData::Float(v) = &filled_f.data {
+            assert_eq!(v[0], Some(1.5));
+            assert_eq!(v[1], Some(2.5));
+            assert_eq!(v[2], Some(2.5));
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_str_upper() {
+        let s = Series::new_string(
+            None,
+            vec![Some("abc".to_string()), Some("Hello".to_string()), None],
+        );
+        let upper = s.str_upper();
+        if let ColumnData::String(v) = &upper.data {
+            assert_eq!(v[0], Some("ABC".to_string()));
+            assert_eq!(v[1], Some("HELLO".to_string()));
+            assert_eq!(v[2], None);
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_str_lower() {
+        let s = Series::new_string(
+            None,
+            vec![Some("ABC".to_string()), Some("Hello".to_string()), None],
+        );
+        let lower = s.str_lower();
+        if let ColumnData::String(v) = &lower.data {
+            assert_eq!(v[0], Some("abc".to_string()));
+            assert_eq!(v[1], Some("hello".to_string()));
+            assert_eq!(v[2], None);
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_str_len() {
+        let s = Series::new_string(
+            None,
+            vec![
+                Some("abc".to_string()),
+                Some("hello".to_string()),
+                Some("中".to_string()), // 单字符中文
+                None,
+            ],
+        );
+        let len_s = s.str_len();
+        if let ColumnData::Int(v) = &len_s.data {
+            assert_eq!(v[0], Some(3));
+            assert_eq!(v[1], Some(5));
+            assert_eq!(v[2], Some(1)); // 字符数而非字节数
+            assert_eq!(v[3], None);
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_str_contains() {
+        let s = Series::new_string(
+            None,
+            vec![
+                Some("hello world".to_string()),
+                Some("say hello to rust".to_string()),
+                Some("foo".to_string()),
+                None,
+            ],
+        );
+        // 包含子串 "hello"
+        let mask = s.str_contains("hello");
+        assert_eq!(mask, vec![true, true, false, false]);
+
+        // 大小写敏感：Hello 与 hello 不同
+        let mask2 = s.str_contains("Hello");
+        assert_eq!(mask2, vec![false, false, false, false]);
+
+        // 子串 "ru"
+        let mask3 = s.str_contains("ru");
+        assert_eq!(mask3, vec![false, true, false, false]);
+    }
+
+    #[test]
+    fn test_series_str_replace() {
+        let s = Series::new_string(
+            None,
+            vec![
+                Some("hello world".to_string()),
+                Some("hello rust".to_string()),
+                None,
+            ],
+        );
+        let replaced = s.str_replace("hello", "hi");
+        if let ColumnData::String(v) = &replaced.data {
+            assert_eq!(v[0], Some("hi world".to_string()));
+            assert_eq!(v[1], Some("hi rust".to_string()));
+            assert_eq!(v[2], None);
+        } else {
+            panic!("dtype 错误");
+        }
+    }
+
+    #[test]
+    fn test_series_bool_aggregation() {
+        // any: 至少一个为 true
+        let s1 = Series::new_bool(None, vec![Some(false), Some(true), Some(false)]);
+        assert_eq!(s1.any(), Some(true));
+        assert_eq!(s1.all(), Some(false));
+
+        // all: 全为 true
+        let s2 = Series::new_bool(None, vec![Some(true), Some(true), Some(true)]);
+        assert_eq!(s2.any(), Some(true));
+        assert_eq!(s2.all(), Some(true));
+
+        // 全 false
+        let s3 = Series::new_bool(None, vec![Some(false), Some(false)]);
+        assert_eq!(s3.any(), Some(false));
+        assert_eq!(s3.all(), Some(false));
+
+        // 空 series
+        let s4 = Series::new_bool(None, vec![]);
+        assert_eq!(s4.any(), Some(false));
+        assert_eq!(s4.all(), Some(true));
+
+        // 非 bool 类型应返回 None
+        let s5 = Series::new_int(None, vec![Some(1), Some(2)]);
+        assert_eq!(s5.any(), None);
+        assert_eq!(s5.all(), None);
+    }
+
+    #[test]
+    fn test_series_categorical_basic() {
+        // 构造一个 categorical Series
+        let s = Series::new_categorical(
+            Some("cat".to_string()),
+            vec!["low".to_string(), "mid".to_string(), "high".to_string()],
+            vec![Some(0), Some(2), Some(1), Some(0), None],
+            false,
+        );
+        assert_eq!(s.dtype(), DType::Categorical);
+        assert_eq!(s.dtype_name(), "category");
+        assert_eq!(s.len(), 5);
+        assert_eq!(s.count(), 4); // 5 个中 1 个 None
+
+        // 验证 categories
+        let cats = s.cat_categories().expect("应有 categories");
+        assert_eq!(cats.len(), 3);
+        assert_eq!(cats[0], "low");
+        assert_eq!(cats[1], "mid");
+        assert_eq!(cats[2], "high");
+
+        // 验证 codes
+        let codes = s.cat_codes().expect("应有 codes");
+        assert_eq!(codes.len(), 5);
+        assert_eq!(codes[0], Some(0));
+        assert_eq!(codes[1], Some(2));
+        assert_eq!(codes[2], Some(1));
+        assert_eq!(codes[3], Some(0));
+        assert_eq!(codes[4], None);
+
+        // 验证 ordered 标志
+        assert!(!s.cat_ordered().unwrap());
+
+        // 添加新 categories
+        let s_add = s
+            .cat_add_categories(&["extra".to_string()])
+            .expect("应能添加 categories");
+        let cats2 = s_add.cat_categories().expect("应有 categories");
+        assert_eq!(cats2.len(), 4);
+        assert_eq!(cats2[3], "extra");
+
+        // 重命名 categories
+        let s_rename = s
+            .cat_rename_categories(&["L".to_string(), "M".to_string(), "H".to_string()])
+            .expect("应能重命名 categories");
+        let cats3 = s_rename.cat_categories().expect("应有 categories");
+        assert_eq!(cats3[0], "L");
+        assert_eq!(cats3[1], "M");
+        assert_eq!(cats3[2], "H");
+
+        // 移除未使用 categories：原 categories 都被使用，所以保持不变
+        let s_unused = s.cat_remove_unused_categories().expect("应能移除未使用");
+        let cats4 = s_unused.cat_categories().expect("应有 categories");
+        assert_eq!(cats4.len(), 3);
     }
 }

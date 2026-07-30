@@ -488,7 +488,8 @@ class RangeIndex(Index):
             return False
         if self._step > 0:
             return (
-                self._start <= item < self._stop and (item - self._start) % self._step == 0
+                self._start <= item < self._stop
+                and (item - self._start) % self._step == 0
             )
         return (
             self._stop < item <= self._start and (item - self._start) % self._step == 0
@@ -497,7 +498,9 @@ class RangeIndex(Index):
     def __eq__(self, other) -> bool:
         if isinstance(other, RangeIndex):
             return (
-                self._start == other._start and self._stop == other._stop and self._step == other._step
+                self._start == other._start
+                and self._stop == other._stop
+                and self._step == other._step
             )
         return False
 
@@ -658,7 +661,9 @@ class MultiIndex(Index):
     def __eq__(self, other) -> bool:
         if isinstance(other, MultiIndex):
             return (
-                self._levels == other._levels and self._codes == other._codes and self._names == other._names
+                self._levels == other._levels
+                and self._codes == other._codes
+                and self._names == other._names
             )
         return False
 
@@ -2127,10 +2132,12 @@ def crosstab(
 
         # 列汇总：每列所有行的聚合值之和
         col_sums = (
-            [""] + [
+            [""]
+            + [
                 sum(_agg(groups.get((iv, cv), [])) for iv in unique_idx)
                 for cv in unique_col
-            ] + [sum(row_sums)]
+            ]
+            + [sum(row_sums)]
         )
 
         # 添加汇总行
