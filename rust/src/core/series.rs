@@ -744,7 +744,8 @@ impl Series {
             ColumnData::Bool(v) => v
                 .par_iter()
                 .map(|x| match x {
-                    Some(b) => b.to_string(),
+                    Some(true) => "True".to_string(),
+                    Some(false) => "False".to_string(),
                     None => "NaN".to_string(),
                 })
                 .collect(),

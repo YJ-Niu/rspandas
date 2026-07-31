@@ -687,6 +687,140 @@ def to_sql(
             connection.execute(stmt, records)
 
 
+def read_csv(
+    filepath_or_buffer,
+    sep=",",
+    header="infer",
+    names=None,
+    index_col=None,
+    usecols=None,
+    dtype=None,
+    nrows=None,
+    encoding=None,
+    **kwargs,
+) -> DataFrame:
+    """读取 CSV 文件为 DataFrame。
+
+    Parameters
+    ----------
+    filepath_or_buffer : str
+        CSV 文件路径。
+    sep : str, default ','
+        分隔符。
+    header : str or int, default 'infer'
+        用作列名的行号（0=第一行，None=无表头）。
+    names : list, optional
+        列名列表。
+    index_col : int, str, optional
+        用作行索引的列号或列名。
+    usecols : list, optional
+        要读取的列子集。
+    dtype : type or dict, optional
+        列数据类型。
+    nrows : int, optional
+        要读取的行数。
+    encoding : str, optional
+        文件编码。
+    **kwargs
+        忽略 (兼容 pandas 签名)。
+
+    Returns
+    -------
+    DataFrame
+    """
+    from .rspandas import read_csv_string as _read_csv_string
+    from .dataframe import DataFrame as _DataFrame
+    from .series import Series as _Series
+
+    # 读取文件内容
+    if isinstance(filepath_or_buffer, str):
+        with open(filepath_or_buffer, "r", encoding=encoding or "utf-8") as f:
+            content = f.read()
+    elif hasattr(filepath_or_buffer, "read"):
+        content = filepath_or_buffer.read()
+    else:
+        content = str(filepath_or_buffer)
+
+    # 确定是否有表头
+    has_header = True
+    if header is None or header is False:
+        has_header = False
+    elif header == "infer":
+        has_header = True
+
+    # 使用 Rust 层解析 CSV
+    if sep == ",":
+        cols, series_list = _read_csv_string(content, has_header)
+    else:
+        # 非逗号分隔符回退到 Python csv 模块
+        import csv as _csv
+        import io as _io
+
+        reader = _csv.reader(_io.StringIO(content), delimiter=sep)
+        rows = list(reader)
+        if not rows:
+            return _DataFrame()
+        if has_header:
+            cols = rows[0]
+            data_rows = rows[1:]
+        else:
+            cols = [f"col{i}" for i in range(len(rows[0]))]
+            data_rows = rows
+        data = {c: [r[i] for r in data_rows] for i, c in enumerate(cols)}
+        if nrows is not None:
+            data = {c: vals[:nrows] for c, vals in data.items()}
+        return _DataFrame(data)
+
+    # 处理列名
+    if names is not None:
+        cols = list(names)
+    elif not has_header:
+        cols = [f"col{i}" for i in range(len(cols))]
+    else:
+        # 将空列名重命名为 Unnamed: 0（与 pandas 行为一致）
+        cols = [("Unnamed: 0" if c == "" else c) for c in cols]
+
+    # 构建 Series 列表
+    py_series_list = []
+    for i, (c, s) in enumerate(zip(cols, series_list)):
+        py_s = _Series.__new__(_Series)
+        py_s._inner = s
+        py_s._dtype_str = s.dtype
+        py_s._index = list(range(s.size))
+        py_s._name = c
+        py_series_list.append(py_s)
+
+    # 构建 DataFrame
+    df_data = {c: py_s.values for c, py_s in zip(cols, py_series_list)}
+
+    # 处理 nrows
+    if nrows is not None:
+        df_data = {c: vals[:nrows] for c, vals in df_data.items()}
+
+    # 处理 usecols
+    if usecols is not None:
+        usecols_set = set(usecols)
+        df_data = {c: v for c, v in df_data.items() if c in usecols_set}
+
+    # 处理 header 为列名行号的情况
+    if header is not None and header != "infer" and header is not False:
+        if isinstance(header, int) and header > 0:
+            # 跳过 header 行，但 Rust 层已经处理了
+            pass
+
+    # 处理 index_col
+    if index_col is not None:
+        if isinstance(index_col, (int, str)):
+            col_name = cols[index_col] if isinstance(index_col, int) else index_col
+            if col_name in df_data:
+                new_index = list(df_data[col_name])
+                df_data.pop(col_name)
+                df = _DataFrame(df_data, index=new_index)
+                return df
+
+    return _DataFrame(df_data)
+
+
 def read_csv_chunked(
     path: str,
     chunk_size: int = 1000,
@@ -851,7 +985,7 @@ def to_sql_batch(
         )
         records = df.values
         for i in range(0, len(records), batch_size):
-            batch = records[i : i + batch_size]
+            batch = records[i:i + batch_size]
             connection.execute(stmt, batch)
 
 
@@ -978,7 +1112,7 @@ def read_html(
 
     # 解析表格
     rows_data = []
-    for tr in table.find_all("tr")[header or 0 :]:
+    for tr in table.find_all("tr")[header or 0:]:
         cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if cells:
             rows_data.append(cells)

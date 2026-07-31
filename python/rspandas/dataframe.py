@@ -195,6 +195,7 @@ class DataFrame:
         self._columns: List[str] = col_names
         self._nrows: int = n
         self._index = index if index is not None else list(range(n))
+        self._col_dtypes: Dict[str, str] = {}  # 列 dtype 覆盖（如 category）
 
     # ---------- 属性 ----------
 
@@ -203,8 +204,10 @@ class DataFrame:
         return (self._nrows, len(self._columns))
 
     @property
-    def columns(self) -> List[str]:
-        return list(self._columns)
+    def columns(self):
+        from .indexes import Index
+
+        return Index(list(self._columns))
 
     @columns.setter
     def columns(self, value: List[str]) -> None:
@@ -222,12 +225,15 @@ class DataFrame:
         self._columns = list(value)
 
     @property
-    def dtypes(self) -> Dict[str, str]:
+    def dtypes(self) -> "Series":
         result = {}
         for c in self._columns:
-            ser = self._inner.get_column(c)
-            result[c] = ser.dtype
-        return result
+            if c in self._col_dtypes:
+                result[c] = self._col_dtypes[c]
+            else:
+                ser = self._inner.get_column(c)
+                result[c] = ser.dtype
+        return Series(result, name="dtype")
 
     @property
     def index(self):
@@ -433,7 +439,7 @@ class DataFrame:
                 raise TypeError(
                     f"arithmetic not supported between DataFrame and {type(other).__name__}"
                 )
-        return DataFrame(new_data)
+        return DataFrame(new_data, index=self._index)
 
     def sub(self, other, axis=0) -> "DataFrame":
         """减法操作。"""
@@ -447,10 +453,12 @@ class DataFrame:
         # str -> 单列
         if isinstance(key, str):
             return self._get_column_as_series(key)
-        # list[str] -> 多列
+        # list[str] -> 多列（保留索引）
         if isinstance(key, list) and all(isinstance(x, str) for x in key):
             new_data = {c: list(self._inner.get_column(c).values) for c in key}
-            return DataFrame(new_data)
+            new_df = DataFrame(new_data, index=self._index)
+            new_df._col_dtypes = {k: v for k, v in self._col_dtypes.items() if k in key}
+            return new_df
         # DataFrame -> 布尔掩码过滤 (df[bool_df] 形式)
         if isinstance(key, DataFrame):
             return self._filter_with_dataframe_mask(key)
@@ -504,7 +512,8 @@ class DataFrame:
                 c: [self._inner.get_column(c).values[i] for i in idx]
                 for c in self._columns
             }
-            return DataFrame(new_data)
+            new_index = [self._index[i] for i in idx]
+            return DataFrame(new_data, index=new_index)
         raise TypeError(f"Cannot index DataFrame with {type(key).__name__}")
 
     def __getattr__(self, name: str):
@@ -523,7 +532,8 @@ class DataFrame:
         for c in cols:
             ser = self._inner.get_column(c)
             new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
-        return DataFrame(new_data)
+        new_index = [self._index[i] for i in range(self._nrows) if mask[i]]
+        return DataFrame(new_data, index=new_index)
 
     def _filter_with_dataframe_mask(self, mask_df: "DataFrame") -> "DataFrame":
         """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 None/NaN。"""
@@ -537,7 +547,7 @@ class DataFrame:
                 new_data[c] = [v if m else None for v, m in zip(values, mask_values)]
             else:
                 new_data[c] = values
-        return DataFrame(new_data)
+        return DataFrame(new_data, index=self._index)
 
     def __setitem__(self, key, value) -> None:
         """df['new_col'] = values 添加/更新列，或 df[bool_mask] = value 布尔掩码赋值。"""
@@ -553,6 +563,10 @@ class DataFrame:
         # 原有逻辑：df['col'] = values
         if isinstance(value, Series):
             values = list(value.values)
+            if value.dtype == "category":
+                self._col_dtypes[key] = "category"
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
         elif isinstance(value, _PySeries):
             values = list(value.values)
         else:
@@ -651,19 +665,27 @@ class DataFrame:
 
     def _get_column_as_series(self, name: str) -> Series:
         ser = self._inner.get_column(name)
-        return Series(list(ser.values), name=name, dtype=ser.dtype)
+        if name in self._col_dtypes:
+            s = Series(list(ser.values), name=name, dtype="object", index=self._index)
+            s._dtype_str = self._col_dtypes[name]
+            return s
+        return Series(list(ser.values), name=name, dtype=ser.dtype, index=self._index)
 
     # ---------- 子集 ----------
 
     def head(self, n: int = 5) -> "DataFrame":
         cols = self._columns
         new_data = {c: list(self._inner.get_column(c).head(n).values) for c in cols}
-        return DataFrame(new_data)
+        new_df = DataFrame(new_data, index=self._index[:n])
+        new_df._col_dtypes = dict(self._col_dtypes)
+        return new_df
 
     def tail(self, n: int = 5) -> "DataFrame":
         cols = self._columns
         new_data = {c: list(self._inner.get_column(c).tail(n).values) for c in cols}
-        return DataFrame(new_data)
+        new_df = DataFrame(new_data, index=self._index[-n:])
+        new_df._col_dtypes = dict(self._col_dtypes)
+        return new_df
 
     def sort_values(
         self,
@@ -1118,7 +1140,7 @@ class DataFrame:
                 self._reload(new_data)
                 self._index = new_index
                 self._nrows = len(new_index)
-                return self
+                return None
             return DataFrame(new_data, index=new_index)
 
         elif axis == 1:
@@ -1146,7 +1168,7 @@ class DataFrame:
             if inplace:
                 self._reload(new_data)
                 self._columns = keep_cols
-                return self
+                return None
             return DataFrame(new_data, index=self._index)
 
         else:
@@ -1196,7 +1218,7 @@ class DataFrame:
             if inplace:
                 self._reload(new_data)
                 return self
-            return DataFrame(new_data)
+            return DataFrame(new_data, index=self._index)
 
         # 标量: 对每列单独调用 fillna
         if limit is not None:
@@ -1223,7 +1245,7 @@ class DataFrame:
         if inplace:
             self._reload(new_data)
             return self
-        return DataFrame(new_data)
+        return DataFrame(new_data, index=self._index)
 
     def agg(self, func=None, axis: int = 0, *args, **kwargs):
         """聚合操作。
@@ -1342,8 +1364,12 @@ class DataFrame:
                 c: list(self._inner.get_column(c).values) for c in self._columns
             }
             new_index = list(self._index) if self._index is not None else None
-            return DataFrame(new_data, index=new_index)
-        return DataFrame._from_inner(self._inner)
+            new_df = DataFrame(new_data, index=new_index)
+            new_df._col_dtypes = dict(self._col_dtypes)
+            return new_df
+        new_df = DataFrame._from_inner(self._inner)
+        new_df._col_dtypes = dict(self._col_dtypes)
+        return new_df
 
     def isna(self) -> "DataFrame":
         """返回布尔 DataFrame，True 表示该位置是 None。"""
@@ -1915,7 +1941,7 @@ class DataFrame:
                 else:
                     new_data[c] = [result] * self._nrows
 
-        return DataFrame(new_data)
+        return DataFrame(new_data, index=self._index)
 
     def replace(
         self,
@@ -2899,7 +2925,17 @@ class DataFrame:
         if idx < 0 or idx >= self._nrows:
             raise IndexError("single positional indexer is out-of-bounds")
         new_data = {c: [self._inner.get_column(c).values[idx]] for c in self._columns}
-        return DataFrame(new_data)
+        idx_val = self._index[idx] if idx < len(self._index) else idx
+        return DataFrame(new_data, index=[idx_val])
+
+    def _to_series_row(self, row_idx: int) -> "Series":
+        """将单行转换为 Series（索引为列名，值为该行数据）。"""
+        data = {}
+        for c in self._columns:
+            data[c] = self._inner.get_column(c).values[row_idx]
+        # 设置 Series 的 name 为行索引值，与 pandas 行为一致
+        idx_val = self._index[row_idx] if row_idx < len(self._index) else row_idx
+        return Series(data, name=str(idx_val))
 
     def _select_slice(self, start, stop, step) -> "DataFrame":
         if start is None:
@@ -2919,7 +2955,8 @@ class DataFrame:
         new_data = {
             c: [self._inner.get_column(c).values[i] for i in idx] for c in self._columns
         }
-        return DataFrame(new_data)
+        new_index = [self._index[i] for i in idx]
+        return DataFrame(new_data, index=new_index)
 
     def _select_indices(self, indices: list) -> "DataFrame":
         from datetime import datetime
@@ -2972,7 +3009,8 @@ class DataFrame:
             c: [self._inner.get_column(c).values[i] for i in norm]
             for c in self._columns
         }
-        return DataFrame(new_data)
+        new_index = [self._index[i] for i in norm]
+        return DataFrame(new_data, index=new_index)
 
     # ---------- 概览 ----------
 
@@ -3088,12 +3126,14 @@ class DataFrame:
         # 使用列表推导式 + 辅助函数替代显式 for 循环
         all_stats = [_col_stats(cols_data[c]) for c in cols_to_analyze]
 
-        out: Dict[str, list] = {s: [stat[s] for stat in all_stats] for s in stat_names}
-
-        # 添加列名作为第一列
-        out[""] = cols_to_analyze
-
-        return DataFrame(out)
+        # 转置输出：统计指标为行，原始列为列（与 pandas 一致）
+        out: Dict[str, list] = {}
+        for i, c in enumerate(cols_to_analyze):
+            out[c] = [stat[s] for s in stat_names for stat in [all_stats[i]]]
+        # 添加行索引列（统计指标名）
+        # 使用列表推导式替代显式 for 循环
+        stat_index = stat_names
+        return DataFrame(out, index=stat_index)
 
     # ---------- 统计方法 ----------
 
@@ -3123,11 +3163,27 @@ class DataFrame:
     def mean(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求均值。
 
-        :param axis: 轴方向（None/0=按列）
+        :param axis: 轴方向（None/0=按列, 1=按行）
         :param skipna: 是否跳过 NaN
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
+        if axis == 1 or axis == "columns":
+            # 按行求均值
+            result = []
+            for i in range(self._nrows):
+                vals = []
+                for c in self._columns:
+                    v = self._inner.get_column(c).values[i]
+                    if v is not None:
+                        if isinstance(v, (int, float)):
+                            vals.append(v)
+                if vals:
+                    result.append(sum(vals) / len(vals))
+                else:
+                    result.append(None)
+            return Series(result, index=self._index)
+        # 按列求均值
         target_cols = [
             c
             for c in self._columns
@@ -3315,16 +3371,45 @@ class DataFrame:
         else:
             shown_rows = list(range(n))
 
-        # 索引列宽度
-        idx_width = max(len(str(max(n - 1, 0))), 1)
+        # 判断是否为 MultiIndex（索引值为 tuple）
+        is_multiindex = any(isinstance(self._index[i], tuple) for i in shown_rows)
+
+        # 索引列宽度（使用实际索引值）
+        if is_multiindex:
+            # MultiIndex: 获取每个层级的值
+            level_strs: list[list[str]] = []
+            for i in shown_rows:
+                idx = self._index[i]
+                if isinstance(idx, tuple):
+                    level_strs.append([str(v) for v in idx])
+                else:
+                    level_strs.append([str(idx)])
+            # 补齐到相同层级数
+            max_levels = max(len(ls) for ls in level_strs)
+            for ls in level_strs:
+                while len(ls) < max_levels:
+                    ls.append("")
+            # 每列宽度
+            level_widths = []
+            for lvl in range(max_levels):
+                lw = max(len(ls[lvl]) for ls in level_strs)
+                level_widths.append(lw)
+            idx_width = sum(level_widths) + (max_levels - 1) * 2  # 2 空格间距
+        else:
+            idx_strs = [str(self._index[i]) for i in shown_rows]
+            idx_width = max((len(v) for v in idx_strs), default=1)
 
         # 表头
         header_cells = [c.ljust(col_widths[c]) for c in shown_cols]
-        header = " " * (idx_width + 1) + "  ".join(header_cells)
+        if is_multiindex:
+            # MultiIndex 表头占位
+            header = " " * (idx_width + 1) + "  ".join(header_cells)
+        else:
+            header = " " * (idx_width + 1) + "  ".join(header_cells)
         lines = [header]
 
         prev_i = -1
-        for i in shown_rows:
+        for pos, i in enumerate(shown_rows):
             if prev_i >= 0 and i != prev_i + 1:
                 # 截断行之间的省略号
                 ellipsis_cells = ["." * col_widths[c] for c in shown_cols]
@@ -3333,7 +3418,19 @@ class DataFrame:
                 col_strs[c][i].ljust(col_widths[c]) if i < len(col_strs[c]) else ""
                 for c in shown_cols
             ]
-            lines.append(f"{i:>{idx_width}} " + "  ".join(row_cells))
+            if is_multiindex:
+                idx = self._index[i]
+                if isinstance(idx, tuple):
+                    parts = [
+                        str(v).ljust(level_widths[lvl]) for lvl, v in enumerate(idx)
+                    ]
+                    idx_str = "  ".join(parts)
+                else:
+                    idx_str = str(idx).ljust(idx_width)
+            else:
+                idx_str = str(self._index[i])
+            # 左对齐索引列（与 pandas 一致）
+            lines.append(f"{idx_str:<{idx_width}}  " + "  ".join(row_cells))
             prev_i = i
 
         return "\n".join(lines) + f"\n\n[{n} rows x {len(self._columns)} columns]"
@@ -3756,36 +3853,37 @@ class DataFrame:
 
         return DataFrame(new_data)
 
-    def stack(self, level: int = -1) -> "DataFrame":
-        """将列堆叠为行 (v1.0.0)。"""
-        # 优先调用 Rust 层 stack
-        try:
-            inner = self._inner.stack(level)
-            new_df = DataFrame.__new__(DataFrame)
-            new_df._inner = inner
-            # Rust 层 stack 固定返回 ["index", "variable", "value"] 三列
-            new_df._columns = ["index", "variable", "value"]
-            new_df._nrows = inner.nrows()
-            new_df._index = list(range(new_df._nrows))
-            return new_df
-        except Exception:
-            pass
+    def stack(self, level: int = -1) -> "Series":
+        """将列堆叠为行，返回 Series (v1.0.0)。
 
-        # 回退到 Python 实现
+        :param level: 要堆叠的层级（默认 -1，暂不支持指定层）
+        :return: Series（含 MultiIndex）
+
+        Examples:
+            >>> df = DataFrame({'A': [1, 2], 'B': [3, 4]}, index=['a', 'b'])
+            >>> df.stack()
+            a  A    1
+               B    3
+            b  A    2
+               B    4
+            dtype: int64
+        """
+        from .series import Series as _Series
+
         n = self._nrows
-        idx_name = self._index_name or "index"
-        # 使用列表推导式替代嵌套显式 for 循环
-        pairs = [
-            (i, c, self._inner.get_column(c).values[i])
-            for i in range(n)
-            for c in self._columns
-        ]
-        new_data: Dict[str, list] = {
-            idx_name: [p[0] for p in pairs],
-            "variable": [p[1] for p in pairs],
-            "value": [p[2] for p in pairs],
-        }
-        return DataFrame(new_data)
+        # 构建新索引：每行索引 + 列名
+        new_index = []
+        values = []
+        for i in range(n):
+            for c in self._columns:
+                # 如果已有索引是 tuple（MultiIndex），展开后追加列名
+                idx = self._index[i]
+                if isinstance(idx, tuple):
+                    new_index.append(idx + (c,))
+                else:
+                    new_index.append((idx, c))
+                values.append(self._inner.get_column(c).values[i])
+        return _Series(values, index=new_index, name=None)
 
     @property
     def _index_name(self) -> Optional[str]:
@@ -4086,8 +4184,11 @@ class DataFrame:
         """转置 DataFrame (v0.2.0)。"""
         n = self._nrows
         # 使用字典推导式替代显式 for 循环：每行变成一列
+        # 列名使用原始索引值，与 pandas 行为一致
         new_data: Dict[str, list] = {
-            str(i): [self._inner.get_column(c).values[i] for c in self._columns]
+            str(self._index[i]): [
+                self._inner.get_column(c).values[i] for c in self._columns
+            ]
             for i in range(n)
         }
         return DataFrame(new_data)
@@ -6673,6 +6774,24 @@ class DataFrame:
 
         return LazyFrame(self)
 
+    def plot(self, **kwargs):
+        """绘制 DataFrame 所有列。"""
+        try:
+            from rsplotlib import pyplot as plt
+
+            fig, ax = plt.subplots()
+            for c in self._columns:
+                ax.plot(
+                    list(self._index) if self._index else list(range(self._nrows)),
+                    list(self._inner.get_column(c).values),
+                    label=c,
+                    **kwargs,
+                )
+            ax.legend(loc="best")
+            return ax
+        except ImportError:
+            raise NotImplementedError("plot requires rsplotlib")
+
 
 class DataFrameGroupBy:
     """DataFrame 分组结果 (极简版)。"""
@@ -6737,9 +6856,10 @@ class DataFrameGroupBy:
 
         :param agg_funcs: {列名: 'sum' | 'mean' | 'min' | 'max' | 'count' | 'std' | 'var' | 'median' | 'first' | 'last'}
 
-        分组键不作为列输出（与 pandas as_index=True 行为一致）。
+        分组键作为 index 输出（与 pandas as_index=True 行为一致）。
         """
         agg_cols = list(agg_funcs.keys())
+        group_keys = list(self._groups.keys())
         # 优先调用 Rust 层（仅支持单列 by、所有列同一 agg 且在 Rust 支持列表中）
         if len(self._by) == 1 and len(set(agg_funcs.values())) == 1:
             single_agg = agg_funcs[agg_cols[0]]
@@ -6758,26 +6878,40 @@ class DataFrameGroupBy:
                         rust_key_to_idx = {k: i for i, k in enumerate(rust_keys)}
                         # 按 self._groups 的顺序提取行（保持 sort/dropna 行为一致）
                         ordered_indices = []
-                        for key_tuple in self._groups.keys():
+                        for key_tuple in group_keys:
                             key_str = str(key_tuple[0])
                             if key_str in rust_key_to_idx:
                                 ordered_indices.append(rust_key_to_idx[key_str])
                         # 所有组都找到时按顺序提取结果
-                        if len(ordered_indices) == len(self._groups):
-                            new_data = {c: [] for c in agg_cols}
+                        if len(ordered_indices) == len(group_keys):
+                            new_data = {
+                                **{c: [] for c in agg_cols},
+                            }
                             for c in agg_cols:
                                 col_vals = rust_df.get_column(c).values
                                 new_data[c] = [col_vals[i] for i in ordered_indices]
-                            return DataFrame(new_data)
+                            out = DataFrame(new_data)
+                            if self._as_index:
+                                out._index = [k[0] for k in group_keys]
+                            return out
                     except Exception:
                         pass
 
         # 回退到 Python 实现
         result: Dict[str, list] = {c: [] for c in agg_cols}
+        if not self._as_index:
+            for i, by_col in enumerate(self._by):
+                result[by_col] = []
 
-        for key, idxs in self._groups.items():
+        for key in group_keys:
+            idxs = self._groups[key]
+            if not self._as_index:
+                if isinstance(key, tuple):
+                    for i, by_col in enumerate(self._by):
+                        result[by_col].append(key[i])
+                else:
+                    result[self._by[0]].append(key)
             for c in agg_cols:
-                # 用 iloc 取子集 (Series.iloc 接受 list[int])
                 ser = self._df[c]
                 sub = ser.iloc(idxs)
                 func = agg_funcs[c]
@@ -6803,7 +6937,13 @@ class DataFrameGroupBy:
                     result[c].append(sub.values[-1] if len(sub) > 0 else None)
                 else:
                     raise ValueError(f"unsupported agg: {func}")
-        return DataFrame(result)
+        out = DataFrame(result)
+        if self._as_index and len(self._by) > 0:
+            if len(self._by) == 1:
+                out._index = [k[0] if isinstance(k, tuple) else k for k in group_keys]
+            else:
+                out._index = list(group_keys)
+        return out
 
     def sum(self) -> "DataFrame":
         return self._agg({c: "sum" for c in self._df._columns if c not in self._by})
@@ -7858,10 +7998,18 @@ class _LocIndexer(_IndexerBase):
         # 2. 列选择
         if col_key is not None:
             if isinstance(col_key, str):
-                return rows_df[col_key]
+                result = rows_df[col_key]
+                # 单行 + 单列 -> 返回标量
+                if isinstance(result, Series) and result.size == 1:
+                    return result.values[0]
+                return result
             if isinstance(col_key, list):
                 return rows_df[col_key]
             raise TypeError(f"loc: unsupported column key {type(col_key).__name__}")
+
+        # 单行无列选择 -> 返回 Series
+        if isinstance(rows_df, DataFrame) and rows_df._nrows == 1:
+            return rows_df._to_series_row(0)
         return rows_df
 
     def __setitem__(self, key, value):
@@ -8110,7 +8258,8 @@ class _LocIndexer(_IndexerBase):
                 c: [self._df._inner.get_column(c).values[i] for i in idx]
                 for c in self._df._columns
             }
-            return DataFrame(new_data)
+            new_index = [self._df._index[i] for i in idx]
+            return DataFrame(new_data, index=new_index)
 
         if isinstance(key, list):
             if not key:
@@ -8159,7 +8308,11 @@ class _ILocIndexer(_IndexerBase):
             cols = rows_df.columns
             if isinstance(col_key, int):
                 col_key = int(col_key) + len(cols) if col_key < 0 else int(col_key)
-                return rows_df[cols[col_key]]
+                result = rows_df[cols[col_key]]
+                # 单行 + 单列 -> 返回标量
+                if isinstance(result, Series) and result.size == 1:
+                    return result.values[0]
+                return result
             if isinstance(col_key, list):
                 if all(isinstance(x, bool) for x in col_key):
                     picked = [c for c, b in zip(cols, col_key) if b]
@@ -8170,4 +8323,8 @@ class _ILocIndexer(_IndexerBase):
                 picked = cols[col_key]
                 return rows_df[list(picked)]
             raise TypeError(f"iloc: unsupported column key {type(col_key).__name__}")
+
+        # 单行无列选择 -> 返回 Series
+        if isinstance(rows_df, DataFrame) and rows_df._nrows == 1:
+            return rows_df._to_series_row(0)
         return rows_df

@@ -132,18 +132,18 @@ class Series:
     def __init__(
         self,
         data=None,
-        name: Optional[str] = None,
-        dtype: Optional[str] = None,
         index=None,
+        dtype: Optional[str] = None,
+        name: Optional[str] = None,
         copy: bool = False,
         fastpath: bool = False,
     ):
         """构造 Series。
 
         :param data: list / tuple / scalar / Series / dict
-        :param name: 列名
-        :param dtype: 可选类型 ('int64' / 'float64' / 'bool' / 'object')
         :param index: 索引 (list / RangeIndex)
+        :param dtype: 可选类型 ('int64' / 'float64' / 'bool' / 'object')
+        :param name: 列名
         :param copy: 是否复制数据
         :param fastpath: 是否走快速路径 (内部使用)
         """
@@ -184,8 +184,11 @@ class Series:
         # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
         self._inner = _PySeries(values, name, dtype=dtype)
 
-        # 缓存 dtype
-        self._dtype_str: str = self._inner.dtype
+        # 缓存 dtype（category 类型 Rust 层不支持，需强制设置）
+        if dtype is not None and dtype.lower() == "category":
+            self._dtype_str = "category"
+        else:
+            self._dtype_str: str = self._inner.dtype
 
         # RangeIndex 或自定义索引
         self._index = index if index is not None else list(range(len(values)))
@@ -253,8 +256,32 @@ class Series:
 
     @property
     def plot(self):
-        """绘图访问器 (占位)。"""
-        raise NotImplementedError("plot accessor requires matplotlib")
+        """绘图访问器 - 使用 rsplotlib 绘图。"""
+        try:
+            from rsplotlib import pyplot as plt
+
+            class _PlotAccessor:
+                def __init__(self, series):
+                    self._series = series
+
+                def __call__(self, **kwargs):
+                    fig, ax = plt.subplots()
+                    ax.plot(
+                        list(self._series._index), list(self._series.values), **kwargs
+                    )
+                    return ax
+
+                def line(self, **kwargs):
+                    return self.__call__(**kwargs)
+
+                def hist(self, **kwargs):
+                    fig, ax = plt.subplots()
+                    ax.hist(list(self._series.values), **kwargs)
+                    return ax
+
+            return _PlotAccessor(self)
+        except ImportError:
+            raise NotImplementedError("plot accessor requires rsplotlib")
 
     @property
     def memory_usage(self) -> int:
@@ -325,21 +352,39 @@ class Series:
         eq_mask = self._inner.eq_scalar(other)
         return Series([not x for x in eq_mask], name=self.name, dtype="bool")
 
-    def __lt__(self, other) -> _PySeries:
-        mask = self._inner.lt_scalar(other)
+    def _cmp_scalar(self, other, op_name: str) -> _PySeries:
+        """对标量进行比较，自动处理类型转换。"""
+        # 转换 other 为与 Series 相同的类型
+        dt = self._dtype_str
+        if dt == "float64" and not isinstance(other, float):
+            other = float(other)
+        elif dt == "int64" and not isinstance(other, int):
+            other = int(other)
+
+        # 调用 Rust 层对应方法
+        if op_name == "lt":
+            mask = self._inner.lt_scalar(other)
+        elif op_name == "gt":
+            mask = self._inner.gt_scalar(other)
+        elif op_name == "le":
+            mask = self._inner.le_scalar(other)
+        elif op_name == "ge":
+            mask = self._inner.ge_scalar(other)
+        else:
+            raise ValueError(f"unsupported op: {op_name}")
         return Series(mask, name=self.name, dtype="bool")
+
+    def __lt__(self, other) -> _PySeries:
+        return self._cmp_scalar(other, "lt")
 
     def __gt__(self, other) -> _PySeries:
-        mask = self._inner.gt_scalar(other)
-        return Series(mask, name=self.name, dtype="bool")
+        return self._cmp_scalar(other, "gt")
 
     def __le__(self, other) -> _PySeries:
-        mask = self._inner.le_scalar(other)
-        return Series(mask, name=self.name, dtype="bool")
+        return self._cmp_scalar(other, "le")
 
     def __ge__(self, other) -> _PySeries:
-        mask = self._inner.ge_scalar(other)
-        return Series(mask, name=self.name, dtype="bool")
+        return self._cmp_scalar(other, "ge")
 
     # ---------- 算术运算符 (v0.3.0) ----------
 
@@ -836,6 +881,74 @@ class Series:
             self._index[i] if self._index else i: v for i, v in enumerate(self.values)
         }
 
+    def unstack(self, level=-1) -> "_PyDataFrame":
+        """将 Series 的 MultiIndex 展开为 DataFrame。
+
+        :param level: 要展开的层级 (默认 -1，即最后一级)
+        :return: DataFrame
+
+        Examples:
+            >>> s = Series([1, 2, 3, 4], index=[('a', 'x'), ('a', 'y'), ('b', 'x'), ('b', 'y')])
+            >>> s.unstack()
+               x  y
+            a  1  2
+            b  3  4
+        """
+        from .dataframe import DataFrame
+
+        n = len(self)
+        if n == 0:
+            return DataFrame()
+
+        # 解析索引
+        if self._index is None:
+            raise ValueError("Series has no index")
+
+        # 将每个索引解析为 (row_key, col_key) 元组
+        # 如果索引是 tuple，取前 level 层为 row，第 level 层为 col
+        pairs = []
+        for i in range(n):
+            idx = self._index[i]
+            if isinstance(idx, tuple):
+                if level == -1 or level == len(idx) - 1:
+                    row_key = idx[:-1] if len(idx) > 1 else idx[0]
+                    col_key = idx[-1]
+                else:
+                    row_key = (
+                        idx[:level] + idx[level + 1:]
+                        if len(idx) > 1 and level < len(idx)
+                        else idx[0]
+                    )
+                    col_key = idx[level]
+            else:
+                row_key = 0
+                col_key = idx
+            pairs.append((row_key, col_key, self.values[i]))
+
+        # 收集所有行键和列键
+        row_keys = list(dict.fromkeys(p[0] for p in pairs))
+        col_keys = list(dict.fromkeys(p[1] for p in pairs))
+
+        # 构建结果
+        # 构建数据
+        data: Dict[str, list] = {}
+        for ck in col_keys:
+            col_name = str(ck)
+            col_vals = []
+            for rk in row_keys:
+                val = None
+                for p in pairs:
+                    if p[0] == rk and p[1] == ck:
+                        val = p[2]
+                        break
+                col_vals.append(val)
+            data[col_name] = col_vals
+
+        result = DataFrame(data)
+        # 设置行索引
+        result._index = row_keys
+        return result
+
     # ---------- 展开方法 (v1.0.0) ----------
     def explode(self) -> _PySeries:
         """展开列表元素为单独行。"""
@@ -1226,11 +1339,9 @@ class Series:
             elif target == "object":
                 vals = [None if v is None else str(v) for v in self.values]
             elif target == "category":
-                # 转换为 Categorical
-                from .rspandas import factorize as _factorize
-
-                codes, categories = _factorize(self.values)
-                s = Series(self.values, name=self.name, dtype="category")
+                # 转换为 Categorical（Rust 层不支持 category dtype，强制设置 _dtype_str）
+                s = Series(self.values, name=self.name, dtype="object")
+                s._dtype_str = "category"
                 return s
             else:
                 raise TypeError(f"unsupported dtype: {dtype}")
@@ -2867,8 +2978,8 @@ class Series:
         if self._index is not None and item in self._index:
             pos = self._index.index(item)
             val = self.values[pos]
-            new_values = self.values[:pos] + self.values[pos + 1 :]
-            new_index = self._index[:pos] + self._index[pos + 1 :]
+            new_values = self.values[:pos] + self.values[pos + 1:]
+            new_index = self._index[:pos] + self._index[pos + 1:]
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return val
@@ -3385,14 +3496,52 @@ class Series:
         return self.copy()
 
     def tz_localize(self, tz, ambiguous: str = "raise", nonexistent: str = "raise"):
-        """本地化时区。"""
-        # 简化实现：直接返回副本（rsnumpy 不支持时区）
-        return self.copy()
+        """本地化时区（同时本地化值和索引）。"""
+        from zoneinfo import ZoneInfo
+
+        tz_obj = ZoneInfo(tz) if isinstance(tz, str) else tz
+        vals = []
+        for v in self.values:
+            if v is None:
+                vals.append(None)
+            elif hasattr(v, "replace"):
+                vals.append(v.replace(tzinfo=tz_obj))
+            else:
+                vals.append(v)
+        # 同时本地化索引
+        new_index = []
+        for idx in self._index:
+            if hasattr(idx, "replace"):
+                new_index.append(idx.replace(tzinfo=tz_obj))
+            else:
+                new_index.append(idx)
+        return Series(vals, name=self.name, dtype=self._dtype_str, index=new_index)
 
     def tz_convert(self, tz):
-        """转换时区。"""
-        # 简化实现：直接返回副本（rsnumpy 不支持时区）
-        return self.copy()
+        """转换时区（同时转换值和索引）。"""
+        from zoneinfo import ZoneInfo
+
+        tz_obj = ZoneInfo(tz) if isinstance(tz, str) else tz
+        vals = []
+        for v in self.values:
+            if v is None:
+                vals.append(None)
+            elif hasattr(v, "astimezone"):
+                vals.append(v.astimezone(tz_obj))
+            elif hasattr(v, "replace"):
+                vals.append(v.replace(tzinfo=tz_obj))
+            else:
+                vals.append(v)
+        # 同时转换索引
+        new_index = []
+        for idx in self._index:
+            if hasattr(idx, "astimezone"):
+                new_index.append(idx.astimezone(tz_obj))
+            elif hasattr(idx, "replace"):
+                new_index.append(idx.replace(tzinfo=tz_obj))
+            else:
+                new_index.append(idx)
+        return Series(vals, name=self.name, dtype=self._dtype_str, index=new_index)
 
     # ---------- v2.1.0: 属性扩展 ----------
 
@@ -3439,9 +3588,12 @@ class Series:
 
         n = len(strs)
 
-        # 准备索引字符串
+        # 准备索引字符串（处理 MultiIndex tuple 格式）
         idx_strs = (
-            [str(i) for i in self._index]
+            [
+                "  ".join(str(v) for v in i) if isinstance(i, tuple) else str(i)
+                for i in self._index
+            ]
             if self._index is not None
             else [str(i) for i in range(n)]
         )
@@ -3599,7 +3751,7 @@ class Series:
             """计算第 i 位的移动平均值。"""
             if i < window - 1:
                 return None
-            win = values[i - window + 1 : i + 1]
+            win = values[i - window + 1:i + 1]
             non_null = [v for v in win if v is not None]
             if not non_null:
                 return None
@@ -3864,7 +4016,7 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            win = values[start : i + 1]
+            win = values[start:i + 1]
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -3882,8 +4034,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start : i + 1]
-            wb = values_b[start : i + 1]
+            wa = values_a[start:i + 1]
+            wb = values_b[start:i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -3909,8 +4061,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start : i + 1]
-            wb = values_b[start : i + 1]
+            wa = values_a[start:i + 1]
+            wb = values_b[start:i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -4595,7 +4747,11 @@ class StringAccessor:
         return Series(values, name=name or self._s.name, index=self._s._index)
 
     def _ensure_str(self, v):
-        return None if v is None else str(v)
+        return (
+            None
+            if v is None or (isinstance(v, float) and v != v) or v == "NaN"
+            else str(v)
+        )
 
     def upper(self) -> _PySeries:
         try:
@@ -4611,17 +4767,18 @@ class StringAccessor:
         )
 
     def lower(self) -> _PySeries:
-        try:
-            new_inner = self._s._inner.str_lower()
-            return Series(new_inner, name=self._s.name, index=self._s._index)
-        except Exception:
-            pass
-        return self._wrap(
-            [
-                self._ensure_str(v).lower() if v is not None else None
-                for v in self._s.values
-            ]
-        )
+        # 检查是否有 NaN 值（Rust 层将 NaN 转为字符串 'NaN'，需在 Python 层处理）
+        vals = self._s.values
+        # 先转换所有值为 str 或 None
+        str_vals = [self._ensure_str(v) for v in vals]
+        has_nan = any(v is None for v in str_vals)
+        if not has_nan:
+            try:
+                new_inner = self._s._inner.str_lower()
+                return Series(new_inner, name=self._s.name, index=self._s._index)
+            except Exception:
+                pass
+        return self._wrap([v.lower() if v is not None else None for v in str_vals])
 
     def title(self) -> _PySeries:
         return self._wrap(
@@ -5104,7 +5261,56 @@ class CatAccessor:
             result = inner.cat_rename_categories(list(new_categories))
             if result is not None:
                 return self._wrap_cat(result)
-        return self._s
+        # Python 回退：按位置重命名
+        old_cats = sorted(set(v for v in self._s.values if v is not None))
+        cat_map = {}
+        for i, old in enumerate(old_cats):
+            if i < len(new_categories):
+                cat_map[old] = new_categories[i]
+            else:
+                cat_map[old] = old
+        new_vals = [
+            cat_map.get(v, v) if v is not None else None for v in self._s.values
+        ]
+        s = Series(new_vals, name=self._s.name, dtype="object")
+        s._dtype_str = "category"
+        return s
+
+    def set_categories(
+        self, new_categories, ordered: bool = False, rename: bool = False
+    ) -> Series:
+        """设置新的 categories（替换现有 categories 列表）。"""
+        if self._s.dtype != "category":
+            raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        # 简化实现：用 Python 构建新 Series
+        cat_map = {}
+        old_cats = list(self._s.unique())
+        if rename:
+            # 重命名模式：按位置映射
+            for i, old in enumerate(old_cats):
+                if i < len(new_categories):
+                    cat_map[old] = new_categories[i]
+                else:
+                    cat_map[old] = old
+        else:
+            # 设置模式：保留原值但更新 categories 列表
+            pass
+
+        # 构建新值列表，None 保持不变
+        new_vals = []
+        for v in self._s.values:
+            if v is None:
+                new_vals.append(None)
+            elif rename and v in cat_map:
+                new_vals.append(cat_map[v])
+            elif v in new_categories or v is None:
+                new_vals.append(v)
+            else:
+                # 不在新 categories 中的值变为 NaN
+                new_vals.append(None)
+        s = Series(new_vals, name=self._s.name, dtype="object")
+        s._dtype_str = "category"
+        return s
 
     def as_ordered(self) -> Series:
         """设置为 ordered。"""

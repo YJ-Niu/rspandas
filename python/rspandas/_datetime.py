@@ -160,6 +160,25 @@ class DatetimeSeries:
     def __getitem__(self, key):
         return self.values[key]
 
+    def __add__(self, other):
+        """支持 DatetimeSeries + offset/datetime/timedelta。"""
+        if hasattr(other, "__radd__") and not isinstance(
+            other, (datetime, timedelta, int, float)
+        ):
+            # offset 类型：对每个 datetime 元素应用 offset
+            new_values = [
+                other.__radd__(v) if v is not None else None for v in self.values
+            ]
+        elif isinstance(other, (datetime, timedelta, int, float)):
+            new_values = [v + other if v is not None else None for v in self.values]
+        else:
+            return NotImplemented
+        return DatetimeSeries(new_values, name=self.name, index=self._index)
+
+    def __radd__(self, other):
+        """支持 other + DatetimeSeries。"""
+        return self.__add__(other)
+
     def head(self, n: int = 5) -> "DatetimeSeries":
         return DatetimeSeries(
             self.values[:n],
