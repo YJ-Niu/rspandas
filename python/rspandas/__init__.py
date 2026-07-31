@@ -409,13 +409,27 @@ __all__ = [
     "reset_option",
     "to_numeric",
     "merge",
+    "merge_asof",
     "concat",
+    "pivot_table",
+    "wide_to_long",
+    "lreshape",
     "isnull",
     "notnull",
     "isna",
     "notna",
     "unique",
     "value_counts",
+    "Timestamp",
+    "Timedelta",
+    "Period",
+    "Interval",
+    "Categorical",
+    "DateOffset",
+    "NaT",
+    "NA",
+    "array",
+    "test",
     "_Series",
     "_DataFrame",
     "__version__",
@@ -585,6 +599,42 @@ def merge_asof(
     ]
 
     return DataFrame(result_rows)
+
+
+def pivot_table(
+    data,
+    values=None,
+    index=None,
+    columns=None,
+    aggfunc: str = "mean",
+    fill_value=None,
+    margins: bool = False,
+    dropna: bool = True,
+    margins_name: str = "All",
+) -> "DataFrame":
+    """创建透视表（顶层函数）。
+
+    :param data: 输入 DataFrame
+    :param values: 聚合的列 (str | list[str] | None -> 所有数值列)
+    :param index: 行分组列 (str | list[str])
+    :param columns: 列分组列 (str | list[str])
+    :param aggfunc: 聚合函数 (str, 默认 'mean')
+    :param fill_value: 填充缺失值的值
+    :param margins: 是否添加边界行/列
+    :param dropna: 是否删除全 NaN 行/列
+    :param margins_name: 边界行/列的名称
+    :return: DataFrame
+    """
+    return data.pivot_table(
+        values=values,
+        index=index,
+        columns=columns,
+        aggfunc=aggfunc,
+        fill_value=fill_value,
+        margins=margins,
+        dropna=dropna,
+        margins_name=margins_name,
+    )
 
 
 def wide_to_long(

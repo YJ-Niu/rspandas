@@ -179,7 +179,7 @@ ts = pd.Series(np.random.randn(1000), index=pd.date_range("1/1/2000", periods=10
 
 ts = ts.cumsum()
 ts.plot()
-plt.savefig("./testing/test1.png")
+plt.savefig("./testing/pandas/test1.png")
 df = pd.DataFrame(
     np.random.randn(1000, 4), index=ts.index, columns=["A", "B", "C", "D"]
 )
@@ -187,15 +187,15 @@ df = df.cumsum()
 plt.figure()
 df.plot()
 plt.legend(loc='best')
-plt.savefig("./testing/test2.png")
+plt.savefig("./testing/pandas/test2.png")
 df = pd.DataFrame(np.random.randint(0, 5, (10, 5)))
-df.to_csv("./testing/test3.csv")
-print_series(82, pd.read_csv("./testing/test3.csv"))
+df.to_csv("./testing/pandas/test3.csv")
+print_series(82, pd.read_csv("./testing/pandas/test3.csv"))
 
-df.to_parquet("./testing/test4.parquet")
-print_series(83, pd.read_parquet("./testing/test4.parquet"))
-df.to_excel("./testing/test5.xlsx", sheet_name="Sheet1")
-print_series(84, pd.read_excel("./testing/test5.xlsx", "Sheet1", index_col=None, na_values=["NA"]))
+df.to_parquet("./testing/pandas/test4.parquet")
+print_series(83, pd.read_parquet("./testing/pandas/test4.parquet"))
+df.to_excel("./testing/pandas/test5.xlsx", sheet_name="Sheet1")
+print_series(84, pd.read_excel("./testing/pandas/test5.xlsx", "Sheet1", index_col=None, na_values=["NA"]))
 
 end_time = time.time()
 print("Time cost:", end_time - start_time)

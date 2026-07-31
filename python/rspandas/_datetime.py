@@ -20,8 +20,13 @@ _FREQ_MAP = {
     "M": timedelta(days=30),
     "Y": timedelta(days=365),
     "S": timedelta(seconds=1),
+    "s": timedelta(seconds=1),
     "T": timedelta(minutes=1),
     "min": timedelta(minutes=1),
+    "m": timedelta(minutes=1),
+    "ms": timedelta(milliseconds=1),
+    "us": timedelta(microseconds=1),
+    "ns": timedelta(microseconds=1),  # 简化：ns 用 microseconds 近似
 }
 
 
@@ -51,12 +56,18 @@ def _parse_iso(s: str) -> datetime:
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
         "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
         "%Y/%m/%d",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
         "%m/%d/%Y",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
         "%d/%m/%Y",
-        "%Y%m%d",
         "%Y%m%d%H%M%S",
         "%Y%m%d%H%M%S.%f",
+        "%Y%m%d",
         "%H:%M:%S",
         "%H:%M",
     ]
@@ -148,6 +159,25 @@ class DatetimeSeries:
 
     def __getitem__(self, key):
         return self.values[key]
+
+    def __add__(self, other):
+        """支持 DatetimeSeries + offset/datetime/timedelta。"""
+        if hasattr(other, "__radd__") and not isinstance(
+            other, (datetime, timedelta, int, float)
+        ):
+            # offset 类型：对每个 datetime 元素应用 offset
+            new_values = [
+                other.__radd__(v) if v is not None else None for v in self.values
+            ]
+        elif isinstance(other, (datetime, timedelta, int, float)):
+            new_values = [v + other if v is not None else None for v in self.values]
+        else:
+            return NotImplemented
+        return DatetimeSeries(new_values, name=self.name, index=self._index)
+
+    def __radd__(self, other):
+        """支持 other + DatetimeSeries。"""
+        return self.__add__(other)
 
     def head(self, n: int = 5) -> "DatetimeSeries":
         return DatetimeSeries(

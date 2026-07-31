@@ -10,6 +10,26 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import json as _json
 import pickle as _pickle
 
+# ============================================================================
+# PyArrow 预热：pyarrow 的 C++ 库在首次调用 pa.array() 时有约 100ms 的
+# 内部初始化开销。通过模块加载时预热，将这笔开销转移到 import 阶段，
+# 使后续的 parquet/feather IO 操作更快。
+# ============================================================================
+_HAS_PYARROW = False
+_pa = None
+_pq = None
+_pf = None
+try:
+    import pyarrow as _pa
+    import pyarrow.parquet as _pq
+    import pyarrow.feather as _pf
+
+    # 创建一个小数组触发 pyarrow 内部 C++ 初始化
+    _ = _pa.array([1])
+    _HAS_PYARROW = True
+except ImportError:
+    pass
+
 
 class ExcelWriter:
     """Excel 写入器，支持将多个 DataFrame 写入同一个文件的不同 sheet。
@@ -277,16 +297,13 @@ def read_parquet(path: str, **kwargs) -> DataFrame:
     -------
     DataFrame
     """
-    try:
-        import pyarrow.parquet as pq
-
-        table = pq.read_table(path, **kwargs)
-        return _arrow_table_to_dataframe(table)
-    except ImportError:
+    if not _HAS_PYARROW:
         raise ImportError(
             "read_parquet requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
+    table = _pq.read_table(path, **kwargs)
+    return _arrow_table_to_dataframe(table)
 
 
 def _arrow_table_to_dataframe(table) -> DataFrame:
@@ -317,48 +334,66 @@ def to_parquet(
     **kwargs
         传递给 pyarrow/pandas 的其他参数。
     """
-    try:
-        import pyarrow.parquet as pq
+    if not _HAS_PYARROW:
+        # 回退到 pandas
+        try:
+            pdf = df.to_pandas()
+            pdf.to_parquet(path, compression=compression, **kwargs)
+            return
+        except ImportError:
+            raise ImportError(
+                "to_parquet requires pyarrow or pandas to be installed. "
+                "Install with: pip install pyarrow"
+            )
 
-        table = _dataframe_to_arrow_table(df)
-        pq.write_table(table, path, compression=compression, **kwargs)
-        return
-    except ImportError:
-        pass
-
-    try:
-        pdf = df.to_pandas()
-        pdf.to_parquet(path, compression=compression, **kwargs)
-        return
-    except ImportError:
-        raise ImportError(
-            "to_parquet requires pyarrow or pandas to be installed. "
-            "Install with: pip install pyarrow"
-        )
+    table = _dataframe_to_arrow_table(df)
+    _pq.write_table(table, path, compression=compression, **kwargs)
 
 
 def _dataframe_to_arrow_table(df: DataFrame):
-    """将 DataFrame 转换为 PyArrow Table。"""
-    import pyarrow as pa
+    """将 DataFrame 转换为 PyArrow Table（优化版）。"""
+    arrays = []
+    for col_name in df.columns:
+        # 直接获取 Rust 层原始列数据，避免创建 Series 对象
+        raw_series = df._inner.get_column(col_name)
+        col_data = list(raw_series.values)
 
-    def _infer_array(col_name):
-        """为单列推断 PyArrow 类型并构造数组。"""
-        col_data = list(df[col_name].values)
-        # 推断类型
-        non_null = [v for v in col_data if v is not None]
-        if not non_null:
-            return pa.array(col_data, type=pa.string())
-        if all(isinstance(v, bool) for v in non_null):
-            return pa.array(col_data, type=pa.bool_())
-        if all(isinstance(v, int) for v in non_null):
-            return pa.array(col_data, type=pa.int64())
-        if all(isinstance(v, float) for v in non_null):
-            return pa.array(col_data, type=pa.float64())
-        return pa.array([str(v) if v is not None else None for v in col_data])
+        custom_dtype = df._col_dtypes.get(col_name)
+        if custom_dtype == "category":
+            # category 类型：使用字典编码
+            arr = _pa.array(col_data, type=_pa.dictionary(_pa.int32(), _pa.string()))
+        else:
+            # 单次遍历推断类型（优先级: str > float > int > bool）
+            dtype_level = 0  # 0=unknown, 1=bool, 2=int, 3=float, 4=str
+            for v in col_data:
+                if v is None:
+                    continue
+                if isinstance(v, bool):
+                    level = 1
+                elif isinstance(v, int):
+                    level = 2
+                elif isinstance(v, float):
+                    level = 3
+                else:
+                    level = 4
+                if level > dtype_level:
+                    dtype_level = level
+                if dtype_level >= 4:
+                    break
 
-    # 使用列表推导式替代显式 for 循环
-    arrays = [_infer_array(col_name) for col_name in df.columns]
-    return pa.table(dict(zip(df.columns, arrays)))
+            if dtype_level == 1:
+                arr = _pa.array(col_data, type=_pa.bool_())
+            elif dtype_level == 2:
+                arr = _pa.array(col_data, type=_pa.int64())
+            elif dtype_level == 3:
+                arr = _pa.array(col_data, type=_pa.float64())
+            else:
+                # 让 pyarrow 自行推断类型（字符串、日期等）
+                arr = _pa.array(col_data)
+
+        arrays.append(arr)
+
+    return _pa.table(dict(zip(df.columns, arrays)))
 
 
 # ============================================================================
@@ -380,16 +415,13 @@ def read_feather(path: str, **kwargs) -> DataFrame:
     -------
     DataFrame
     """
-    try:
-        import pyarrow.feather as pf
-
-        table = pf.read_table(path, **kwargs)
-        return _arrow_table_to_dataframe(table)
-    except ImportError:
+    if not _HAS_PYARROW:
         raise ImportError(
             "read_feather requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
+    table = _pf.read_table(path, **kwargs)
+    return _arrow_table_to_dataframe(table)
 
 
 def to_feather(
@@ -411,16 +443,13 @@ def to_feather(
     **kwargs
         传递给 pyarrow.feather.write_feather 的其他参数。
     """
-    try:
-        import pyarrow.feather as pf
-
-        table = _dataframe_to_arrow_table(df)
-        pf.write_feather(table, path, compression=compression, **kwargs)
-    except ImportError:
+    if not _HAS_PYARROW:
         raise ImportError(
             "to_feather requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
+    table = _dataframe_to_arrow_table(df)
+    _pf.write_feather(table, path, compression=compression, **kwargs)
 
 
 # ============================================================================
@@ -685,6 +714,140 @@ def to_sql(
                 f"INSERT INTO {name} ({', '.join(col_names)}) VALUES ({placeholders})"
             )
             connection.execute(stmt, records)
+
+
+def read_csv(
+    filepath_or_buffer,
+    sep=",",
+    header="infer",
+    names=None,
+    index_col=None,
+    usecols=None,
+    dtype=None,
+    nrows=None,
+    encoding=None,
+    **kwargs,
+) -> DataFrame:
+    """读取 CSV 文件为 DataFrame。
+
+    Parameters
+    ----------
+    filepath_or_buffer : str
+        CSV 文件路径。
+    sep : str, default ','
+        分隔符。
+    header : str or int, default 'infer'
+        用作列名的行号（0=第一行，None=无表头）。
+    names : list, optional
+        列名列表。
+    index_col : int, str, optional
+        用作行索引的列号或列名。
+    usecols : list, optional
+        要读取的列子集。
+    dtype : type or dict, optional
+        列数据类型。
+    nrows : int, optional
+        要读取的行数。
+    encoding : str, optional
+        文件编码。
+    **kwargs
+        忽略 (兼容 pandas 签名)。
+
+    Returns
+    -------
+    DataFrame
+    """
+    from .rspandas import read_csv_string as _read_csv_string
+    from .dataframe import DataFrame as _DataFrame
+    from .series import Series as _Series
+
+    # 读取文件内容
+    if isinstance(filepath_or_buffer, str):
+        with open(filepath_or_buffer, "r", encoding=encoding or "utf-8") as f:
+            content = f.read()
+    elif hasattr(filepath_or_buffer, "read"):
+        content = filepath_or_buffer.read()
+    else:
+        content = str(filepath_or_buffer)
+
+    # 确定是否有表头
+    has_header = True
+    if header is None or header is False:
+        has_header = False
+    elif header == "infer":
+        has_header = True
+
+    # 使用 Rust 层解析 CSV
+    if sep == ",":
+        cols, series_list = _read_csv_string(content, has_header)
+    else:
+        # 非逗号分隔符回退到 Python csv 模块
+        import csv as _csv
+        import io as _io
+
+        reader = _csv.reader(_io.StringIO(content), delimiter=sep)
+        rows = list(reader)
+        if not rows:
+            return _DataFrame()
+        if has_header:
+            cols = rows[0]
+            data_rows = rows[1:]
+        else:
+            cols = [f"col{i}" for i in range(len(rows[0]))]
+            data_rows = rows
+        data = {c: [r[i] for r in data_rows] for i, c in enumerate(cols)}
+        if nrows is not None:
+            data = {c: vals[:nrows] for c, vals in data.items()}
+        return _DataFrame(data)
+
+    # 处理列名
+    if names is not None:
+        cols = list(names)
+    elif not has_header:
+        cols = [f"col{i}" for i in range(len(cols))]
+    else:
+        # 将空列名重命名为 Unnamed: 0（与 pandas 行为一致）
+        cols = [("Unnamed: 0" if c == "" else c) for c in cols]
+
+    # 构建 Series 列表
+    py_series_list = []
+    for i, (c, s) in enumerate(zip(cols, series_list)):
+        py_s = _Series.__new__(_Series)
+        py_s._inner = s
+        py_s._dtype_str = s.dtype
+        py_s._index = list(range(s.size))
+        py_s._name = c
+        py_series_list.append(py_s)
+
+    # 构建 DataFrame
+    df_data = {c: py_s.values for c, py_s in zip(cols, py_series_list)}
+
+    # 处理 nrows
+    if nrows is not None:
+        df_data = {c: vals[:nrows] for c, vals in df_data.items()}
+
+    # 处理 usecols
+    if usecols is not None:
+        usecols_set = set(usecols)
+        df_data = {c: v for c, v in df_data.items() if c in usecols_set}
+
+    # 处理 header 为列名行号的情况
+    if header is not None and header != "infer" and header is not False:
+        if isinstance(header, int) and header > 0:
+            # 跳过 header 行，但 Rust 层已经处理了
+            pass
+
+    # 处理 index_col
+    if index_col is not None:
+        if isinstance(index_col, (int, str)):
+            col_name = cols[index_col] if isinstance(index_col, int) else index_col
+            if col_name in df_data:
+                new_index = list(df_data[col_name])
+                df_data.pop(col_name)
+                df = _DataFrame(df_data, index=new_index)
+                return df
+
+    return _DataFrame(df_data)
 
 
 def read_csv_chunked(
