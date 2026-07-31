@@ -10,6 +10,26 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import json as _json
 import pickle as _pickle
 
+# ============================================================================
+# PyArrow 预热：pyarrow 的 C++ 库在首次调用 pa.array() 时有约 100ms 的
+# 内部初始化开销。通过模块加载时预热，将这笔开销转移到 import 阶段，
+# 使后续的 parquet/feather IO 操作更快。
+# ============================================================================
+_HAS_PYARROW = False
+_pa = None
+_pq = None
+_pf = None
+try:
+    import pyarrow as _pa
+    import pyarrow.parquet as _pq
+    import pyarrow.feather as _pf
+
+    # 创建一个小数组触发 pyarrow 内部 C++ 初始化
+    _ = _pa.array([1])
+    _HAS_PYARROW = True
+except ImportError:
+    pass
+
 
 class ExcelWriter:
     """Excel 写入器，支持将多个 DataFrame 写入同一个文件的不同 sheet。
@@ -277,16 +297,13 @@ def read_parquet(path: str, **kwargs) -> DataFrame:
     -------
     DataFrame
     """
-    try:
-        import pyarrow.parquet as pq
-
-        table = pq.read_table(path, **kwargs)
-        return _arrow_table_to_dataframe(table)
-    except ImportError:
+    if not _HAS_PYARROW:
         raise ImportError(
             "read_parquet requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
+    table = _pq.read_table(path, **kwargs)
+    return _arrow_table_to_dataframe(table)
 
 
 def _arrow_table_to_dataframe(table) -> DataFrame:
@@ -317,48 +334,66 @@ def to_parquet(
     **kwargs
         传递给 pyarrow/pandas 的其他参数。
     """
-    try:
-        import pyarrow.parquet as pq
+    if not _HAS_PYARROW:
+        # 回退到 pandas
+        try:
+            pdf = df.to_pandas()
+            pdf.to_parquet(path, compression=compression, **kwargs)
+            return
+        except ImportError:
+            raise ImportError(
+                "to_parquet requires pyarrow or pandas to be installed. "
+                "Install with: pip install pyarrow"
+            )
 
-        table = _dataframe_to_arrow_table(df)
-        pq.write_table(table, path, compression=compression, **kwargs)
-        return
-    except ImportError:
-        pass
-
-    try:
-        pdf = df.to_pandas()
-        pdf.to_parquet(path, compression=compression, **kwargs)
-        return
-    except ImportError:
-        raise ImportError(
-            "to_parquet requires pyarrow or pandas to be installed. "
-            "Install with: pip install pyarrow"
-        )
+    table = _dataframe_to_arrow_table(df)
+    _pq.write_table(table, path, compression=compression, **kwargs)
 
 
 def _dataframe_to_arrow_table(df: DataFrame):
-    """将 DataFrame 转换为 PyArrow Table。"""
-    import pyarrow as pa
+    """将 DataFrame 转换为 PyArrow Table（优化版）。"""
+    arrays = []
+    for col_name in df.columns:
+        # 直接获取 Rust 层原始列数据，避免创建 Series 对象
+        raw_series = df._inner.get_column(col_name)
+        col_data = list(raw_series.values)
 
-    def _infer_array(col_name):
-        """为单列推断 PyArrow 类型并构造数组。"""
-        col_data = list(df[col_name].values)
-        # 推断类型
-        non_null = [v for v in col_data if v is not None]
-        if not non_null:
-            return pa.array(col_data, type=pa.string())
-        if all(isinstance(v, bool) for v in non_null):
-            return pa.array(col_data, type=pa.bool_())
-        if all(isinstance(v, int) for v in non_null):
-            return pa.array(col_data, type=pa.int64())
-        if all(isinstance(v, float) for v in non_null):
-            return pa.array(col_data, type=pa.float64())
-        return pa.array([str(v) if v is not None else None for v in col_data])
+        custom_dtype = df._col_dtypes.get(col_name)
+        if custom_dtype == "category":
+            # category 类型：使用字典编码
+            arr = _pa.array(col_data, type=_pa.dictionary(_pa.int32(), _pa.string()))
+        else:
+            # 单次遍历推断类型（优先级: str > float > int > bool）
+            dtype_level = 0  # 0=unknown, 1=bool, 2=int, 3=float, 4=str
+            for v in col_data:
+                if v is None:
+                    continue
+                if isinstance(v, bool):
+                    level = 1
+                elif isinstance(v, int):
+                    level = 2
+                elif isinstance(v, float):
+                    level = 3
+                else:
+                    level = 4
+                if level > dtype_level:
+                    dtype_level = level
+                if dtype_level >= 4:
+                    break
 
-    # 使用列表推导式替代显式 for 循环
-    arrays = [_infer_array(col_name) for col_name in df.columns]
-    return pa.table(dict(zip(df.columns, arrays)))
+            if dtype_level == 1:
+                arr = _pa.array(col_data, type=_pa.bool_())
+            elif dtype_level == 2:
+                arr = _pa.array(col_data, type=_pa.int64())
+            elif dtype_level == 3:
+                arr = _pa.array(col_data, type=_pa.float64())
+            else:
+                # 让 pyarrow 自行推断类型（字符串、日期等）
+                arr = _pa.array(col_data)
+
+        arrays.append(arr)
+
+    return _pa.table(dict(zip(df.columns, arrays)))
 
 
 # ============================================================================
@@ -380,16 +415,13 @@ def read_feather(path: str, **kwargs) -> DataFrame:
     -------
     DataFrame
     """
-    try:
-        import pyarrow.feather as pf
-
-        table = pf.read_table(path, **kwargs)
-        return _arrow_table_to_dataframe(table)
-    except ImportError:
+    if not _HAS_PYARROW:
         raise ImportError(
             "read_feather requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
+    table = _pf.read_table(path, **kwargs)
+    return _arrow_table_to_dataframe(table)
 
 
 def to_feather(
@@ -411,16 +443,13 @@ def to_feather(
     **kwargs
         传递给 pyarrow.feather.write_feather 的其他参数。
     """
-    try:
-        import pyarrow.feather as pf
-
-        table = _dataframe_to_arrow_table(df)
-        pf.write_feather(table, path, compression=compression, **kwargs)
-    except ImportError:
+    if not _HAS_PYARROW:
         raise ImportError(
             "to_feather requires pyarrow to be installed. "
             "Install with: pip install pyarrow"
         )
+    table = _dataframe_to_arrow_table(df)
+    _pf.write_feather(table, path, compression=compression, **kwargs)
 
 
 # ============================================================================
@@ -985,7 +1014,7 @@ def to_sql_batch(
         )
         records = df.values
         for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
+            batch = records[i : i + batch_size]
             connection.execute(stmt, batch)
 
 
@@ -1112,7 +1141,7 @@ def read_html(
 
     # 解析表格
     rows_data = []
-    for tr in table.find_all("tr")[header or 0:]:
+    for tr in table.find_all("tr")[header or 0 :]:
         cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if cells:
             rows_data.append(cells)

@@ -915,7 +915,7 @@ class Series:
                     col_key = idx[-1]
                 else:
                     row_key = (
-                        idx[:level] + idx[level + 1:]
+                        idx[:level] + idx[level + 1 :]
                         if len(idx) > 1 and level < len(idx)
                         else idx[0]
                     )
@@ -2978,8 +2978,8 @@ class Series:
         if self._index is not None and item in self._index:
             pos = self._index.index(item)
             val = self.values[pos]
-            new_values = self.values[:pos] + self.values[pos + 1:]
-            new_index = self._index[:pos] + self._index[pos + 1:]
+            new_values = self.values[:pos] + self.values[pos + 1 :]
+            new_index = self._index[:pos] + self._index[pos + 1 :]
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return val
@@ -3751,7 +3751,7 @@ class Series:
             """计算第 i 位的移动平均值。"""
             if i < window - 1:
                 return None
-            win = values[i - window + 1:i + 1]
+            win = values[i - window + 1 : i + 1]
             non_null = [v for v in win if v is not None]
             if not non_null:
                 return None
@@ -4016,7 +4016,7 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            win = values[start:i + 1]
+            win = values[start : i + 1]
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -4034,8 +4034,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -4061,8 +4061,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)

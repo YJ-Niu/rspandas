@@ -6741,7 +6741,7 @@ class DataFrame:
         from .io import StreamDataFrame
 
         nrows = self._nrows
-        chunks = [self.iloc[i:i + chunk_size] for i in range(0, nrows, chunk_size)]
+        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
         return StreamDataFrame(chunks)
 
     def pipeline(self, *funcs):
