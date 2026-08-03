@@ -2667,9 +2667,16 @@ class DataFrame:
             for i in range(n_rows)
         )
 
-        content = "\n".join(content_lines)
         if lineterminator is not None:
             content = lineterminator.join(content_lines)
+            # 与 rspandas 行为一致：每行（含最后一行）以行终止符结尾
+            if content and not content.endswith(lineterminator):
+                content += lineterminator
+        else:
+            content = "\n".join(content_lines)
+            # 与 rspandas 行为一致：每行（含最后一行）以换行符结尾
+            if content and not content.endswith("\n"):
+                content += "\n"
 
         if path is None:
             return content
@@ -2695,6 +2702,15 @@ class DataFrame:
                     content = "\n".join(lines[1:])
                 if not content.endswith("\n"):
                     content += "\n"
+                # 确保文件末尾有换行符，避免追加内容与已有最后一行合并
+                try:
+                    with open(path, "rb") as _f:
+                        _f.seek(-1, 2)
+                        _last_byte = _f.read(1)
+                        if _last_byte and _last_byte not in (b"\n", b"\r"):
+                            content = "\n" + content
+                except OSError:
+                    pass
 
             if compression == "gzip":
                 import gzip
@@ -6741,7 +6757,7 @@ class DataFrame:
         from .io import StreamDataFrame
 
         nrows = self._nrows
-        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
+        chunks = [self.iloc[i:i + chunk_size] for i in range(0, nrows, chunk_size)]
         return StreamDataFrame(chunks)
 
     def pipeline(self, *funcs):
