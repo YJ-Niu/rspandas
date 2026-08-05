@@ -85,7 +85,7 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
         if isinstance(data[0], (list, tuple)):
             # list[list]
             if columns is None:
-                columns = [f"col{i}" for i in range(len(data[0]))]
+                columns = [str(i) for i in range(len(data[0]))]
             result = {c: [] for c in columns}
             for row in data:
                 for i, c in enumerate(columns):
@@ -97,13 +97,13 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
         raw_list = data.tolist()
         if not isinstance(raw_list, list):
             # 0 维数组
-            return {"col0": [raw_list]}
+            return {"0": [raw_list]}
         if not raw_list:
             return {}
         if isinstance(raw_list[0], list):
             # 2D 数组
             if columns is None:
-                columns = [f"col{i}" for i in range(len(raw_list[0]))]
+                columns = [str(i) for i in range(len(raw_list[0]))]
             result = {c: [] for c in columns}
             for row in raw_list:
                 for i, c in enumerate(columns):
@@ -111,7 +111,7 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
             return result
         # 1D 数组
         if columns is None:
-            columns = ["col0"]
+            columns = ["0"]
         result = {c: [] for c in columns}
         for v in raw_list:
             result[columns[0]].append(v)
@@ -2166,7 +2166,7 @@ class DataFrame:
             arr = arr.reshape(-1, 1)
         data = arr.tolist()
         if columns is None:
-            columns = [f"col{i}" for i in range(arr.shape[1])]
+            columns = [str(i) for i in range(arr.shape[1])]
         return cls(data, columns=columns, index=index, dtype=dtype)
 
     def to_arrow(self):
@@ -2854,7 +2854,7 @@ class DataFrame:
         self,
         path,
         sheet_name: str = "Sheet1",
-        index: bool = False,
+        index: bool = True,
         header: bool = True,
         **kwargs,
     ) -> None:

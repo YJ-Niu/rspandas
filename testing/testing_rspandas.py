@@ -191,7 +191,7 @@ plt.savefig("./testing/rspandas/test2.png")
 df = pd.DataFrame(np.random.randint(0, 5, (10, 5)))
 df.to_csv("./testing/rspandas/test3.csv")
 print_series(82, pd.read_csv("./testing/rspandas/test3.csv"))
-
+ 
 df.to_parquet("./testing/rspandas/test4.parquet")
 print_series(83, pd.read_parquet("./testing/rspandas/test4.parquet"))
 df.to_excel("./testing/rspandas/test5.xlsx", sheet_name="Sheet1")

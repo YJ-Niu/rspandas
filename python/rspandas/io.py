@@ -48,7 +48,7 @@ class ExcelWriter:
         self,
         df: DataFrame,
         sheet_name: str = "Sheet1",
-        index: bool = False,
+        index: bool = True,
         header: bool = True,
     ):
         """将 DataFrame 写入指定 sheet。"""
@@ -250,7 +250,7 @@ def to_excel(
     df: DataFrame,
     path: str,
     sheet_name: str = "Sheet1",
-    index: bool = False,
+    index: bool = True,
     header: bool = True,
     **kwargs,
 ) -> None:
@@ -264,7 +264,7 @@ def to_excel(
         输出文件路径。
     sheet_name : str, default 'Sheet1'
         工作表名称。
-    index : bool, default False
+    index : bool, default True
         是否写入行索引。
     header : bool, default True
         是否写入列名。
@@ -793,7 +793,7 @@ def read_csv(
             cols = rows[0]
             data_rows = rows[1:]
         else:
-            cols = [f"col{i}" for i in range(len(rows[0]))]
+            cols = [str(i) for i in range(len(rows[0]))]
             data_rows = rows
         data = {c: [r[i] for r in data_rows] for i, c in enumerate(cols)}
         if nrows is not None:
@@ -804,7 +804,7 @@ def read_csv(
     if names is not None:
         cols = list(names)
     elif not has_header:
-        cols = [f"col{i}" for i in range(len(cols))]
+        cols = [str(i) for i in range(len(cols))]
     else:
         # 将空列名重命名为 Unnamed: 0（与 pandas 行为一致）
         cols = [("Unnamed: 0" if c == "" else c) for c in cols]
@@ -935,7 +935,7 @@ def _rows_to_dict(rows: List[list], col_names: Optional[List[str]]) -> Dict[str,
     """将行列表转为列字典（列表推导式优化）。"""
     if col_names is None:
         n_cols = max(len(r) for r in rows) if rows else 0
-        col_names = [f"col{i}" for i in range(n_cols)]
+        col_names = [str(i) for i in range(n_cols)]
     return {
         col_names[i]: [r[i] if i < len(r) else None for r in rows]
         for i in range(len(col_names))
@@ -1014,7 +1014,7 @@ def to_sql_batch(
         )
         records = df.values
         for i in range(0, len(records), batch_size):
-            batch = records[i : i + batch_size]
+            batch = records[i:i + batch_size]
             connection.execute(stmt, batch)
 
 
@@ -1141,7 +1141,7 @@ def read_html(
 
     # 解析表格
     rows_data = []
-    for tr in table.find_all("tr")[header or 0 :]:
+    for tr in table.find_all("tr")[header or 0:]:
         cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if cells:
             rows_data.append(cells)
@@ -1150,11 +1150,11 @@ def read_html(
         col_names = rows_data[0]
         data_rows = rows_data[1:]
     else:
-        col_names = [f"col{i}" for i in range(len(rows_data[0]))] if rows_data else []
+        col_names = [str(i) for i in range(len(rows_data[0]))] if rows_data else []
         data_rows = rows_data
 
     data = {
-        col_names[i] if i < len(col_names) else f"col{i}": [
+        col_names[i] if i < len(col_names) else str(i): [
             r[i] if i < len(r) else None for r in data_rows
         ]
         for i in range(max(len(r) for r in data_rows) if data_rows else 0)
