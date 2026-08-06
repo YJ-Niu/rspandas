@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+import os
 
 start_time = time.time()
 def print_series(num, s):
@@ -9,6 +10,12 @@ def print_series(num, s):
     print(s)
     print()
 
+
+# 查看有没有./testing文件夹，没有就创建
+if not os.path.exists("./testing"):
+    os.makedirs("./testing")
+if not os.path.exists("./testing/pandas"):
+    os.makedirs("./testing/pandas")
 
 s = pd.Series([1, 3, 5, np.nan, 6, 8])
 print_series(1, s)
@@ -191,6 +198,7 @@ plt.savefig("./testing/pandas/test2.png")
 df = pd.DataFrame(np.random.randint(0, 5, (10, 5)))
 df.to_csv("./testing/pandas/test3.csv")
 print_series(82, pd.read_csv("./testing/pandas/test3.csv"))
+
 
 df.to_parquet("./testing/pandas/test4.parquet")
 print_series(83, pd.read_parquet("./testing/pandas/test4.parquet"))

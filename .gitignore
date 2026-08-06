@@ -35,6 +35,7 @@ Thumbs.db
 # Data / plots
 test/
 main*.py
+debug*.py
 debug/
 out/
 test_data/

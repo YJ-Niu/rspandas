@@ -2,12 +2,20 @@ import rspandas as pd
 import rsnumpy as np
 import time
 import rsplotlib.pyplot as plt
+import os
 
 start_time = time.time()
 def print_series(num, s):
     print("++++++++++++++++++++", num)
     print(s)
     print()
+
+
+# 查看有没有./testing文件夹，没有就创建
+if not os.path.exists("./testing"):
+    os.makedirs("./testing")
+if not os.path.exists("./testing/rspandas"):
+    os.makedirs("./testing/rspandas")
 
 
 s = pd.Series([1, 3, 5, np.nan, 6, 8])
@@ -191,7 +199,7 @@ plt.savefig("./testing/rspandas/test2.png")
 df = pd.DataFrame(np.random.randint(0, 5, (10, 5)))
 df.to_csv("./testing/rspandas/test3.csv")
 print_series(82, pd.read_csv("./testing/rspandas/test3.csv"))
-
+ 
 df.to_parquet("./testing/rspandas/test4.parquet")
 print_series(83, pd.read_parquet("./testing/rspandas/test4.parquet"))
 df.to_excel("./testing/rspandas/test5.xlsx", sheet_name="Sheet1")
