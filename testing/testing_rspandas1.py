@@ -2,12 +2,20 @@ import rspandas as pd
 import rsnumpy as np
 import time
 import rsplotlib.pyplot as plt
+import os
 
 start_time = time.time()
 def print_series(num, s):
     print("++++++++++++++++++++", num)
     print(s)
     print()
+
+
+# 查看有没有./testing文件夹，没有就创建
+if not os.path.exists("./testing"):
+    os.makedirs("./testing")
+if not os.path.exists("./testing/rspandas"):
+    os.makedirs("./testing/rspandas")
 
 
 s = pd.Series([1, 3, 5, np.nan, 6, 8])
