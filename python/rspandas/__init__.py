@@ -361,7 +361,7 @@ def value_counts(
     raise TypeError("value_counts requires Series or list")
 
 
-__version__ = "2.0.7"
+__version__ = "2.0.8"
 __all__ = [
     "Series",
     "DataFrame",
