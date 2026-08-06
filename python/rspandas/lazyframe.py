@@ -164,6 +164,90 @@ class _Expr:
             f"(~{self._desc})",
         )
 
+    # ---------- 算术运算符 ----------
+
+    def __add__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _add(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a + b)
+
+        return _Expr(_add, f"({self._desc} + {_short(other)})")
+
+    def __sub__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _sub(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a - b)
+
+        return _Expr(_sub, f"({self._desc} - {_short(other)})")
+
+    def __mul__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _mul(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a * b)
+
+        return _Expr(_mul, f"({self._desc} * {_short(other)})")
+
+    def __truediv__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _truediv(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a / b)
+
+        return _Expr(_truediv, f"({self._desc} / {_short(other)})")
+
+    def __floordiv__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _floordiv(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a // b)
+
+        return _Expr(_floordiv, f"({self._desc} // {_short(other)})")
+
+    def __mod__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _mod(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a % b)
+
+        return _Expr(_mod, f"({self._desc} % {_short(other)})")
+
+    def __pow__(self, other) -> "_Expr":
+        other_fn = _to_value(other)
+
+        def _pow(df):
+            left = self.evaluate(df)
+            right = other_fn(df)
+            return _binop(left, right, lambda a, b: a**b)
+
+        return _Expr(_pow, f"({self._desc} ** {_short(other)})")
+
+    def __neg__(self) -> "_Expr":
+        return _Expr(
+            lambda df: [-v for v in _as_list(self.evaluate(df))],
+            f"(-{self._desc})",
+        )
+
+    def __abs__(self) -> "_Expr":
+        return _Expr(
+            lambda df: [abs(v) for v in _as_list(self.evaluate(df))],
+            f"(abs({self._desc}))",
+        )
+
 
 def col(name: str) -> _Expr:
     """列引用表达式。

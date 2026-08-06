@@ -66,8 +66,30 @@ _options: Dict[str, Any] = {
     "display.max_columns": 20,
     "display.width": 80,
     "display.precision": 6,
+    "display.max_colwidth": 50,
+    "display.max_info_rows": 1690785,
+    "display.max_info_columns": 100,
+    "display.expand_frame_repr": True,
+    "display.large_repr": "truncate",
+    "display.memory_usage": True,
+    "display.float_format": None,
+    "display.colheader_justify": "right",
+    "display.date_dayfirst": False,
+    "display.date_yearfirst": False,
+    "display.unicode.east_asian_width": False,
+    "display.unicode.ambiguous_as_wide": False,
+    "display.html.border": 1,
+    "display.html.table_schema": False,
+    "display.html.use_mathjax": True,
+    "display.latex.escape": True,
+    "display.latex.longtable": False,
+    "display.latex.repr": False,
     "mode.chained_assignment": "warn",
+    "mode.use_inf_as_na": False,
 }
+
+# 默认选项的副本（用于 reset_option）
+_defaults: Dict[str, Any] = dict(_options)
 
 
 def set_option(pat: str, value: Any) -> None:
@@ -95,15 +117,8 @@ def get_option(pat: str) -> Any:
 def reset_option(pat: str) -> None:
     """重置选项为默认值。
 
-    :param pat: 选项名 (如 'display.max_rows')
+    :param pat: 选项名 (如 'display.max_rows')，或 'all' 重置全部
     """
-    _defaults = {
-        "display.max_rows": 60,
-        "display.max_columns": 20,
-        "display.width": 80,
-        "display.precision": 6,
-        "mode.chained_assignment": "warn",
-    }
     if pat in _defaults:
         _options[pat] = _defaults[pat]
     elif pat == "all":

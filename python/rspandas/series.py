@@ -86,6 +86,8 @@ def _to_python_list(data: Any) -> list:
         return data.tolist()
     if data is None:
         return []
+    if hasattr(data, "__iter__"):
+        return list(data)
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
 
 
@@ -163,10 +165,12 @@ class Series:
             values, index = _to_python_list_and_index(data)
         else:
             # 检查是否为标量输入（int/float/str/bool），如果是且有 index，则广播
-            # 排除 list/tuple/_PySeries/Series/dict 以及有 tolist 方法的数组类型（如 numpy.ndarray）
+            # 排除 list/tuple/_PySeries/Series/dict/range 以及有 tolist 方法的数组类型
             if (
                 index is not None
-                and not isinstance(data, (list, tuple, _PySeries, Series, dict))
+                and not isinstance(
+                    data, (list, tuple, _PySeries, Series, dict, range)
+                )
                 and not hasattr(data, "tolist")
             ):
                 # 标量广播到 index 长度
@@ -323,8 +327,32 @@ class Series:
             new_index = self._index[key] if self._index is not None else None
             return Series(values, name=self.name, index=new_index)
         if isinstance(key, (list, tuple)) and all(isinstance(x, bool) for x in key):
-            # bool mask
+            # 布尔列表 mask
             return self._filter_mask(key)
+        if isinstance(key, Series):
+            # 布尔 Series mask
+            return self._filter_mask(list(key.values))
+        raise TypeError(f"Cannot index Series with {type(key).__name__}")
+
+    def __setitem__(self, key, value):
+        """按标签或位置赋值。"""
+        if self._index is not None and not _is_range_index(self._index):
+            # 自定义 index: 按 label 查找
+            if isinstance(key, (str, int, float, bool)):
+                try:
+                    pos = self._index.index(key)
+                    self._inner.values[pos] = value
+                    return
+                except ValueError:
+                    raise KeyError(key)
+        # RangeIndex 或其他: 走位置
+        if isinstance(key, int):
+            if key < 0:
+                key += len(self)
+            if key < 0 or key >= len(self):
+                raise IndexError("index out of range")
+            self._inner.values[key] = value
+            return
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
 
     def get(self, key, default=None):
@@ -808,31 +836,6 @@ class Series:
             raise ValueError("inclusive must be one of: both/left/right/neither")
         return Series(out, name=self.name, index=self._index, dtype="bool")
 
-    def to_pandas(self):
-        """转换为 pandas Series。"""
-        try:
-            import pandas as pd  # type: ignore
-        except ImportError:
-            raise ImportError("pandas is required for to_pandas()")
-        index = self._index if self._index is not None else None
-        return pd.Series(list(self.values), name=self.name, index=index)
-
-    @classmethod
-    def from_pandas(cls, ps) -> _PySeries:
-        """从 pandas Series 构造。"""
-        try:
-            import pandas as pd  # type: ignore
-        except ImportError:
-            raise ImportError("pandas is required for from_pandas()")
-        if not isinstance(ps, pd.Series):
-            raise TypeError("expected pandas Series")
-        vals = [
-            None if pd.isna(v) else v.item() if hasattr(v, "item") else v
-            for v in ps.values
-        ]
-        index = list(ps.index) if ps.index is not None else None
-        return cls(vals, name=ps.name, index=index)
-
     # ---------- 转换方法 (v1.0.0) ----------
 
     def to_list(self) -> list:
@@ -1018,38 +1021,10 @@ class Series:
             index=sliced_index,
         )
 
-    def iloc(self, key) -> _PySeries:
-        """按位置索引。key: int / list[int] / slice / bool mask。"""
-        n = len(self)
-        if isinstance(key, int):
-            if key < 0:
-                key += n
-            if key < 0 or key >= n:
-                raise IndexError("index out of range")
-            return Series([self.values[key]], name=self.name, dtype=self._dtype_str)
-        if isinstance(key, slice):
-            values = self.values[key]
-            if self._index is not None:
-                new_index = self._index[key]
-            else:
-                new_index = None
-            return Series(
-                values, name=self.name, index=new_index, dtype=self._dtype_str
-            )
-        if isinstance(key, (list, tuple)):
-            if all(isinstance(x, bool) for x in key):
-                return self._filter_mask(key)
-            # 整数列表
-            indices = [int(x) + n if int(x) < 0 else int(x) for x in key]
-            values = [self.values[i] for i in indices]
-            if self._index is not None:
-                new_index = [self._index[i] for i in indices]
-            else:
-                new_index = None
-            return Series(
-                values, name=self.name, index=new_index, dtype=self._dtype_str
-            )
-        raise TypeError(f"iloc: unsupported key {type(key).__name__}")
+    @property
+    def iloc(self):
+        """按位置索引访问器。"""
+        return _ILocIndexer(self)
 
     def sort_values(
         self,
@@ -1806,15 +1781,36 @@ class Series:
         :param level: 多级索引级别
         :param errors: 错误处理 ('ignore' 或 'raise')
         """
-        if index is not None:
+        if isinstance(index, str):
+            # 字符串参数：重命名 Series 本身
             if inplace:
-                self._index = list(index) if not isinstance(index, list) else index
+                self.name = index
                 return self
+            return Series(
+                list(self.values), name=index, dtype=self._dtype_str, index=self._index
+            )
+
+        if index is not None:
+            # 非字符串：重命名索引标签（dict / callable / list-like）
+            if inplace:
+                if callable(index):
+                    self._index = [index(i) for i in self._index] if self._index is not None else None
+                elif isinstance(index, dict):
+                    self._index = [index.get(i, i) for i in self._index] if self._index is not None else None
+                else:
+                    self._index = list(index) if not isinstance(index, list) else index
+                return self
+            if callable(index):
+                new_index = [index(i) for i in self._index] if self._index is not None else None
+            elif isinstance(index, dict):
+                new_index = [index.get(i, i) for i in self._index] if self._index is not None else None
+            else:
+                new_index = list(index) if not isinstance(index, list) else index
             return Series(
                 list(self.values),
                 name=self.name,
                 dtype=self._dtype_str,
-                index=list(index) if not isinstance(index, list) else index,
+                index=new_index,
             )
 
         if mapper is not None:
@@ -1830,14 +1826,6 @@ class Series:
                     index=[mapper(idx) for idx in self._index],
                 )
             return self.copy()
-
-        if isinstance(index, str):
-            if inplace:
-                self.name = index
-                return self
-            return Series(
-                list(self.values), name=index, dtype=self._dtype_str, index=self._index
-            )
 
         return self.copy()
 
@@ -5732,7 +5720,7 @@ class SeriesGroupBy:
         keep_indices = []
         for items in self._groups.values():
             keep_indices.extend(i for i, _ in items[:n])
-        return self._s.iloc(keep_indices)
+        return self._s.iloc[keep_indices]
 
     def tail(self, n: int = 5) -> Series:
         """返回每个分组的后 n 个值。
@@ -5745,7 +5733,7 @@ class SeriesGroupBy:
                 keep_indices.extend(i for i, _ in items[-n:])
             else:
                 keep_indices.extend(i for i, _ in items)
-        return self._s.iloc(keep_indices)
+        return self._s.iloc[keep_indices]
 
     def get_group(self, name) -> Series:
         """获取指定分组的数据。
@@ -5880,7 +5868,7 @@ class SeriesGroupBy:
             group_series = Series([v for _, v in items], name=self._s.name)
             if func(group_series, *args, **kwargs):
                 keep_indices.extend(i for i, _ in items)
-        return self._s.iloc(keep_indices)
+        return self._s.iloc[keep_indices]
 
     def _agg_single(self, func, axis: int = 0, *args, **kwargs) -> Series:
         """单函数聚合（原始 agg 逻辑）。"""
@@ -6265,3 +6253,40 @@ class _IatIndexer:
                 raise IndexError("index out of range")
         else:
             raise TypeError("iat requires integer index")
+
+
+class _ILocIndexer:
+    """Series 的位置索引器（按整数位置索引）。"""
+
+    def __init__(self, series: Series):
+        self._s = series
+
+    def __getitem__(self, key):
+        """按位置取值。"""
+        n = len(self._s)
+        if isinstance(key, int):
+            if key < 0:
+                key += n
+            if key < 0 or key >= n:
+                raise IndexError("index out of range")
+            return self._s.values[key]
+        if isinstance(key, slice):
+            values = self._s.values[key]
+            new_index = self._s._index[key] if self._s._index is not None else None
+            return Series(
+                values, name=self._s.name, index=new_index, dtype=self._s._dtype_str
+            )
+        if isinstance(key, (list, tuple)):
+            if all(isinstance(x, bool) for x in key):
+                return self._s._filter_mask(key)
+            # 整数列表
+            indices = [int(x) + n if int(x) < 0 else int(x) for x in key]
+            values = [self._s.values[i] for i in indices]
+            if self._s._index is not None:
+                new_index = [self._s._index[i] for i in indices]
+            else:
+                new_index = None
+            return Series(
+                values, name=self._s.name, index=new_index, dtype=self._s._dtype_str
+            )
+        raise TypeError(f"iloc: unsupported key {type(key).__name__}")

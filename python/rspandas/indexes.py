@@ -299,13 +299,10 @@ class Index:
         return all(bool(v) for v in self._data)
 
     def to_numpy(self):
-        """转换为 numpy 数组。"""
-        try:
-            import numpy as np
+        """转换为 rsnumpy 数组。"""
+        import rsnumpy as rnp
 
-            return np.array(self._data)
-        except ImportError:
-            raise ImportError("numpy is required for to_numpy()")
+        return rnp.array(self._data)
 
     def to_frame(self, index: bool = True, name: Optional[str] = None):
         """转换为 DataFrame。"""

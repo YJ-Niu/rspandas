@@ -8,7 +8,6 @@ __pycache__/
 *$py.class
 *.so
 *.png
-*.csv
 *.xlsx
 *.parquet
 *.egg-info/
@@ -41,6 +40,7 @@ out/
 test_data/
 wheelhouse/
 N237S NB.csv
+test*.csv
 plots*.py
 # Environment
 .venv
