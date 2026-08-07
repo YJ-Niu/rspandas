@@ -33,11 +33,11 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # pyo3 的 build script 需要一个 Python 解释器来探测 ABI / 版本，
       # 否则 cargo clippy / check 无法编译（找不到 Python 配置）。
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 

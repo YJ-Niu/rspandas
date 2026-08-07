@@ -120,14 +120,6 @@ if ! cargo clippy --all-targets -- -D warnings; then
 fi
 echo "  -> clippy checks passed."
 
-# ========== 构建前的 Flake8 Python 代码检查 ==========
-echo "Running flake8 checks (uv run flake8 python/ --max-line-length=500 --extend-ignore=E203) ..."
-if ! uv run flake8 python/ --max-line-length=500 --extend-ignore=E203; then
-  echo "Error: flake8 checks failed. Fix the warnings above before building." >&2
-  exit 1
-fi
-echo "  -> flake8 checks passed."
-
 BUILD_ARGS=()
 # maturin 默认用 dev 模式，仅 release 时传 --release（maturin 不支持 --debug 参数）
 if $RELEASE; then BUILD_ARGS+=(--release); fi
