@@ -2653,6 +2653,11 @@ class DataFrame:
     def to_arrow(self):
         """转换为 PyArrow Table。
 
+        基于 Rust 层 Arrow IPC 流格式序列化（`to_arrow_ipc_bytes`），
+        再由 pyarrow.ipc 反序列化为 Table，避免 Python 层逐元素 list 中转和
+        重复类型推断。列类型由 Rust 层 ColumnData 精确映射（Int→int64、
+        Float→float64、Bool→bool、String→utf8、Categorical→utf8 展开）。
+
         Returns
         -------
         pyarrow.Table
@@ -2661,27 +2666,24 @@ class DataFrame:
             import pyarrow as pa
         except ImportError:
             raise ImportError("pyarrow is required for to_arrow()")
-        arrays = []
-        for c in self._columns:
-            col_data = list(self._inner.get_column(c).values)
-            non_null = [v for v in col_data if v is not None]
-            if not non_null:
-                arrays.append(pa.array(col_data, type=pa.string()))
-            elif all(isinstance(v, bool) for v in non_null):
-                arrays.append(pa.array(col_data, type=pa.bool_()))
-            elif all(isinstance(v, int) for v in non_null):
-                arrays.append(pa.array(col_data, type=pa.int64()))
-            elif all(isinstance(v, float) for v in non_null):
-                arrays.append(pa.array(col_data, type=pa.float64()))
-            else:
-                arrays.append(
-                    pa.array([str(v) if v is not None else None for v in col_data])
-                )
-        return pa.table(dict(zip(self._columns, arrays)))
+        from io import BytesIO
+
+        from .rspandas import to_arrow_ipc_bytes as _to_ipc_bytes
+
+        cols = list(self._columns)
+        series_list = [self._inner.get_column(c) for c in cols]
+        ipc_bytes = _to_ipc_bytes(cols, series_list)
+        # IPC 流格式（StreamWriter）对应 pyarrow.ipc.open_stream
+        reader = pa.ipc.open_stream(BytesIO(ipc_bytes))
+        return reader.read_all()
 
     @classmethod
     def from_arrow(cls, table) -> "DataFrame":
         """从 PyArrow Table 构造 DataFrame。
+
+        基于 Rust 层 Arrow IPC 流格式反序列化（`from_arrow_ipc_bytes`）：
+        先用 pyarrow.ipc 将 Table 序列化为 bytes，再由 Rust 层零 Python list
+        中转地解析为 Series 列。相比旧的 `to_pylist()` 路径性能大幅提升。
 
         Parameters
         ----------
@@ -2696,13 +2698,22 @@ class DataFrame:
             import pyarrow as pa
         except ImportError:
             raise ImportError("pyarrow is required for from_arrow()")
+        from io import BytesIO
+
+        from .rspandas import from_arrow_ipc_bytes as _from_ipc_bytes
+
         if not isinstance(table, pa.Table):
             raise TypeError("expected pyarrow.Table")
-        data = {}
-        for col_name in table.column_names:
-            col = table.column(col_name)
-            data[col_name] = col.to_pylist()
-        return cls(data)
+        # 将 Table 序列化为 IPC 流格式 bytes，交给 Rust 层反序列化
+        sink = BytesIO()
+        writer = pa.ipc.new_stream(sink, table.schema)
+        writer.write_table(table)
+        writer.close()
+        ipc_bytes = sink.getvalue()
+
+        cols, series_list = _from_ipc_bytes(ipc_bytes)
+        inner = _PyDataFrame(cols, series_list)
+        return cls._from_inner(inner)
 
     @staticmethod
     def read_json(
@@ -7722,7 +7733,9 @@ class DataFrame:
         from .io import StreamDataFrame
 
         nrows = self._nrows
-        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
+        chunks = [
+            self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)
+        ]  # noqa
         return StreamDataFrame(chunks)
 
     def pipeline(self, *funcs):

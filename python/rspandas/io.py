@@ -11,14 +11,11 @@ import json as _json
 import pickle as _pickle
 
 # ============================================================================
-# PyArrow 可选依赖：仅用于 ORC 格式（read_orc/to_orc）。
+# PyArrow 可选依赖：仅用于 ORC 格式（read_orc/to_orc）及 to_arrow()/from_arrow()。
 # Parquet 和 Feather (Arrow IPC) 已由 Rust 层 arrow/parquet crate 实现，无需 pyarrow。
+# ORC 的 DataFrame↔Table 转换也复用 Rust 层 IPC bytes 桥接（见 dataframe.to_arrow），
+# 此处不再在 Python 层做类型推断循环。
 # ============================================================================
-_pa = None
-try:
-    import pyarrow as _pa
-except ImportError:
-    pass
 
 
 class ExcelWriter:
@@ -295,12 +292,12 @@ def read_parquet(path: str, **kwargs) -> DataFrame:
 
 
 def _arrow_table_to_dataframe(table) -> DataFrame:
-    """将 PyArrow Table 转换为 DataFrame（仅用于 ORC 回退路径）。"""
-    # 使用字典推导式替代显式 for 循环
-    data: Dict[str, list] = {
-        col_name: table.column(col_name).to_pylist() for col_name in table.column_names
-    }
-    return DataFrame(data)
+    """将 PyArrow Table 转换为 DataFrame（用于 ORC 读取路径）。
+
+    复用 DataFrame.from_arrow 的 Rust IPC 桥接路径：Table → IPC bytes → Rust 层
+    反序列化，避免逐元素 to_pylist() 中转。
+    """
+    return DataFrame.from_arrow(table)
 
 
 def to_parquet(
@@ -330,49 +327,15 @@ def to_parquet(
 
 
 def _dataframe_to_arrow_table(df: DataFrame):
-    """将 DataFrame 转换为 PyArrow Table（仅用于 ORC 回退路径，需 pyarrow）。"""
-    arrays = []
-    for col_name in df.columns:
-        # 直接获取 Rust 层原始列数据，避免创建 Series 对象
-        raw_series = df._inner.get_column(col_name)
-        col_data = list(raw_series.values)
+    """将 DataFrame 转换为 PyArrow Table（用于 ORC 写入路径）。
 
-        custom_dtype = df._col_dtypes.get(col_name)
-        if custom_dtype == "category":
-            # category 类型：使用字典编码
-            arr = _pa.array(col_data, type=_pa.dictionary(_pa.int32(), _pa.string()))
-        else:
-            # 单次遍历推断类型（优先级: str > float > int > bool）
-            dtype_level = 0  # 0=unknown, 1=bool, 2=int, 3=float, 4=str
-            for v in col_data:
-                if v is None:
-                    continue
-                if isinstance(v, bool):
-                    level = 1
-                elif isinstance(v, int):
-                    level = 2
-                elif isinstance(v, float):
-                    level = 3
-                else:
-                    level = 4
-                if level > dtype_level:
-                    dtype_level = level
-                if dtype_level >= 4:
-                    break
+    复用 DataFrame.to_arrow 的 Rust IPC 桥接路径：Rust 层将 ColumnData 精确映射为
+    Arrow 类型并序列化为 IPC bytes，再由 pyarrow.ipc 反序列化为 Table。
 
-            if dtype_level == 1:
-                arr = _pa.array(col_data, type=_pa.bool_())
-            elif dtype_level == 2:
-                arr = _pa.array(col_data, type=_pa.int64())
-            elif dtype_level == 3:
-                arr = _pa.array(col_data, type=_pa.float64())
-            else:
-                # 让 pyarrow 自行推断类型（字符串、日期等）
-                arr = _pa.array(col_data)
-
-        arrays.append(arr)
-
-    return _pa.table(dict(zip(df.columns, arrays)))
+    注意：Categorical 列会被 Rust 层展开为 utf8（而非 dictionary 编码），
+    与旧实现的差异仅在 ORC 内部编码压缩率上，数据语义不变。
+    """
+    return df.to_arrow()
 
 
 # ============================================================================
@@ -989,7 +952,7 @@ def to_sql_batch(
         )
         records = df.values
         for i in range(0, len(records), batch_size):
-            batch = records[i : i + batch_size]
+            batch = records[i : i + batch_size]  # noqa
             connection.execute(stmt, batch)
 
 
@@ -1116,7 +1079,7 @@ def read_html(
 
     # 解析表格
     rows_data = []
-    for tr in table.find_all("tr")[header or 0 :]:
+    for tr in table.find_all("tr")[header or 0 :]:  # noqa
         cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if cells:
             rows_data.append(cells)
