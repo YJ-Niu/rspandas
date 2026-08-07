@@ -18,5 +18,16 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::core::xlsx_io::write_xlsx, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::xlsx_io::write_xlsx_multi, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::xlsx_io::xlsx_sheet_names, m)?)?;
+    // Parquet / Feather (Arrow IPC) 读写 —— 基于 Rust arrow/parquet crate，无需 pyarrow
+    m.add_function(wrap_pyfunction!(crate::core::parquet_io::read_parquet, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::core::parquet_io::write_parquet, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::core::arrow_ipc_io::read_feather,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::core::arrow_ipc_io::write_feather,
+        m
+    )?)?;
     Ok(())
 }

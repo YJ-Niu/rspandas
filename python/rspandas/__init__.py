@@ -63,7 +63,7 @@ from typing import Any, Dict
 
 _options: Dict[str, Any] = {
     "display.max_rows": 60,
-    "display.max_columns": 20,
+    "display.max_columns": 0,
     "display.width": 80,
     "display.precision": 6,
     "display.max_colwidth": 50,
@@ -764,15 +764,26 @@ def _wrap_rsnumpy_functions():
         if hasattr(_rnp, fname):
             setattr(_rnp, fname, _apply_binary_ufunc(fname))
 
-    # 包装 asarray 使其对 Series/DataFrame 返回 ndarray
+    # 包装 asarray 使其对 Series/DataFrame 返回真正的 numpy ndarray（显示格式对齐 pandas）
     original_asarray = _rnp.asarray if hasattr(_rnp, "asarray") else None
     if original_asarray is not None:
 
         def _wrap_asarray(a, *args, **kwargs):
             if isinstance(a, _Series):
-                return _rnp.array(list(a.values), *args, **kwargs)
+                # 返回真正的 numpy 数组以获得正确的显示格式
+                import numpy as _np
+
+                return _np.array(list(a.values), *args, **kwargs)
             if isinstance(a, _DataFrame):
-                return a.to_numpy()
+                import numpy as _np
+
+                # 将 DataFrame 转换为 numpy 二维数组
+                cols = list(a._columns)
+                data = [
+                    [a._inner.get_column(c).values[i] for c in cols]
+                    for i in range(a._nrows)
+                ]
+                return _np.array(data, *args, **kwargs)
             return original_asarray(a, *args, **kwargs)
 
         _rnp.asarray = _wrap_asarray

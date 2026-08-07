@@ -400,9 +400,12 @@ class DataFrame:
         # 构造 Rust 端 DataFrame
         self._inner = _PyDataFrame(str_col_names, rust_series_list)
 
+        # 保存原始列名（保留 tuple 等复合类型用于显示）
+        self._raw_columns: List[Any] = list(col_names)
         self._columns: List[str] = str_col_names
         self._nrows: int = n
         self._index = index if index is not None else list(range(n))
+        self._index_name_val: Optional[str] = None  # 索引名称（如 from_records 的 index 参数）
         self._col_dtypes: Dict[str, str] = (
             col_dtype_overrides  # 列 dtype 覆盖（如 category）
         )
@@ -420,7 +423,7 @@ class DataFrame:
     def columns(self):
         from .indexes import Index
 
-        return Index(list(self._columns))
+        return Index(list(self._raw_columns))
 
     @columns.setter
     def columns(self, value: List[str]) -> None:
@@ -434,8 +437,11 @@ class DataFrame:
         new_series = [
             _PySeries(old_data[c], value[i]) for i, c in enumerate(self._columns)
         ]
-        self._inner = _PyDataFrame(list(value), new_series)
-        self._columns = list(value)
+        # 将新列名转换为字符串用于 Rust 层
+        str_value = [str(c) for c in value]
+        self._inner = _PyDataFrame(str_value, new_series)
+        self._columns = list(str_value)
+        self._raw_columns = list(value)
 
     @property
     def dtypes(self) -> "Series":
@@ -1061,6 +1067,7 @@ class DataFrame:
             new_data[key] = values
             self._reload(new_data)
             self._columns.append(key)
+            self._raw_columns.append(key)
 
     def _setitem_with_mask(self, mask_df: "DataFrame", value) -> None:
         """使用布尔 DataFrame 作为掩码进行赋值。"""
@@ -2778,8 +2785,11 @@ class DataFrame:
         df = cls.__new__(cls)
         df._inner = inner
         df._columns = cols
+        df._raw_columns: List[Any] = list(cols)
         df._nrows = inner.nrows
         df._index = list(range(df._nrows))
+        df._col_dtypes = {}
+        df._index_name_val = None
         return df
 
     # ---------- 索引操作 (v1.0.0) ----------
@@ -3340,6 +3350,9 @@ class DataFrame:
                 # 删除该列
                 col_idx = df._columns.index(index)
                 del df._columns[col_idx]
+                # 同步删除 _raw_columns 中的对应项
+                if col_idx < len(df._raw_columns):
+                    del df._raw_columns[col_idx]
                 # 重建 _inner（不含该列）
                 remaining_cols = list(df._columns)
                 remaining_series = [df._inner.get_column(c) for c in remaining_cols]
@@ -3348,6 +3361,7 @@ class DataFrame:
                 df._inner = _PyDataFrame(remaining_cols, remaining_series)
                 df._nrows = len(idx_values)
                 df._index = idx_values
+                df._index_name_val = index  # 保存索引名称
                 return df
             return cls(data, index=index, columns=columns)
         return cls(data, index=index, columns=columns)
@@ -3977,44 +3991,159 @@ class DataFrame:
         # 准备每列的字符串化数据
         col_strs: Dict[str, list] = {}
         col_widths: Dict[str, int] = {}
-        for c in self._columns:
+
+        def _format_floats_col(values, precision=6):
+            """按 pandas 规则格式化浮点列：统一精度控制。
+
+            不添加前导空格，对齐在 _format_repr 中通过 rjust 处理。
+            """
+            valid_floats = []
+            valid_indices = []
+            for i, v in enumerate(values):
+                if v is None:
+                    continue
+                try:
+                    fv = float(v)
+                    # 跳过 NaN
+                    if fv != fv:
+                        continue
+                    valid_floats.append(fv)
+                    valid_indices.append(i)
+                except (ValueError, TypeError):
+                    pass
+
+            if not valid_floats:
+                return [
+                    "NaN"
+                    if (
+                        v is None
+                        or (isinstance(v, float) and v != v)
+                        or (isinstance(v, str) and v in ("NaN", "None", "nan"))
+                    )
+                    else str(v)
+                    for v in values
+                ]
+
+            # 格式化为 6 位小数，找出最大精度
+            formatted_all = [f"{fv:.{precision}f}" for fv in valid_floats]
+            decimal_counts = []
+            for fmt in formatted_all:
+                if "." in fmt:
+                    stripped = fmt.rstrip("0")
+                    if stripped.endswith("."):
+                        decimal_counts.append(1)
+                    else:
+                        dec_part = stripped.split(".")[1] if "." in stripped else ""
+                        decimal_counts.append(len(dec_part))
+                else:
+                    decimal_counts.append(1)
+
+            max_decimals = max(max(decimal_counts), 1)
+
+            # 极大/极小值用科学计数法
+            use_sci = [
+                abs(fv) >= 1e15 or (fv != 0 and abs(fv) < 0.001)
+                for fv in valid_floats
+            ]
+
+            precise_format = f".{max_decimals}f"
+            result = []
+            for j, fv in enumerate(valid_floats):
+                if use_sci[j]:
+                    result.append(f"{fv:.6g}")
+                else:
+                    result.append(f"{fv:{precise_format}}")
+
+            full_result = list(values)
+            for i, idx in enumerate(valid_indices):
+                full_result[idx] = result[i]
+
+            # 替换无效值
+            for i, v in enumerate(full_result):
+                if v is None:
+                    full_result[i] = "NaN"
+                elif isinstance(v, str) and v in ("NaN", "None", "nan", "inf", "-inf"):
+                    pass
+                elif not isinstance(v, str):
+                    try:
+                        fv = float(v)
+                        if fv != fv:
+                            full_result[i] = "NaN"
+                        else:
+                            full_result[i] = f"{fv:{precise_format}}"
+                    except (ValueError, TypeError):
+                        full_result[i] = str(v)
+
+            return full_result
+
+        # 创建原始列名到字符串列名的映射
+        raw_to_str = {}
+        for raw, s in zip(self._raw_columns, self._columns):
+            raw_to_str[raw] = s
+
+        # 使用原始列名进行显示（支持 tuple 等复合类型）
+        display_columns = self._raw_columns
+
+        for raw_c in display_columns:
+            c = raw_to_str[raw_c]  # Rust 层使用的字符串列名
             ser = self._inner.get_column(c)
-            svec = ser.to_string_vec()
-            # 格式化浮点数: 对齐 pandas 行为
-            # - 整数型浮点数 (如 1.0, 5.0) 显示为 "1.0"
-            # - 非整数浮点数显示 6 位小数 (如 "0.814232")
-            # - 极大/极小值使用科学计数法
             dtype = ser.dtype
             if dtype in ("float64", "float32", "float16", "float"):
-                formatted = []
-                for s in svec:
-                    if s == "NaN" or s == "None" or s == "inf" or s == "-inf":
-                        formatted.append(s)
-                    else:
-                        try:
-                            v = float(s)
-                            if v == 0 or (abs(v) >= 0.001 and abs(v) < 1e15):
-                                # pandas 显示 6 位小数，去掉末尾零
-                                formatted_v = f"{v:.6f}"
-                                if "." in formatted_v:
-                                    formatted_v = formatted_v.rstrip("0")
-                                    if formatted_v.endswith("."):
-                                        formatted_v = formatted_v + "0"
-                                formatted.append(formatted_v)
-                            else:
-                                formatted.append(f"{v:.6g}")
-                        except (ValueError, TypeError):
-                            formatted.append(s)
-                svec = formatted
-            col_strs[c] = svec
-            col_widths[c] = max(len(c), max((len(s) for s in svec), default=0))
+                raw_values = list(ser.values)
+                svec = _format_floats_col(raw_values)
+            else:
+                svec = ser.to_string_vec()
+            col_strs[raw_c] = svec
+            # MultiIndex 列: 使用最后一级的值作为宽度参考
+            if isinstance(raw_c, tuple):
+                header_width = len(str(raw_c[-1]))
+            else:
+                header_width = len(str(raw_c))
+            # 对齐 pandas: 列宽基于值字符串长度（忽略负号）
+            # pandas 的 col_width = max(len(v.lstrip('-')) for v in values)
+            non_ellipsis_strs = [s for s in svec if s != "..."]
+            if non_ellipsis_strs:
+                # 忽略负号计算列宽（对齐 pandas 行为）
+                max_val_width = max(len(s.lstrip("-")) for s in non_ellipsis_strs)
+                col_widths[raw_c] = max(header_width, max_val_width)
+            else:
+                col_widths[raw_c] = header_width
 
-        # 截断列: > max_columns 时显示前 half + ... + 后 half
-        half_cols = max(max_columns // 2, 5)
-        if len(self._columns) > max_columns:
-            shown_cols = self._columns[:half_cols] + self._columns[-half_cols:]
+        # 截断列: 基于 max_columns 或 display.width
+        display_width = get_option("display.width")
+
+        # 对齐 pandas: max_columns=0 表示根据 display.width 自动检测
+        if max_columns > 0 and len(display_columns) > max_columns:
+            half_cols = max(max_columns // 2, 5)
+            shown_cols = display_columns[:half_cols] + display_columns[-half_cols:]
         else:
-            shown_cols = list(self._columns)
+            # 根据 display.width 判断是否截断
+            # 计算所有列的总宽度
+            total_width = 0
+            for raw_c in display_columns:
+                total_width += col_widths.get(raw_c, len(str(raw_c))) + 2  # 2 空格间距
+
+            # 估算索引宽度
+            idx_width_est = max(
+                (len(str(self._index[i])) for i in range(min(5, len(self._index)))),
+                default=0,
+            )
+            total_width += idx_width_est + 2
+
+            if total_width > display_width and len(display_columns) > 2:
+                # 基于 display.width 截断: 计算能放下的列数
+                avail_width = display_width - idx_width_est - 2
+                # 估算每列平均宽度
+                avg_col_width = (
+                    sum(col_widths.get(c, len(str(c))) + 2 for c in display_columns)
+                    / len(display_columns)
+                )
+                # 计算能放下的列数（预留 ... 的空间）
+                fit_cols = max(int(avail_width / avg_col_width) - 1, 1)
+                half = max(fit_cols // 2, 1)
+                shown_cols = display_columns[:half] + display_columns[-half:]
+            else:
+                shown_cols = list(display_columns)
 
         # 截断行: > max_rows 时显示前 half + ... + 后 half
         half_rows = max(max_rows // 2, 5)
@@ -4047,7 +4176,7 @@ class DataFrame:
             for lvl in range(max_levels):
                 lw = max(len(ls[lvl]) for ls in level_strs)
                 level_widths.append(lw)
-            idx_width = sum(level_widths) + (max_levels - 1) * 2  # 2 空格间距
+            idx_width = sum(level_widths) + (max_levels - 1)  # 1 空格间距
         else:
             idx_strs = [_fmt_val(self._index[i]) for i in shown_rows]
             idx_width = max((len(v) for v in idx_strs), default=1)
@@ -4059,46 +4188,186 @@ class DataFrame:
                     s[:max_colwidth] + "..." if len(s) > max_colwidth else s
                     for s in col_strs[c]
                 ]
-                col_widths[c] = max(
-                    len(c), max((len(s) for s in col_strs[c]), default=0)
-                )
+                # MultiIndex 列: 使用最后一级的值作为宽度参考
+                if isinstance(c, tuple):
+                    header_width = len(str(c[-1]))
+                else:
+                    header_width = len(str(c))
+                # 对齐 pandas: 忽略负号计算列宽
+                non_ellipsis = [s for s in col_strs[c] if s != "..."]
+                if non_ellipsis:
+                    max_val_width = max(len(s.lstrip("-")) for s in non_ellipsis)
+                    col_widths[c] = max(header_width, max_val_width)
+                else:
+                    col_widths[c] = header_width
+
+        # 检测 MultiIndex 列（列名为 tuple）
+        is_col_multiindex = any(isinstance(c, tuple) for c in self._raw_columns)
 
         # 表头（右对齐，对齐 pandas 行为）
-        header_cells = [c.rjust(col_widths[c]) for c in shown_cols]
-        if is_multiindex:
-            header = " " * (idx_width + 2) + "  ".join(header_cells)
+        is_col_truncated = len(shown_cols) < len(self._raw_columns)
+
+        if is_col_multiindex:
+            # MultiIndex 列: 构建多层表头
+            col_levels = len(self._raw_columns[0]) if isinstance(self._raw_columns[0], tuple) else 1
+
+            # 构建每层表头
+            header_lines = []
+            for lvl in range(col_levels):
+                if lvl == 0:
+                    # Level 0: 与第一列的 level 1 对齐
+                    # 按 level 0 值分组
+                    groups = []  # [(group_key, first_col_index)]
+                    current_key = None
+                    current_cols = []
+                    for ci, c in enumerate(shown_cols):
+                        if isinstance(c, tuple):
+                            key = c[lvl] if lvl < len(c) else ""
+                        else:
+                            key = str(c)
+                        if key != current_key:
+                            if current_key is not None:
+                                groups.append((current_key, current_cols[0]))
+                            current_key = key
+                            current_cols = [ci]
+                        else:
+                            current_cols.append(ci)
+                    # 处理最后一组
+                    if current_key is not None:
+                        groups.append((current_key, current_cols[0]))
+
+                    # 构建 level 0 表头字符串
+                    # 先构建 level 1 行以获取列位置
+                    level1_cells = []
+                    for c in shown_cols:
+                        if isinstance(c, tuple):
+                            val = str(c[lvl + 1]) if lvl + 1 < len(c) else ""
+                        else:
+                            val = str(c)
+                        cw = col_widths.get(c, len(str(c)))
+                        level1_cells.append((val.ljust(cw), cw))
+
+                    # 计算 level 1 行中每列的起始位置
+                    col_positions = []
+                    pos = 0
+                    for i, (cell, cw) in enumerate(level1_cells):
+                        col_positions.append(pos)
+                        pos += cw + 2  # 列宽 + 间距
+                    total_width = pos - 2  # 去掉最后一个间距
+
+                    # 构建 level 0 行
+                    line = [" "] * total_width
+                    for key, first_ci in groups:
+                        key_str = str(key)
+                        start_pos = col_positions[first_ci]
+                        for i, ch in enumerate(key_str):
+                            if start_pos + i < total_width:
+                                line[start_pos + i] = ch
+                    header_lines.append("".join(line))
+                else:
+                    # 其他级别: 直接显示每个列的值
+                    cells = []
+                    for c in shown_cols:
+                        if isinstance(c, tuple):
+                            val = str(c[lvl]) if lvl < len(c) else ""
+                        else:
+                            val = str(c)
+                        cw = col_widths.get(c, len(str(c)))
+                        cells.append(val.ljust(cw))
+                    if is_col_truncated:
+                        mid = len(shown_cols) // 2
+                        cells.insert(mid, "...")
+                    header_lines.append("  ".join(cells))
+
+            # 合并表头（MultiIndex 列时增加额外缩进以对齐 pandas）
+            header = "\n".join(
+                " " * (idx_width + 2) + "  " + line for line in header_lines
+            )
+            lines = [header]
+            # 添加索引名称行
+            if self._index_name_val is not None:
+                idx_name_line = f"{self._index_name_val:>{idx_width}}  "
+                lines.append(idx_name_line)
         else:
-            header = " " * (idx_width + 2) + "  ".join(header_cells)
-        lines = [header]
+            # 对齐 pandas: 每列右对齐到 (col_width + 2)，索引后直接接列
+            header_cells = [str(c).rjust(col_widths[c] + 2) for c in shown_cols]
+            if is_col_truncated:
+                mid = len(shown_cols) // 2
+                header_cells.insert(mid, "  ...")
+            header = " " * idx_width + "".join(header_cells)
+            lines = [header]
+            # 添加索引名称行
+            if self._index_name_val is not None:
+                idx_name_line = f"{self._index_name_val:>{idx_width}}  "
+                lines.append(idx_name_line)
 
         prev_i = -1
+        # 追踪 MultiIndex 行的上一级值
+        prev_idx_levels = None
         for pos, i in enumerate(shown_rows):
             if prev_i >= 0 and i != prev_i + 1:
-                ellipsis_cells = ["." * col_widths[c] for c in shown_cols]
-                lines.append("." * (idx_width + 2) + "  " + "  ".join(ellipsis_cells))
-            # 值右对齐（对齐 pandas 行为）
+                # 行截断时，每列显示 ...
+                ellipsis_cells = ["...".rjust(col_widths[c] + 2) for c in shown_cols]
+                if is_col_truncated:
+                    mid = len(shown_cols) // 2
+                    ellipsis_cells.insert(mid, "  ...")
+                lines.append("..." + "".join(ellipsis_cells))
+            # 值右对齐到 (col_width + 2)（对齐 pandas 行为）
             row_cells = [
-                col_strs[c][i].rjust(col_widths[c]) if i < len(col_strs[c]) else ""
+                col_strs[c][i].rjust(col_widths[c] + 2) if i < len(col_strs[c]) else ""
                 for c in shown_cols
             ]
+            if is_col_truncated:
+                mid = len(shown_cols) // 2
+                row_cells.insert(mid, "  ...")
             if is_multiindex:
                 idx = self._index[i]
                 if isinstance(idx, tuple):
-                    parts = [
-                        str(v).ljust(level_widths[lvl]) for lvl, v in enumerate(idx)
-                    ]
-                    idx_str = "  ".join(parts)
+                    # MultiIndex 行: 只显示变化的级别
+                    idx_levels = [str(v) for v in idx]
+                    if prev_idx_levels is not None:
+                        # 找到第一个不同的级别
+                        first_diff = 0
+                        for lvl in range(len(idx_levels)):
+                            if lvl >= len(prev_idx_levels) or idx_levels[lvl] != prev_idx_levels[lvl]:
+                                first_diff = lvl
+                                break
+                            first_diff = lvl + 1
+                        # 构建显示: 前面的级别留空
+                        display_levels = [""] * first_diff + idx_levels[first_diff:]
+                    else:
+                        display_levels = idx_levels
+                    # 计算每个级别的显示宽度
+                    if 'level_widths' in locals():
+                        if len(level_widths) == len(display_levels):
+                            parts = [
+                                display_levels[lvl].ljust(level_widths[lvl])
+                                for lvl in range(len(display_levels))
+                            ]
+                        else:
+                            parts = [display_levels[0].ljust(idx_width)]
+                    else:
+                        parts = [display_levels[0].ljust(idx_width)]
+                    idx_str = " ".join(parts)
+                    prev_idx_levels = idx_levels
                 else:
                     idx_str = str(idx).ljust(idx_width)
+                    prev_idx_levels = None
             else:
                 idx_str = _fmt_val(self._index[i])
-            lines.append(f"{idx_str:<{idx_width}}  " + "  ".join(row_cells))
+                prev_idx_levels = None
+            lines.append(f"{idx_str:<{idx_width}}" + "".join(row_cells))
             prev_i = i
 
         # 截断时显示 summary 行（对齐 pandas 行为）
-        is_truncated = n > max_rows or len(self._columns) > max_columns
+        # 对齐 pandas: max_columns=0 时不按列数判断截断
+        is_truncated = (
+            n > max_rows
+            or (max_columns > 0 and len(self._raw_columns) > max_columns)
+            or is_col_truncated
+        )
         if is_truncated:
-            return "\n".join(lines) + f"\n\n[{n} rows x {len(self._columns)} columns]"
+            return "\n".join(lines) + f"\n\n[{n} rows x {len(self._raw_columns)} columns]"
         return "\n".join(lines)
 
     def groupby(
@@ -4682,10 +4951,15 @@ class DataFrame:
         if item not in self._columns:
             raise KeyError(f"column not found: {item}")
         ser = self._get_column_as_series(item)
+        # 找到 item 在 _columns 中的位置
+        col_idx = self._columns.index(item)
         new_cols = [c for c in self._columns if c != item]
         new_data = {c: list(self._inner.get_column(c).values) for c in new_cols}
         self._reload(new_data)
         self._columns = new_cols
+        # 同步更新 _raw_columns（保持与 _columns 一一对应）
+        if col_idx < len(self._raw_columns):
+            del self._raw_columns[col_idx]
         return ser
 
     def __delitem__(self, key):
@@ -4723,6 +4997,10 @@ class DataFrame:
         new_data[column] = vals
         self._reload(new_data)
         self._columns = new_cols
+        # 同步更新 _raw_columns（保持与 _columns 一一对应）
+        new_raw_cols = list(self._raw_columns)
+        new_raw_cols.insert(loc, column)
+        self._raw_columns = new_raw_cols
 
     # ---------- v2.0.0: filter / select_dtypes ----------
 

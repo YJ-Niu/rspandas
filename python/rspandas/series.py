@@ -1096,7 +1096,7 @@ class Series:
                     col_key = idx[-1]
                 else:
                     row_key = (
-                        idx[:level] + idx[level + 1:]
+                        idx[:level] + idx[level + 1 :]
                         if len(idx) > 1 and level < len(idx)
                         else idx[0]
                     )
@@ -3164,8 +3164,8 @@ class Series:
         if self._index is not None and item in self._index:
             pos = self._index.index(item)
             val = self.values[pos]
-            new_values = self.values[:pos] + self.values[pos + 1:]
-            new_index = self._index[:pos] + self._index[pos + 1:]
+            new_values = self.values[:pos] + self.values[pos + 1 :]
+            new_index = self._index[:pos] + self._index[pos + 1 :]
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return val
@@ -3525,12 +3525,7 @@ class Series:
         storage_options=None,
         **kwargs,
     ):
-        """将 Series 写入 Parquet 文件（需 pyarrow 支持）。"""
-        try:
-            import pyarrow  # noqa: F401
-        except ImportError:
-            raise ImportError("to_parquet requires pyarrow")
-
+        """将 Series 写入 Parquet 文件（基于 Rust arrow/parquet crate，无需 pyarrow）。"""
         from .dataframe import DataFrame
 
         col_name = self.name if self.name is not None else "0"
@@ -3737,10 +3732,10 @@ class Series:
 
     @property
     def array(self):
-        """返回底层值的 rsnumpy 数组。"""
+        """返回底层值的 rsnumpy 数组（显示格式对齐 pandas NumpyExtensionArray）。"""
         import rsnumpy as rnp
 
-        return rnp.array(self.values)
+        return _ExtensionArray(rnp.array(self.values), self._dtype_str)
 
     @property
     def flags(self):
@@ -3777,30 +3772,124 @@ class Series:
                 return "NaN"
             return str(v)
 
+        def _format_floats_precise(values, precision=6):
+            """按 pandas 规则格式化浮点列表：每列统一精度。
+
+            规则：先将所有有效值格式化为 precision 位小数，
+            然后确定所需最大精度（去掉末尾零后），统一应用。
+            若所有值均为整数，显示 1 位小数。
+            不添加前导空格，对齐在 _format_repr 中处理。
+            """
+            # 分离有效浮点数和无效值
+            valid_floats = []
+            valid_indices = []
+            for i, v in enumerate(values):
+                if v is None:
+                    continue
+                if isinstance(v, float) and v != v:  # NaN
+                    continue
+                try:
+                    fv = float(v)
+                    valid_floats.append(fv)
+                    valid_indices.append(i)
+                except (ValueError, TypeError):
+                    pass
+
+            if not valid_floats:
+                return [
+                    (
+                        "NaN"
+                        if (v is None or (isinstance(v, float) and v != v))
+                        else str(v)
+                    )
+                    for v in values
+                ]
+
+            # 格式化为 6 位小数，找出最大精度
+            formatted_all = [f"{fv:.{precision}f}" for fv in valid_floats]
+            # 对每个值去掉末尾零，确定所需精度
+            decimal_counts = []
+            for fmt in formatted_all:
+                if "." in fmt:
+                    stripped = fmt.rstrip("0")
+                    if stripped.endswith("."):
+                        decimal_counts.append(1)
+                    else:
+                        decimal_counts.append(
+                            len(stripped.split(".")[1]) if "." in stripped else 0
+                        )
+                else:
+                    decimal_counts.append(1)
+
+            # 所需最大精度（至少 1 位）
+            max_decimals = max(max(decimal_counts), 1)
+
+            # 重新用统一精度格式化
+            precise_format = f".{max_decimals}f"
+            result = [f"{fv:{precise_format}}" for fv in valid_floats]
+
+            # 构建完整结果
+            full_result = list(values)
+            for i, idx in enumerate(valid_indices):
+                full_result[idx] = result[i]
+
+            # 替换无效值为 "NaN"
+            for i, v in enumerate(full_result):
+                if v is None:
+                    full_result[i] = "NaN"
+                elif isinstance(v, float) and v != v:
+                    full_result[i] = "NaN"
+                elif not isinstance(v, str):
+                    try:
+                        fv = float(v)
+                        if fv != fv:
+                            full_result[i] = "NaN"
+                    except (ValueError, TypeError):
+                        full_result[i] = str(v)
+
+            return full_result
+
         # 字符串化每个值，float64 类型显示合适精度（对齐 pandas 行为）
         dtype_str = self._dtype_str
         if dtype_str in ("float64", "float32", "float16", "float"):
-            strs = []
-            for v in self.values:
+            strs = _format_floats_precise(list(self.values))
+            # 处理极大/极小值使用科学计数法
+            for i, v in enumerate(self.values):
                 if v is None:
-                    strs.append("NaN")
-                elif isinstance(v, float) and v != v:  # NaN check
-                    strs.append("NaN")
-                else:
-                    # 显示合适精度（对齐 pandas 行为）
+                    continue
+                if isinstance(v, float) and v != v:
+                    continue
+                try:
                     fv = float(v)
-                    if fv == 0 or (abs(fv) >= 0.001 and abs(fv) < 1e15):
-                        formatted = f"{fv:.6f}"
-                        # 去掉末尾零，但保留至少一位小数（对齐 pandas）
-                        if "." in formatted:
-                            formatted = formatted.rstrip("0")
-                            if formatted.endswith("."):
-                                formatted = formatted + "0"
-                        strs.append(formatted)
-                    else:
-                        strs.append(f"{fv:.6g}")
+                    if abs(fv) >= 1e15 or (fv != 0 and abs(fv) < 0.001):
+                        strs[i] = f"{fv:.6g}"
+                except (ValueError, TypeError):
+                    pass
         elif dtype_str == "int64":
             strs = [str(int(v)) if v is not None else "NaN" for v in self.values]
+        elif dtype_str == "object":
+            # object dtype: 混合类型，检测是否有数值类型
+            raw_values = list(self.values)
+            # 检查是否有数值（int/float）值
+            has_numeric = any(
+                isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and v is not None
+                for v in raw_values
+            )
+            if has_numeric:
+                # 有数值: 对数值使用浮点格式化，其他保持原样
+                strs = []
+                for v in raw_values:
+                    if v is None or (isinstance(v, float) and v != v):
+                        strs.append("NaN")
+                    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                        # 数值: 使用浮点格式
+                        strs.append(f"{float(v):.1f}")
+                    else:
+                        strs.append(_fmt_val(v))
+            else:
+                strs = [_fmt_val(v) for v in raw_values]
         else:
             strs = [_fmt_val(v) for v in self.values]
 
@@ -3831,10 +3920,37 @@ class Series:
         # 索引列宽度
         idx_width = max((len(s) for s in idx_strs), default=1)
 
-        # 使用列表推导式替代显式 for 循环构建 lines
+        # 值列宽度：基于整数部分的最大位数对齐（对齐 pandas 行为）
+        non_ellipsis_strs = [s for s in strs if s != "..."]
+        if non_ellipsis_strs:
+            max_str_len = max(len(s) for s in non_ellipsis_strs)
+            max_int_digits = 0
+            max_dec_digits = 0
+            for s in non_ellipsis_strs:
+                # 处理负数和科学计数法
+                clean_s = s.lstrip("-")
+                if "." in clean_s:
+                    int_part, dec_part = clean_s.split(".", 1)
+                    max_int_digits = max(max_int_digits, len(int_part))
+                    max_dec_digits = max(max_dec_digits, len(dec_part))
+                else:
+                    max_int_digits = max(max_int_digits, len(clean_s))
+            # 对齐宽度：max(最长字符串长度, 整数部分+小数部分+1(负号对齐)+1(小数点))
+            val_width = max(max_str_len, max_int_digits + max_dec_digits + 1)
+            if max_dec_digits > 0:
+                val_width = max(
+                    val_width, max_int_digits + max_dec_digits + 2
+                )  # +2: 小数点 + 前导空格
+        else:
+            val_width = 1
+
+        # 右对齐值字符串
+        strs_aligned = [s.rjust(val_width) if s != "..." else s for s in strs]
+
+        # 使用列表推导式构建 lines（pandas 使用 3 个空格分隔索引和值）
         lines = [
-            ".." if s == "..." else f"{idx_s:>{idx_width}}    {s}"
-            for s, idx_s in zip(strs, idx_strs)
+            " .." if s == "..." else f"{idx_s:>{idx_width}}   {s}"
+            for s, idx_s in zip(strs_aligned, idx_strs)
         ]
 
         body = "\n".join(lines)
@@ -3992,7 +4108,7 @@ class Series:
             """计算第 i 位的移动平均值。"""
             if i < window - 1:
                 return None
-            win = values[i - window + 1:i + 1]
+            win = values[i - window + 1 : i + 1]
             non_null = [v for v in win if v is not None]
             if not non_null:
                 return None
@@ -4064,6 +4180,53 @@ class Series:
 def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:
     """辅助函数：调用 Rust 端 filter。"""
     return inner.filter(mask)
+
+
+# ---------------------------------------------------------------------------
+# 扩展数组类 (对齐 pandas NumpyExtensionArray 显示)
+# ---------------------------------------------------------------------------
+
+
+class _ExtensionArray:
+    """包装 rsnumpy ndarray，提供与 pandas ExtensionArray 相同的显示格式。"""
+
+    def __init__(self, data, dtype_str=None):
+        self._data = data
+        self._dtype = dtype_str or "float64"
+
+    def __repr__(self) -> str:
+        import numpy as np
+
+        arr = np.array(self._data)
+        # 如果是二维数组 (1, n)，squeeze 成一维
+        if arr.ndim > 1:
+            arr = arr.squeeze()
+        # 使用 numpy 的 array2string，用逗号分隔，匹配 pandas 格式
+        # pandas 使用 float64 的完整精度（约 16 位），所以指定 precision=16
+        values_str = np.array2string(
+            arr, separator=", ", prefix=" ", suffix="", precision=16
+        )
+        # array2string 返回的字符串已包含方括号，直接使用
+        if values_str.startswith("["):
+            values_with_brackets = values_str
+        else:
+            values_with_brackets = f"[{values_str}]"
+        return (
+            f"<NumpyExtensionArray>\n"
+            f"{values_with_brackets}\n"
+            f"Length: {len(arr)}, dtype: {self._dtype}"
+        )
+
+    def __len__(self):
+        return len(self._data)
+
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+    def __array__(self, dtype=None):
+        import numpy as np
+
+        return np.array(self._data, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -4257,7 +4420,7 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            win = values[start:i + 1]
+            win = values[start : i + 1]
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -4275,8 +4438,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -4302,8 +4465,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)

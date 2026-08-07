@@ -2245,9 +2245,11 @@ impl PySeries {
         let mut all_int_or_float = true;
         let mut all_numeric = true;
         let mut any_non_null = false;
+        let mut has_none = false;
 
         for item in pylist.iter() {
             if item.is_none() {
+                has_none = true;
                 continue;
             }
             any_non_null = true;
@@ -2272,12 +2274,21 @@ impl PySeries {
         }
 
         // 全 None 时默认 object (避免误判为 bool)
+        // 有 None 值时，整数和布尔类型提升为 float（NaN 需要浮点存储）
         let dtype = if !any_non_null {
             DType::Object
         } else if all_bool {
-            DType::Bool
+            if has_none {
+                DType::Float64
+            } else {
+                DType::Bool
+            }
         } else if all_int {
-            DType::Int64
+            if has_none {
+                DType::Float64
+            } else {
+                DType::Int64
+            }
         } else if all_float || all_int_or_float || all_numeric {
             DType::Float64
         } else {
