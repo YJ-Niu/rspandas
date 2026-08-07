@@ -145,6 +145,11 @@ jobs:
           cd testing
           python testing_rspandas1.py
 
+      - name: Run testing_rspandas2.py
+        run: |
+          cd testing
+          python testing_rspandas2.py
+
   # ---------------- 发布到 PyPI（仅标签 / Release 触发）----------------
 
   publish:

@@ -129,15 +129,16 @@ fi
 echo "  -> flake8 checks passed."
 
 BUILD_ARGS=()
-if $RELEASE; then BUILD_ARGS+=(--release); else BUILD_ARGS+=(--debug); fi
+# maturin 默认用 dev 模式，仅 release 时传 --release（maturin 不支持 --debug 参数）
+if $RELEASE; then BUILD_ARGS+=(--release); fi
 
 mkdir -p "$OUT_DIR"
 echo "Building wheel into $OUT_DIR using $PYTHON_EXEC (release=$RELEASE)"
 if [[ "$MATURIN_MODE" == "path" ]]; then
-  maturin build "${BUILD_ARGS[@]}" -o "$OUT_DIR" -i "$PYTHON_ABS"
+  maturin build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -o "$OUT_DIR" -i "$PYTHON_ABS"
 else
   # run maturin as a module under the chosen Python
-  "$PYTHON_ABS" -m maturin build "${BUILD_ARGS[@]}" -o "$OUT_DIR" -i "$PYTHON_ABS"
+  "$PYTHON_ABS" -m maturin build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -o "$OUT_DIR" -i "$PYTHON_ABS"
 fi
 
 # Locate the built wheel and install it into the local venv

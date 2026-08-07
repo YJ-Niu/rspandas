@@ -11,22 +11,12 @@ import json as _json
 import pickle as _pickle
 
 # ============================================================================
-# PyArrow 预热：pyarrow 的 C++ 库在首次调用 pa.array() 时有约 100ms 的
-# 内部初始化开销。通过模块加载时预热，将这笔开销转移到 import 阶段，
-# 使后续的 parquet/feather IO 操作更快。
+# PyArrow 可选依赖：仅用于 ORC 格式（read_orc/to_orc）。
+# Parquet 和 Feather (Arrow IPC) 已由 Rust 层 arrow/parquet crate 实现，无需 pyarrow。
 # ============================================================================
-_HAS_PYARROW = False
 _pa = None
-_pq = None
-_pf = None
 try:
     import pyarrow as _pa
-    import pyarrow.parquet as _pq
-    import pyarrow.feather as _pf
-
-    # 创建一个小数组触发 pyarrow 内部 C++ 初始化
-    _ = _pa.array([1])
-    _HAS_PYARROW = True
 except ImportError:
     pass
 
@@ -284,30 +274,28 @@ def to_excel(
 
 
 def read_parquet(path: str, **kwargs) -> DataFrame:
-    """从 Parquet 文件读取 DataFrame。
+    """从 Parquet 文件读取 DataFrame（基于 Rust arrow/parquet crate，无需 pyarrow）。
 
     Parameters
     ----------
     path : str
         Parquet 文件路径。
     **kwargs
-        传递给 pyarrow/pandas 的其他参数。
+        忽略（兼容 pandas 签名）。
 
     Returns
     -------
     DataFrame
     """
-    if not _HAS_PYARROW:
-        raise ImportError(
-            "read_parquet requires pyarrow to be installed. "
-            "Install with: pip install pyarrow"
-        )
-    table = _pq.read_table(path, **kwargs)
-    return _arrow_table_to_dataframe(table)
+    from .rspandas import _DataFrame
+    from .rspandas import read_parquet as _read_parquet_rust
+
+    cols, series_list = _read_parquet_rust(path)
+    return DataFrame._from_inner(_DataFrame(cols, series_list))
 
 
 def _arrow_table_to_dataframe(table) -> DataFrame:
-    """将 PyArrow Table 转换为 DataFrame。"""
+    """将 PyArrow Table 转换为 DataFrame（仅用于 ORC 回退路径）。"""
     # 使用字典推导式替代显式 for 循环
     data: Dict[str, list] = {
         col_name: table.column(col_name).to_pylist() for col_name in table.column_names
@@ -321,7 +309,7 @@ def to_parquet(
     compression: Optional[str] = "snappy",
     **kwargs,
 ) -> None:
-    """将 DataFrame 写入 Parquet 文件。
+    """将 DataFrame 写入 Parquet 文件（基于 Rust arrow/parquet crate，无需 pyarrow）。
 
     Parameters
     ----------
@@ -330,22 +318,19 @@ def to_parquet(
     path : str
         输出文件路径。
     compression : str, optional, default 'snappy'
-        压缩算法 (snappy, gzip, brotli, zstd, none)。
+        压缩算法 (snappy, gzip, brotli, zstd, lz4, none)。
     **kwargs
-        传递给 pyarrow 的其他参数。
+        忽略（兼容 pandas 签名）。
     """
-    if not _HAS_PYARROW:
-        raise ImportError(
-            "to_parquet requires pyarrow to be installed. "
-            "Install with: pip install pyarrow"
-        )
+    from .rspandas import write_parquet as _write_parquet_rust
 
-    table = _dataframe_to_arrow_table(df)
-    _pq.write_table(table, path, compression=compression, **kwargs)
+    cols = list(df.columns)
+    series_list = [df._inner.get_column(c) for c in cols]
+    _write_parquet_rust(path, cols, series_list, compression or "none")
 
 
 def _dataframe_to_arrow_table(df: DataFrame):
-    """将 DataFrame 转换为 PyArrow Table（优化版）。"""
+    """将 DataFrame 转换为 PyArrow Table（仅用于 ORC 回退路径，需 pyarrow）。"""
     arrays = []
     for col_name in df.columns:
         # 直接获取 Rust 层原始列数据，避免创建 Series 对象
@@ -396,35 +381,33 @@ def _dataframe_to_arrow_table(df: DataFrame):
 
 
 def read_feather(path: str, **kwargs) -> DataFrame:
-    """从 Feather 文件读取 DataFrame。
+    """从 Feather (Arrow IPC) 文件读取 DataFrame（基于 Rust arrow crate，无需 pyarrow）。
 
     Parameters
     ----------
     path : str
         Feather 文件路径。
     **kwargs
-        传递给 pyarrow.feather.read_table 的其他参数。
+        忽略（兼容 pandas 签名）。
 
     Returns
     -------
     DataFrame
     """
-    if not _HAS_PYARROW:
-        raise ImportError(
-            "read_feather requires pyarrow to be installed. "
-            "Install with: pip install pyarrow"
-        )
-    table = _pf.read_table(path, **kwargs)
-    return _arrow_table_to_dataframe(table)
+    from .rspandas import _DataFrame
+    from .rspandas import read_feather as _read_feather_rust
+
+    cols, series_list = _read_feather_rust(path)
+    return DataFrame._from_inner(_DataFrame(cols, series_list))
 
 
 def to_feather(
     df: DataFrame,
     path: str,
-    compression: Optional[str] = "lz4",
+    compression: Optional[str] = "uncompressed",
     **kwargs,
 ) -> None:
-    """将 DataFrame 写入 Feather 文件。
+    """将 DataFrame 写入 Feather (Arrow IPC) 文件（基于 Rust arrow crate，无需 pyarrow）。
 
     Parameters
     ----------
@@ -432,18 +415,16 @@ def to_feather(
         要写入的 DataFrame。
     path : str
         输出文件路径。
-    compression : str, optional, default 'lz4'
-        压缩算法 (lz4, zstd, uncompressed)。
+    compression : str, optional, default 'uncompressed'
+        压缩算法 (当前 Arrow IPC v1 仅支持 uncompressed，其他值会静默降级)。
     **kwargs
-        传递给 pyarrow.feather.write_feather 的其他参数。
+        忽略（兼容 pandas 签名）。
     """
-    if not _HAS_PYARROW:
-        raise ImportError(
-            "to_feather requires pyarrow to be installed. "
-            "Install with: pip install pyarrow"
-        )
-    table = _dataframe_to_arrow_table(df)
-    _pf.write_feather(table, path, compression=compression, **kwargs)
+    from .rspandas import write_feather as _write_feather_rust
+
+    cols = list(df.columns)
+    series_list = [df._inner.get_column(c) for c in cols]
+    _write_feather_rust(path, cols, series_list, compression or "uncompressed")
 
 
 # ============================================================================
@@ -1008,7 +989,7 @@ def to_sql_batch(
         )
         records = df.values
         for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
+            batch = records[i : i + batch_size]
             connection.execute(stmt, batch)
 
 
@@ -1135,7 +1116,7 @@ def read_html(
 
     # 解析表格
     rows_data = []
-    for tr in table.find_all("tr")[header or 0:]:
+    for tr in table.find_all("tr")[header or 0 :]:
         cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if cells:
             rows_data.append(cells)

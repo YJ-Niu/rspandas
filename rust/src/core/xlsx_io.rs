@@ -62,19 +62,19 @@ fn read_xlsx_raw(
                         calamine::Data::Float(f) => f.to_string(),
                         calamine::Data::Int(i) => i.to_string(),
                         calamine::Data::Bool(b) => b.to_string(),
-                        calamine::Data::Empty => format!("col{i}"),
+                        calamine::Data::Empty => format!("Unnamed: {i}"),
                         calamine::Data::DateTime(d) => format!("{d}"),
                         calamine::Data::DateTimeIso(s) => s.clone(),
                         calamine::Data::DurationIso(s) => s.clone(),
-                        _ => format!("col{i}"),
+                        _ => format!("Unnamed: {i}"),
                     }
                 } else {
-                    format!("col{i}")
+                    format!("Unnamed: {i}")
                 }
             })
             .collect()
     } else {
-        (0..max_cols).map(|i| format!("col{i}")).collect()
+        (0..max_cols).map(|i| format!("Unnamed: {i}")).collect()
     };
 
     // 去重列名

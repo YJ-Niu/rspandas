@@ -69,7 +69,7 @@ def _infer_dtype(values: list) -> str:
     if all_float_or_int:
         return "float64"
     if all_str:
-        return "object"
+        return "str"
     return "object"
 
 
@@ -91,13 +91,22 @@ def _to_python_list(data: Any) -> list:
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
 
 
-def _to_python_list_and_index(data: Any):
-    """将输入标准化为 (values, index)。"""
+def _to_python_list_and_index(data: Any, index=None):
+    """将输入标准化为 (values, index)。
+
+    当 data 是 dict 且指定了 index 时，按 index 顺序查找 dict 值，
+    缺失的索引对应 None。
+    """
     if isinstance(data, _PySeries):
         return list(data.values), None
     if isinstance(data, (list, tuple)):
         return list(data), None
     if isinstance(data, dict):
+        if index is not None:
+            # 按指定 index 顺序取 dict 值，缺失的填 None
+            idx_list = list(index) if not isinstance(index, list) else index
+            values = [data.get(k, None) for k in idx_list]
+            return values, idx_list
         return list(data.values()), list(data.keys())
     if hasattr(data, "tolist"):
         return data.tolist(), None
@@ -161,16 +170,14 @@ class Series:
                 index = list(data._index) if data._index is not None else None
                 name = data.name if name is None else name
                 dtype = data._dtype_str if dtype is None else dtype
-        elif isinstance(data, dict) and index is None:
-            values, index = _to_python_list_and_index(data)
+        elif isinstance(data, dict):
+            values, index = _to_python_list_and_index(data, index)
         else:
             # 检查是否为标量输入（int/float/str/bool），如果是且有 index，则广播
             # 排除 list/tuple/_PySeries/Series/dict/range 以及有 tolist 方法的数组类型
             if (
                 index is not None
-                and not isinstance(
-                    data, (list, tuple, _PySeries, Series, dict, range)
-                )
+                and not isinstance(data, (list, tuple, _PySeries, Series, dict, range))
                 and not hasattr(data, "tolist")
             ):
                 # 标量广播到 index 长度
@@ -188,14 +195,33 @@ class Series:
         # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
         self._inner = _PySeries(values, name, dtype=dtype)
 
-        # 缓存 dtype（category 类型 Rust 层不支持，需强制设置）
-        if dtype is not None and dtype.lower() == "category":
-            self._dtype_str = "category"
+        # 缓存 dtype
+        if dtype is not None:
+            nd = dtype.lower() if isinstance(dtype, str) else str(dtype).lower()
+            if nd == "category":
+                self._dtype_str = "category"
+            elif nd in ("str", "string"):
+                self._dtype_str = "str"
+            elif nd in ("float32", "float64", "float"):
+                # 保留显式指定的 float 子类型（对齐 pandas 行为）
+                self._dtype_str = nd
+            else:
+                self._dtype_str = self._inner.dtype
         else:
             self._dtype_str: str = self._inner.dtype
+            # Rust 层将 str 映射为 object，但若推断为 str 则使用 str
+            if self._dtype_str == "object":
+                inferred = _infer_dtype(values)
+                if inferred == "str":
+                    self._dtype_str = "str"
 
         # RangeIndex 或自定义索引
         self._index = index if index is not None else list(range(len(values)))
+
+        # 频率信息（从 DatetimeIndex 等传入）
+        self._freq: Optional[str] = (
+            getattr(index, "_freq", None) if index is not None else None
+        )
 
     # ---------- 属性 ----------
 
@@ -300,6 +326,12 @@ class Series:
     def __iter__(self) -> Iterator:
         return iter(self.values)
 
+    def __contains__(self, item) -> bool:
+        """检查值是否在 Series 索引中。"""
+        if self._index is None:
+            return False
+        return item in self._index
+
     def __repr__(self) -> str:
         return self._format_repr()
 
@@ -367,8 +399,17 @@ class Series:
             raise ValueError(f"mask length {len(mask)} != series length {len(self)}")
         rust_mask = [bool(x) for x in mask]
         dtype = self._dtype_str if preserve_dtype else None
+        # 保留原始索引：只保留 mask 为 True 的索引
+        new_index = (
+            [idx for idx, m in zip(self._index, rust_mask) if m]
+            if self._index is not None
+            else None
+        )
         return Series(
-            _PySeries_filter(self._inner, rust_mask), name=self.name, dtype=dtype
+            _PySeries_filter(self._inner, rust_mask),
+            name=self.name,
+            dtype=dtype,
+            index=new_index,
         )
 
     def __eq__(self, other) -> _PySeries:
@@ -422,15 +463,43 @@ class Series:
         :param reverse: 为 True 时交换操作数顺序（用于反向运算符 __rsub__ 等）
         """
         if isinstance(other, Series):
-            if len(other) != len(self):
-                raise ValueError("Series lengths must match")
-            other_vals = other.values
+            # Series + Series: 按索引对齐
+            self_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
+            other_index = (
+                list(other._index)
+                if other._index is not None
+                else list(range(len(other)))
+            )
+            # 计算索引并集
+            union_index = list(self_index)
+            seen = set(self_index)
+            for idx in other_index:
+                if idx not in seen:
+                    seen.add(idx)
+                    union_index.append(idx)
+            # 排序并集以匹配 pandas 行为
+            try:
+                union_index = sorted(union_index)
+            except TypeError:
+                pass
+            # 构建值映射
+            self_map = dict(zip(self_index, self.values))
+            other_map = dict(zip(other_index, other.values))
+            # 按并集索引对齐
+            self_vals = [self_map.get(idx) for idx in union_index]
+            other_vals = [other_map.get(idx) for idx in union_index]
         else:
             # 标量广播
+            self_vals = list(self.values)
             other_vals = [other] * len(self)
+            union_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
 
         result = []
-        for a, b in zip(self.values, other_vals):
+        for a, b in zip(self_vals, other_vals):
             if a is None or b is None:
                 result.append(None)
                 continue
@@ -464,11 +533,35 @@ class Series:
                 result.append(None)
         # 推断结果 dtype
         nums = [v for v in result if isinstance(v, (int, float))]
+        has_none = any(v is None for v in result)
         if not nums:
-            return Series(result, name=self.name, dtype="object")
+            return Series(result, name=self.name, dtype="object", index=union_index)
+        # 如果有 NaN/None，必须用 float64（因为 NaN 是浮点数）
+        if has_none:
+            return Series(result, name=self.name, dtype="float64", index=union_index)
+
+        # 检查原始操作数中是否有 float 类型
+        self_has_float = any(isinstance(v, float) for v in self_vals if v is not None)
+        other_has_float = any(isinstance(v, float) for v in other_vals if v is not None)
+
         if any(isinstance(v, float) for v in nums):
-            return Series(result, name=self.name, dtype="float64")
-        return Series(result, name=self.name, dtype="int64")
+            if self_has_float or other_has_float:
+                # 原始操作数中有 float，保持 float 类型（避免 5.0 + 5 → 10）
+                return Series(
+                    result, name=self.name, dtype="float64", index=union_index
+                )
+            # 检查是否所有浮点数都是整数值（纯 int 运算产生的 float 结果）
+            if all(isinstance(v, float) and v == int(v) for v in nums):
+                # 转换为整数
+                int_result = [
+                    int(v) if isinstance(v, float) and v == int(v) else v
+                    for v in result
+                ]
+                return Series(
+                    int_result, name=self.name, dtype="int64", index=union_index
+                )
+            return Series(result, name=self.name, dtype="float64", index=union_index)
+        return Series(result, name=self.name, dtype="int64", index=union_index)
 
     def __add__(self, other) -> _PySeries:
         return self._arith(other, "add")
@@ -696,6 +789,9 @@ class Series:
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __neg__(self) -> _PySeries:
+        if self._dtype_str == "bool":
+            # bool 类型的取负相当于逻辑 NOT（True -> False, False -> True）
+            return self.__invert__()
         return self._arith(-1, "mul")
 
     def __pos__(self) -> _PySeries:
@@ -704,6 +800,88 @@ class Series:
     def __abs__(self) -> _PySeries:
         result = [None if v is None else abs(v) for v in self.values]
         return Series(result, name=self.name, dtype=self._dtype_str)
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        """支持 numpy 通用函数 (ufunc) 作用于 Series。
+
+        当 np.exp(series) / np.remainder(s1, s2) 等调用时，
+        numpy 会调用此方法，返回 Series 而非 list。
+        """
+        if method != "__call__":
+            return NotImplemented
+
+        # 将 Series 转换为值列表，其他保持不变
+        processed_inputs = []
+        series_inputs = []  # 记录哪些输入是 Series
+        for inp in inputs:
+            if isinstance(inp, Series):
+                processed_inputs.append(list(inp.values))
+                series_inputs.append(inp)
+            else:
+                processed_inputs.append(inp)
+                series_inputs.append(None)
+
+        # 处理 out 参数
+        out = kwargs.get("out", None)
+
+        if out is not None:
+            # out 参数暂不支持，忽略
+            pass
+
+        # 应用 ufunc
+        result_values = []
+        n = len(processed_inputs[0])
+        for i in range(n):
+            args = []
+            for inp in processed_inputs:
+                if isinstance(inp, list):
+                    args.append(inp[i])
+                else:
+                    args.append(inp)  # 标量
+            # 跳过 None 值
+            if any(a is None for a in args):
+                result_values.append(None)
+            else:
+                try:
+                    result_values.append(ufunc(*args))
+                except (TypeError, ValueError):
+                    result_values.append(None)
+
+        # 推断结果 dtype
+        dtype = self._dtype_str
+        if result_values and any(v is not None for v in result_values):
+            non_null = [v for v in result_values if v is not None]
+            if non_null and all(isinstance(v, bool) for v in non_null):
+                dtype = "bool"
+            elif non_null and all(isinstance(v, int) for v in non_null):
+                dtype = "int64"
+            elif non_null and all(isinstance(v, (int, float)) for v in non_null):
+                dtype = "float64"
+
+        # 确定结果的 index 和 name
+        # 如果有多个 Series 输入且 index 不同，对齐索引
+        series_with_index = [s for s in series_inputs if s is not None]
+        if len(series_with_index) > 1:
+            # 多 Series 输入：按第一个 Series 的 index 对齐
+            first_series = series_with_index[0]
+            result_index = (
+                list(first_series._index)
+                if first_series._index is not None
+                else list(range(n))
+            )
+        elif series_with_index:
+            s = series_with_index[0]
+            result_index = list(s._index) if s._index is not None else list(range(n))
+        else:
+            result_index = list(range(n))
+
+        result_name = self.name
+
+        return Series(result_values, name=result_name, dtype=dtype, index=result_index)
+
+    def __array__(self, dtype=None):
+        """支持 numpy.array(series) 转换。"""
+        return rnp.array(self.values, dtype=dtype)
 
     # ---------- 命名算术方法 ----------
 
@@ -918,7 +1096,7 @@ class Series:
                     col_key = idx[-1]
                 else:
                     row_key = (
-                        idx[:level] + idx[level + 1:]
+                        idx[:level] + idx[level + 1 :]
                         if len(idx) > 1 and level < len(idx)
                         else idx[0]
                     )
@@ -1295,7 +1473,13 @@ class Series:
         :param copy: 是否复制数据 (默认 True)
         :param errors: 错误处理 ('raise' 或 'ignore')
         """
-        target = dtype.lower() if isinstance(dtype, str) else str(dtype).lower()
+        if isinstance(dtype, str):
+            target = dtype.lower()
+        elif isinstance(dtype, type):
+            # Python 类型对象 (如 bool, int, float, str)
+            target = dtype.__name__.lower()
+        else:
+            target = str(dtype).lower()
 
         if target == self._dtype_str and not copy:
             return self
@@ -1794,16 +1978,30 @@ class Series:
             # 非字符串：重命名索引标签（dict / callable / list-like）
             if inplace:
                 if callable(index):
-                    self._index = [index(i) for i in self._index] if self._index is not None else None
+                    self._index = (
+                        [index(i) for i in self._index]
+                        if self._index is not None
+                        else None
+                    )
                 elif isinstance(index, dict):
-                    self._index = [index.get(i, i) for i in self._index] if self._index is not None else None
+                    self._index = (
+                        [index.get(i, i) for i in self._index]
+                        if self._index is not None
+                        else None
+                    )
                 else:
                     self._index = list(index) if not isinstance(index, list) else index
                 return self
             if callable(index):
-                new_index = [index(i) for i in self._index] if self._index is not None else None
+                new_index = (
+                    [index(i) for i in self._index] if self._index is not None else None
+                )
             elif isinstance(index, dict):
-                new_index = [index.get(i, i) for i in self._index] if self._index is not None else None
+                new_index = (
+                    [index.get(i, i) for i in self._index]
+                    if self._index is not None
+                    else None
+                )
             else:
                 new_index = list(index) if not isinstance(index, list) else index
             return Series(
@@ -2966,8 +3164,8 @@ class Series:
         if self._index is not None and item in self._index:
             pos = self._index.index(item)
             val = self.values[pos]
-            new_values = self.values[:pos] + self.values[pos + 1:]
-            new_index = self._index[:pos] + self._index[pos + 1:]
+            new_values = self.values[:pos] + self.values[pos + 1 :]
+            new_index = self._index[:pos] + self._index[pos + 1 :]
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return val
@@ -3327,12 +3525,7 @@ class Series:
         storage_options=None,
         **kwargs,
     ):
-        """将 Series 写入 Parquet 文件（需 pyarrow 支持）。"""
-        try:
-            import pyarrow  # noqa: F401
-        except ImportError:
-            raise ImportError("to_parquet requires pyarrow")
-
+        """将 Series 写入 Parquet 文件（基于 Rust arrow/parquet crate，无需 pyarrow）。"""
         from .dataframe import DataFrame
 
         col_name = self.name if self.name is not None else "0"
@@ -3503,7 +3696,9 @@ class Series:
                 new_index.append(idx.replace(tzinfo=tz_obj))
             else:
                 new_index.append(idx)
-        return Series(vals, name=self.name, dtype=self._dtype_str, index=new_index)
+        result = Series(vals, name=self.name, dtype=self._dtype_str, index=new_index)
+        result._freq = self._freq
+        return result
 
     def tz_convert(self, tz):
         """转换时区（同时转换值和索引）。"""
@@ -3529,14 +3724,18 @@ class Series:
                 new_index.append(idx.replace(tzinfo=tz_obj))
             else:
                 new_index.append(idx)
-        return Series(vals, name=self.name, dtype=self._dtype_str, index=new_index)
+        result = Series(vals, name=self.name, dtype=self._dtype_str, index=new_index)
+        result._freq = self._freq
+        return result
 
     # ---------- v2.1.0: 属性扩展 ----------
 
     @property
     def array(self):
-        """返回底层值的列表（Arrow 数组接口的简化版本）。"""
-        return list(self.values)
+        """返回底层值的 rsnumpy 数组（显示格式对齐 pandas NumpyExtensionArray）。"""
+        import rsnumpy as rnp
+
+        return _ExtensionArray(rnp.array(self.values), self._dtype_str)
 
     @property
     def flags(self):
@@ -3549,37 +3748,161 @@ class Series:
         raise NotImplementedError("Series.sparse only available for SparseDtype")
 
     def _format_repr(self) -> str:
-        # 字符串化每个值，float64 类型显示一位小数（对齐 pandas 行为）
-        dtype_str = self._dtype_str
-        if dtype_str == "float64":
-            strs = [
-                (
-                    f"{v:.1f}"
-                    if v is not None and not (isinstance(v, float) and v != v)
-                    else "NaN"
-                )
-                for v in self.values
-            ]
-            # 正确处理 NaN
-            strs = []
-            for v in self.values:
+        # 辅助函数：格式化 datetime 值
+        from datetime import datetime
+
+        def _fmt_val(v):
+            """格式化单个值，datetime 去除 00:00:00。"""
+            if isinstance(v, datetime):
+                # 如果有 tzinfo，显示完整格式（含时区）
+                if v.tzinfo is not None:
+                    return str(v)
+                # 如果时间部分为 0，只显示日期
+                if (
+                    v.hour == 0
+                    and v.minute == 0
+                    and v.second == 0
+                    and v.microsecond == 0
+                ):
+                    return v.strftime("%Y-%m-%d")
+                return str(v)
+            if v is None:
+                return "NaN"
+            if isinstance(v, float) and v != v:
+                return "NaN"
+            return str(v)
+
+        def _format_floats_precise(values, precision=6):
+            """按 pandas 规则格式化浮点列表：每列统一精度。
+
+            规则：先将所有有效值格式化为 precision 位小数，
+            然后确定所需最大精度（去掉末尾零后），统一应用。
+            若所有值均为整数，显示 1 位小数。
+            不添加前导空格，对齐在 _format_repr 中处理。
+            """
+            # 分离有效浮点数和无效值
+            valid_floats = []
+            valid_indices = []
+            for i, v in enumerate(values):
                 if v is None:
-                    strs.append("NaN")
-                elif isinstance(v, float) and v != v:  # NaN check
-                    strs.append("NaN")
+                    continue
+                if isinstance(v, float) and v != v:  # NaN
+                    continue
+                try:
+                    fv = float(v)
+                    valid_floats.append(fv)
+                    valid_indices.append(i)
+                except (ValueError, TypeError):
+                    pass
+
+            if not valid_floats:
+                return [
+                    (
+                        "NaN"
+                        if (v is None or (isinstance(v, float) and v != v))
+                        else str(v)
+                    )
+                    for v in values
+                ]
+
+            # 格式化为 6 位小数，找出最大精度
+            formatted_all = [f"{fv:.{precision}f}" for fv in valid_floats]
+            # 对每个值去掉末尾零，确定所需精度
+            decimal_counts = []
+            for fmt in formatted_all:
+                if "." in fmt:
+                    stripped = fmt.rstrip("0")
+                    if stripped.endswith("."):
+                        decimal_counts.append(1)
+                    else:
+                        decimal_counts.append(
+                            len(stripped.split(".")[1]) if "." in stripped else 0
+                        )
                 else:
-                    strs.append(f"{float(v):.1f}")
+                    decimal_counts.append(1)
+
+            # 所需最大精度（至少 1 位）
+            max_decimals = max(max(decimal_counts), 1)
+
+            # 重新用统一精度格式化
+            precise_format = f".{max_decimals}f"
+            result = [f"{fv:{precise_format}}" for fv in valid_floats]
+
+            # 构建完整结果
+            full_result = list(values)
+            for i, idx in enumerate(valid_indices):
+                full_result[idx] = result[i]
+
+            # 替换无效值为 "NaN"
+            for i, v in enumerate(full_result):
+                if v is None:
+                    full_result[i] = "NaN"
+                elif isinstance(v, float) and v != v:
+                    full_result[i] = "NaN"
+                elif not isinstance(v, str):
+                    try:
+                        fv = float(v)
+                        if fv != fv:
+                            full_result[i] = "NaN"
+                    except (ValueError, TypeError):
+                        full_result[i] = str(v)
+
+            return full_result
+
+        # 字符串化每个值，float64 类型显示合适精度（对齐 pandas 行为）
+        dtype_str = self._dtype_str
+        if dtype_str in ("float64", "float32", "float16", "float"):
+            strs = _format_floats_precise(list(self.values))
+            # 处理极大/极小值使用科学计数法
+            for i, v in enumerate(self.values):
+                if v is None:
+                    continue
+                if isinstance(v, float) and v != v:
+                    continue
+                try:
+                    fv = float(v)
+                    if abs(fv) >= 1e15 or (fv != 0 and abs(fv) < 0.001):
+                        strs[i] = f"{fv:.6g}"
+                except (ValueError, TypeError):
+                    pass
         elif dtype_str == "int64":
             strs = [str(int(v)) if v is not None else "NaN" for v in self.values]
+        elif dtype_str == "object":
+            # object dtype: 混合类型，检测是否有数值类型
+            raw_values = list(self.values)
+            # 检查是否有数值（int/float）值
+            has_numeric = any(
+                isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and v is not None
+                for v in raw_values
+            )
+            if has_numeric:
+                # 有数值: 对数值使用浮点格式化，其他保持原样
+                strs = []
+                for v in raw_values:
+                    if v is None or (isinstance(v, float) and v != v):
+                        strs.append("NaN")
+                    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                        # 数值: 使用浮点格式
+                        strs.append(f"{float(v):.1f}")
+                    else:
+                        strs.append(_fmt_val(v))
+            else:
+                strs = [_fmt_val(v) for v in raw_values]
         else:
-            strs = [str(v) if v is not None else "NaN" for v in self.values]
+            strs = [_fmt_val(v) for v in self.values]
 
         n = len(strs)
 
-        # 准备索引字符串（处理 MultiIndex tuple 格式）
+        # 准备索引字符串（处理 MultiIndex tuple 格式和 datetime）
         idx_strs = (
             [
-                "  ".join(str(v) for v in i) if isinstance(i, tuple) else str(i)
+                (
+                    "  ".join(_fmt_val(v) for v in i)
+                    if isinstance(i, tuple)
+                    else _fmt_val(i)
+                )
                 for i in self._index
             ]
             if self._index is not None
@@ -3597,18 +3920,64 @@ class Series:
         # 索引列宽度
         idx_width = max((len(s) for s in idx_strs), default=1)
 
-        # 使用列表推导式替代显式 for 循环构建 lines
+        # 值列宽度：基于整数部分的最大位数对齐（对齐 pandas 行为）
+        non_ellipsis_strs = [s for s in strs if s != "..."]
+        if non_ellipsis_strs:
+            max_str_len = max(len(s) for s in non_ellipsis_strs)
+            max_int_digits = 0
+            max_dec_digits = 0
+            for s in non_ellipsis_strs:
+                # 处理负数和科学计数法
+                clean_s = s.lstrip("-")
+                if "." in clean_s:
+                    int_part, dec_part = clean_s.split(".", 1)
+                    max_int_digits = max(max_int_digits, len(int_part))
+                    max_dec_digits = max(max_dec_digits, len(dec_part))
+                else:
+                    max_int_digits = max(max_int_digits, len(clean_s))
+            # 对齐宽度：max(最长字符串长度, 整数部分+小数部分+1(负号对齐)+1(小数点))
+            val_width = max(max_str_len, max_int_digits + max_dec_digits + 1)
+            if max_dec_digits > 0:
+                val_width = max(
+                    val_width, max_int_digits + max_dec_digits + 2
+                )  # +2: 小数点 + 前导空格
+        else:
+            val_width = 1
+
+        # 右对齐值字符串
+        strs_aligned = [s.rjust(val_width) if s != "..." else s for s in strs]
+
+        # 使用列表推导式构建 lines（pandas 使用 3 个空格分隔索引和值）
         lines = [
-            ".." if s == "..." else f"{idx_s:>{idx_width}}    {s}"
-            for s, idx_s in zip(strs, idx_strs)
+            " .." if s == "..." else f"{idx_s:>{idx_width}}   {s}"
+            for s, idx_s in zip(strs_aligned, idx_strs)
         ]
 
         body = "\n".join(lines)
+
+        # 确定显示用的 dtype 名称
+        display_dtype = dtype_str
+        # 如果是 category 类型，添加 Categories 信息
+        categories_info = ""
+        if display_dtype == "category" or dtype_str == "category":
+            try:
+                cat_accessor = self.cat
+                cats = cat_accessor.categories
+                cat_str = ", ".join(repr(c) for c in cats)
+                categories_info = f"\nCategories ({len(cats)}, str): [{cat_str}]"
+            except (AttributeError, Exception):
+                pass
+
+        # 频率信息（对齐 pandas: Freq 放在 Name 之前，同一行）
+        freq_str = ""
+        if self._freq is not None:
+            freq_str = f"Freq: {self._freq}, "
+
         # 对齐 pandas: name 为 None 时不显示 Name 行
         if self.name is not None and self.name != "":
-            return f"{body}\nName: {self.name}, dtype: {dtype_str}"
+            return f"{body}\n{freq_str}Name: {self.name}, dtype: {display_dtype}{categories_info}"
         else:
-            return f"{body}\ndtype: {dtype_str}"
+            return f"{body}\n{freq_str}dtype: {display_dtype}{categories_info}"
 
     # ----------------------------------------------------------------
     # 扩展功能（pandas 之外的增强）
@@ -3739,7 +4108,7 @@ class Series:
             """计算第 i 位的移动平均值。"""
             if i < window - 1:
                 return None
-            win = values[i - window + 1:i + 1]
+            win = values[i - window + 1 : i + 1]
             non_null = [v for v in win if v is not None]
             if not non_null:
                 return None
@@ -3811,6 +4180,53 @@ class Series:
 def _PySeries_filter(inner: _PySeries, mask: list) -> _PySeries:
     """辅助函数：调用 Rust 端 filter。"""
     return inner.filter(mask)
+
+
+# ---------------------------------------------------------------------------
+# 扩展数组类 (对齐 pandas NumpyExtensionArray 显示)
+# ---------------------------------------------------------------------------
+
+
+class _ExtensionArray:
+    """包装 rsnumpy ndarray，提供与 pandas ExtensionArray 相同的显示格式。"""
+
+    def __init__(self, data, dtype_str=None):
+        self._data = data
+        self._dtype = dtype_str or "float64"
+
+    def __repr__(self) -> str:
+        import numpy as np
+
+        arr = np.array(self._data)
+        # 如果是二维数组 (1, n)，squeeze 成一维
+        if arr.ndim > 1:
+            arr = arr.squeeze()
+        # 使用 numpy 的 array2string，用逗号分隔，匹配 pandas 格式
+        # pandas 使用 float64 的完整精度（约 16 位），所以指定 precision=16
+        values_str = np.array2string(
+            arr, separator=", ", prefix=" ", suffix="", precision=16
+        )
+        # array2string 返回的字符串已包含方括号，直接使用
+        if values_str.startswith("["):
+            values_with_brackets = values_str
+        else:
+            values_with_brackets = f"[{values_str}]"
+        return (
+            f"<NumpyExtensionArray>\n"
+            f"{values_with_brackets}\n"
+            f"Length: {len(arr)}, dtype: {self._dtype}"
+        )
+
+    def __len__(self):
+        return len(self._data)
+
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+    def __array__(self, dtype=None):
+        import numpy as np
+
+        return np.array(self._data, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -4004,7 +4420,7 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            win = values[start:i + 1]
+            win = values[start : i + 1]
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -4022,8 +4438,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -4049,8 +4465,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start:i + 1]
-            wb = values_b[start:i + 1]
+            wa = values_a[start : i + 1]
+            wb = values_b[start : i + 1]
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -4637,7 +5053,27 @@ class Resampler:
 
             out_index = [_dt.fromtimestamp(ts) for ts in ts_list]
             out_values = [v for v in val_list]
-            return Series(out_values, name=self._s.name, index=out_index)
+            # 推断 dtype（count 和 sum 对整数输入应返回 int）
+            result = Series(out_values, name=self._s.name, index=out_index)
+            # 如果原始值全是整数，且聚合函数为 sum/count，转换为 int64
+            if aggfunc in ("sum", "count") and self._s._inner is not None:
+                raw_vals = list(self._s._inner.values)
+                if all(
+                    isinstance(v, int) and not isinstance(v, bool)
+                    for v in raw_vals
+                    if v is not None
+                ):
+                    int_vals = [int(v) if v is not None else None for v in out_values]
+                    result = Series(
+                        int_vals, name=self._s.name, index=out_index, dtype="int64"
+                    )
+            # 设置频率信息
+            result._freq = (
+                f"{self._freq_num}{self._freq_unit}"
+                if self._freq_num > 1
+                else self._freq_unit
+            )
+            return result
         except Exception:
             pass
 
@@ -4692,7 +5128,14 @@ class Resampler:
         agg_pairs = [(k, v) for k, v in agg_pairs if v is not None]
         out_values = [v for _, v in agg_pairs]
         out_index = [k for k, _ in agg_pairs]
-        return Series(out_values, name=self._s.name, index=out_index)
+        result = Series(out_values, name=self._s.name, index=out_index)
+        # 设置频率信息
+        result._freq = (
+            f"{self._freq_num}{self._freq_unit}"
+            if self._freq_num > 1
+            else self._freq_unit
+        )
+        return result
 
     def sum(self) -> _PySeries:
         return self._aggregate("sum")
@@ -4732,7 +5175,9 @@ class StringAccessor:
         self._s = series
 
     def _wrap(self, values: list, name: str = None) -> _PySeries:
-        return Series(values, name=name or self._s.name, index=self._s._index)
+        return Series(
+            values, name=name or self._s.name, index=self._s._index, dtype="str"
+        )
 
     def _ensure_str(self, v):
         return (
@@ -4744,7 +5189,9 @@ class StringAccessor:
     def upper(self) -> _PySeries:
         try:
             new_inner = self._s._inner.str_upper()
-            return Series(new_inner, name=self._s.name, index=self._s._index)
+            return Series(
+                new_inner, name=self._s.name, index=self._s._index, dtype="str"
+            )
         except Exception:
             pass
         return self._wrap(
@@ -4763,7 +5210,9 @@ class StringAccessor:
         if not has_nan:
             try:
                 new_inner = self._s._inner.str_lower()
-                return Series(new_inner, name=self._s.name, index=self._s._index)
+                return Series(
+                    new_inner, name=self._s.name, index=self._s._index, dtype="str"
+                )
             except Exception:
                 pass
         return self._wrap([v.lower() if v is not None else None for v in str_vals])
@@ -5189,6 +5638,9 @@ class CatAccessor:
         """返回 categories 列表。"""
         if self._s.dtype != "category":
             raise AttributeError("Can only use .cat accessor with 'category' dtype")
+        # 优先使用 set_categories 保存的完整 categories 列表
+        if hasattr(self._s, "_categories") and self._s._categories:
+            return list(self._s._categories)
         inner = self._s._inner
         if hasattr(inner, "cat_categories"):
             cats = inner.cat_categories()
@@ -5249,8 +5701,8 @@ class CatAccessor:
             result = inner.cat_rename_categories(list(new_categories))
             if result is not None:
                 return self._wrap_cat(result)
-        # Python 回退：按位置重命名
-        old_cats = sorted(set(v for v in self._s.values if v is not None))
+        # Python 回退：按位置重命名（使用实际 category 顺序，而非排序）
+        old_cats = self.categories
         cat_map = {}
         for i, old in enumerate(old_cats):
             if i < len(new_categories):
@@ -5272,17 +5724,14 @@ class CatAccessor:
             raise AttributeError("Can only use .cat accessor with 'category' dtype")
         # 简化实现：用 Python 构建新 Series
         cat_map = {}
-        old_cats = list(self._s.unique())
         if rename:
             # 重命名模式：按位置映射
+            old_cats = list(self._s.unique())
             for i, old in enumerate(old_cats):
                 if i < len(new_categories):
                     cat_map[old] = new_categories[i]
                 else:
                     cat_map[old] = old
-        else:
-            # 设置模式：保留原值但更新 categories 列表
-            pass
 
         # 构建新值列表，None 保持不变
         new_vals = []
@@ -5291,13 +5740,15 @@ class CatAccessor:
                 new_vals.append(None)
             elif rename and v in cat_map:
                 new_vals.append(cat_map[v])
-            elif v in new_categories or v is None:
+            elif v in new_categories:
                 new_vals.append(v)
             else:
                 # 不在新 categories 中的值变为 NaN
                 new_vals.append(None)
         s = Series(new_vals, name=self._s.name, dtype="object")
         s._dtype_str = "category"
+        # 保存所有 new_categories 方便后续显示
+        s._categories = list(new_categories)
         return s
 
     def as_ordered(self) -> Series:

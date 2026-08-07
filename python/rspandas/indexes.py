@@ -64,6 +64,8 @@ class Index:
             return "int64"
         if all(isinstance(v, float) for v in non_null):
             return "float64"
+        if all(isinstance(v, str) for v in non_null):
+            return "str"
         return "object"
 
     @property
@@ -105,7 +107,31 @@ class Index:
 
     def __repr__(self) -> str:
         name = f", name='{self._name}'" if self._name else ""
-        return f"Index({self._data}, dtype='{self.dtype}'{name})"
+        # 格式化 datetime 值
+        from datetime import datetime
+
+        data_strs = []
+        for v in self._data:
+            if isinstance(v, datetime):
+                if (
+                    v.hour == 0
+                    and v.minute == 0
+                    and v.second == 0
+                    and v.microsecond == 0
+                ):
+                    data_strs.append(repr(v.strftime("%Y-%m-%d")))
+                else:
+                    data_strs.append(repr(str(v)))
+            else:
+                data_strs.append(repr(v))
+        if len(data_strs) <= 6:
+            joined = ", ".join(data_strs)
+        else:
+            joined = ", ".join(data_strs[:4]) + ", ..."
+            extra = data_strs[4:]
+            if extra:
+                joined += ", ".join(extra)
+        return f"Index([{joined}], dtype='{self.dtype}'{name})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -1261,12 +1287,13 @@ class DatetimeIndex(Index):
         [1, 1, 1]
     """
 
-    def __init__(self, data, name: Optional[str] = None, tz=None):
+    def __init__(self, data, name: Optional[str] = None, tz=None, freq=None):
         """构造 DatetimeIndex。
 
         :param data: 日期字符串列表或 datetime 对象列表
         :param name: 索引名称
         :param tz: 时区信息
+        :param freq: 频率字符串（如 'D', 'H'）
         """
 
         # 使用辅助函数 + 列表推导式替代显式 for 循环
@@ -1279,7 +1306,7 @@ class DatetimeIndex(Index):
                 try:
                     return datetime.fromisoformat(v)
                 except (ValueError, TypeError):
-                    from .datetime import _parse_iso
+                    from ._datetime import _parse_iso
 
                     return _parse_iso(v)
             return v
@@ -1287,6 +1314,7 @@ class DatetimeIndex(Index):
         self._data = [_parse_one(v) for v in data]
         self._name = name
         self._tz = tz
+        self._freq = freq
 
     @property
     def year(self) -> Index:
@@ -1345,9 +1373,48 @@ class DatetimeIndex(Index):
         return self._tz
 
     def __repr__(self) -> str:
+        # 格式化 date 值：显示为 '2013-01-01' 格式
+        date_strs = []
+        for v in self._data:
+            if isinstance(v, datetime):
+                if (
+                    v.hour == 0
+                    and v.minute == 0
+                    and v.second == 0
+                    and v.microsecond == 0
+                ):
+                    date_strs.append(repr(v.strftime("%Y-%m-%d")))
+                else:
+                    date_strs.append(repr(str(v)))
+            else:
+                date_strs.append(repr(v))
+        # 多行显示（每行最多 4 个值，对齐 pandas 行为）
+        items_per_line = 4
         name = f", name='{self._name}'" if self._name else ""
-        tz_str = f", tz='{self._tz}'" if self._tz else ""
-        return f"DatetimeIndex({self._data}{name}{tz_str})"
+        freq_str = f", freq='{self._freq}'" if self._freq else ""
+        suffix = f"], dtype='datetime64[us]'{freq_str}{name})"
+        if len(date_strs) <= items_per_line:
+            joined = ", ".join(date_strs)
+            return f"DatetimeIndex([{joined}{suffix}"
+        # 多行模式
+        lines = []
+        indent = " " * 15  # 对齐 pandas 的缩进
+        n = len(date_strs)
+        for i in range(0, n, items_per_line):
+            chunk = date_strs[i : i + items_per_line]
+            joined = ", ".join(chunk)
+            if i == 0:
+                line = "DatetimeIndex([" + joined + ","
+            elif i + items_per_line >= n:
+                # 最后一行：直接闭合括号
+                line = indent + joined + "],"
+            else:
+                line = indent + joined + ","
+            lines.append(line)
+        # 最后一行：dtype/freq/name 元数据
+        close_indent = " " * 14
+        lines.append(close_indent + "dtype='datetime64[us]'" + freq_str + name + ")")
+        return "\n".join(lines)
 
     def __len__(self) -> int:
         return len(self._data)

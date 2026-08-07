@@ -112,7 +112,11 @@ class DatetimeSeries:
     """
 
     def __init__(
-        self, values: list, name: Optional[str] = None, index: Optional[list] = None
+        self,
+        values: list,
+        name: Optional[str] = None,
+        index: Optional[list] = None,
+        freq: Optional[str] = None,
     ):
         # 内部存储: ISO 字符串列表
         iso_values = [_to_iso(v) for v in values]
@@ -120,6 +124,11 @@ class DatetimeSeries:
         self._raw_values: list = list(values)  # 缓存 datetime 对象
         self.name: Optional[str] = name
         self._index: Optional[list] = index
+        self._freq: Optional[str] = freq
+
+    @property
+    def freq(self) -> Optional[str]:
+        return self._freq
 
     @property
     def values(self) -> list:
@@ -149,7 +158,47 @@ class DatetimeSeries:
         return len(self._inner)
 
     def __repr__(self) -> str:
-        return f"DatetimeSeries({self.values!r}, name={self.name!r})"
+        # 对齐 pandas DatetimeIndex 格式
+        date_strs = []
+        for v in self.values:
+            if isinstance(v, datetime):
+                if (
+                    v.hour == 0
+                    and v.minute == 0
+                    and v.second == 0
+                    and v.microsecond == 0
+                ):
+                    date_strs.append(repr(v.strftime("%Y-%m-%d")))
+                else:
+                    date_strs.append(repr(str(v)))
+            else:
+                date_strs.append(repr(v))
+        # 多行显示（每行最多 4 个值，对齐 pandas 行为）
+        items_per_line = 4
+        name = f", name='{self.name}'" if self.name else ""
+        freq_str = f", freq='{self._freq}'" if self._freq else ""
+        if len(date_strs) <= items_per_line:
+            joined = ", ".join(date_strs)
+            return f"DatetimeIndex([{joined}], dtype='datetime64[us]'{freq_str}{name})"
+        # 多行模式
+        lines = []
+        indent = " " * 15  # 对齐 pandas 的缩进
+        n = len(date_strs)
+        for i in range(0, n, items_per_line):
+            chunk = date_strs[i : i + items_per_line]
+            joined = ", ".join(chunk)
+            if i == 0:
+                line = "DatetimeIndex([" + joined + ","
+            elif i + items_per_line >= n:
+                # 最后一行：直接闭合括号
+                line = indent + joined + "],"
+            else:
+                line = indent + joined + ","
+            lines.append(line)
+        # 最后一行：dtype/freq/name 元数据
+        close_indent = " " * 14
+        lines.append(close_indent + "dtype='datetime64[us]'" + freq_str + name + ")")
+        return "\n".join(lines)
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -648,7 +697,7 @@ def date_range(
         n = int((end_dt - start_dt) / step) + 1
 
     out = [start_dt + step * i for i in range(n)]
-    return DatetimeSeries(out, name=None)
+    return DatetimeSeries(out, name=None, freq=freq)
 
 
 def to_timedelta(arg, unit=None):
