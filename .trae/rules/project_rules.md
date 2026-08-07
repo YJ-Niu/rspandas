@@ -19,17 +19,18 @@ rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析�
 
 ### Rust 依赖
 
-| 依赖 | 版本 | 用途 |
-|---|---|---|
-| `pyo3` | 0.29.0 | Python 绑定 |
-| `csv` | 1.4.0 | CSV 读写 |
-| `rayon` | 1.12.0 | 并行计算 |
-| `calamine` | 0.36.1 | Excel 读取 |
-| `rust_xlsxwriter` | 0.96.0 | Excel 写入 |
+| 依赖              | 版本   | 用途        |
+| ----------------- | ------ | ----------- |
+| `pyo3`            | 0.29.0 | Python 绑定 |
+| `csv`             | 1.4.0  | CSV 读写    |
+| `rayon`           | 1.12.0 | 并行计算    |
+| `calamine`        | 0.36.1 | Excel 读取  |
+| `rust_xlsxwriter` | 0.96.0 | Excel 写入  |
 
 ### 构建优化
 
 `Cargo.toml` 的 release profile 配置：
+
 - `opt-level = 3` / `lto = "fat"` / `codegen-units = 1` / `strip = "symbols"` / `panic = "abort"`
 
 ## 关键约定
@@ -54,10 +55,9 @@ rspandas 是一个使用 **Rust + PyO3** 开发的高性能 Python 数据分析�
 
 ### 4. 依赖库处理
 
-- **禁止**安装 `numpy` 或其他第三方 Python 数值库（如 `scipy` 的核心功能）
+- **禁止**安装 `numpy` 或 `pandas` 或其他第三方 Python 数值库（如 `scipy` 的核心功能）
 - 项目自身即为 pandas 兼容库，应完善自身实现而非引入 pandas
 - 如需使用 pandas 来测试或验证功能与 rspandas 进行对比，验证完后，及时删除或注释掉相关代码，确保 rspandas 里没有引用的 pandas 代码
-- `test/test_rf/` 目录下的 scipy 用于测试兼容层，可按需更新
 
 ### 5. 代码风格
 
@@ -174,16 +174,16 @@ rspandas/
 
 `lib.rs` 通过 `#[pymodule]` 注册以下符号：
 
-| 类型/函数 | 来源模块 | 说明 |
-|---|---|---|
-| `PySeries` | `core::series` | Rust 端 Series 类 |
-| `PyDataFrame` | `core::dataframe` | Rust 端 DataFrame 类 |
-| `read_csv_string` | `core::csv_io` | 从字符串读取 CSV |
-| `write_csv_string` | `core::csv_io` | 写入 CSV 为字符串 |
-| `read_csv_path` | `core::csv_io` | 从文件路径读取 CSV |
-| `write_csv_path` | `core::csv_io` | 写入 CSV 到文件路径 |
-| `factorize` | `core::series` | 因子编码 |
-| `read_xlsx` | `core::xlsx_io` | 读取 Excel 文件 |
-| `write_xlsx` | `core::xlsx_io` | 写入 Excel 文件 |
-| `write_xlsx_multi` | `core::xlsx_io` | 写入多 sheet Excel |
-| `xlsx_sheet_names` | `core::xlsx_io` | 获取 Excel sheet 名列表 |
+| 类型/函数          | 来源模块          | 说明                    |
+| ------------------ | ----------------- | ----------------------- |
+| `PySeries`         | `core::series`    | Rust 端 Series 类       |
+| `PyDataFrame`      | `core::dataframe` | Rust 端 DataFrame 类    |
+| `read_csv_string`  | `core::csv_io`    | 从字符串读取 CSV        |
+| `write_csv_string` | `core::csv_io`    | 写入 CSV 为字符串       |
+| `read_csv_path`    | `core::csv_io`    | 从文件路径读取 CSV      |
+| `write_csv_path`   | `core::csv_io`    | 写入 CSV 到文件路径     |
+| `factorize`        | `core::series`    | 因子编码                |
+| `read_xlsx`        | `core::xlsx_io`   | 读取 Excel 文件         |
+| `write_xlsx`       | `core::xlsx_io`   | 写入 Excel 文件         |
+| `write_xlsx_multi` | `core::xlsx_io`   | 写入多 sheet Excel      |
+| `xlsx_sheet_names` | `core::xlsx_io`   | 获取 Excel sheet 名列表 |

@@ -332,19 +332,13 @@ def to_parquet(
     compression : str, optional, default 'snappy'
         压缩算法 (snappy, gzip, brotli, zstd, none)。
     **kwargs
-        传递给 pyarrow/pandas 的其他参数。
+        传递给 pyarrow 的其他参数。
     """
     if not _HAS_PYARROW:
-        # 回退到 pandas
-        try:
-            pdf = df.to_pandas()
-            pdf.to_parquet(path, compression=compression, **kwargs)
-            return
-        except ImportError:
-            raise ImportError(
-                "to_parquet requires pyarrow or pandas to be installed. "
-                "Install with: pip install pyarrow"
-            )
+        raise ImportError(
+            "to_parquet requires pyarrow to be installed. "
+            "Install with: pip install pyarrow"
+        )
 
     table = _dataframe_to_arrow_table(df)
     _pq.write_table(table, path, compression=compression, **kwargs)
@@ -1375,28 +1369,16 @@ def read_stata(path: str, **kwargs) -> DataFrame:
 def to_stata(df: DataFrame, path: str, **kwargs) -> None:
     """将 DataFrame 写入 Stata .dta 文件。
 
-    需安装 pyreadstat：pip install pyreadstat
+    由于 rspandas 不依赖 pandas，此函数回退为写入 CSV 格式。
+    如需真正的 .dta 格式，请手动转换为 pandas DataFrame 后使用 pyreadstat。
     """
-    try:
-        import pyreadstat
+    import warnings
 
-        # 转换为 pandas DataFrame（如果可用），否则手动构建
-        try:
-            import pandas as pd
-
-            pdf = pd.DataFrame({c: list(df[c].values) for c in df.columns})
-            pyreadstat.write_dta(path, pdf)
-        except ImportError:
-            # 简化实现：写入 CSV 格式作为回退
-            import warnings
-
-            warnings.warn("pyreadstat requires pandas. Writing as CSV instead.")
-            to_csv(df, path.replace(".dta", ".csv"))
-    except ImportError:
-        raise ImportError(
-            "to_stata requires pyreadstat to be installed. "
-            "Install with: pip install pyreadstat"
-        )
+    warnings.warn(
+        "to_stata: rspandas 不依赖 pandas，无法直接写入 .dta 格式。"
+        "回退为写入 CSV 格式。如需 .dta 格式，请手动处理。"
+    )
+    to_csv(df, path.replace(".dta", ".csv"))
 
 
 def read_hdf(path_or_buf, key: str = "data", **kwargs) -> DataFrame:
