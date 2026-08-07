@@ -162,8 +162,8 @@ print_series(87, pd.DataFrame(np.random.randn(3, 12)))
 datafile = {
     "filename": ["filename_01", "filename_02"],
     "path": [
-        "media/user_name/storage/folder_01/filename_01",
-        "media/user_name/storage/folder_02/filename_02",
+        "./testing/rspandas/filename_01",
+        "./testing/rspandas/filename_02",
     ],
 }
 pd.set_option("display.max_colwidth", 30)

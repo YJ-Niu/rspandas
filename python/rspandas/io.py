@@ -1008,7 +1008,7 @@ def to_sql_batch(
         )
         records = df.values
         for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
+            batch = records[i : i + batch_size]
             connection.execute(stmt, batch)
 
 
@@ -1135,7 +1135,7 @@ def read_html(
 
     # 解析表格
     rows_data = []
-    for tr in table.find_all("tr")[header or 0:]:
+    for tr in table.find_all("tr")[header or 0 :]:
         cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
         if cells:
             rows_data.append(cells)
