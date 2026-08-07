@@ -25,7 +25,6 @@ parquet = { version = "59.2.0", default-features = false, features = [
     "arrow",
     "snap",
     "flate2-rust_backend",
-    "brotli",
     "zstd",
 ] }
 
@@ -35,3 +34,8 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+# 第三方依赖用 opt-level="z"（体积优先），rspandas 自身代码保持 opt-level=3（性能优先）。
+# 这样在不牺牲自身数据处理性能的前提下，大幅压缩 arrow/parquet 等大依赖的 .so 体积。
+[profile.release.package."*"]
+opt-level = "z"

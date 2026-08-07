@@ -15,7 +15,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::arrow_writer::ArrowWriter;
-use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
+use parquet::basic::{Compression, GzipLevel, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -200,11 +200,11 @@ fn parse_compression(s: &str) -> Compression {
     match s.to_lowercase().as_str() {
         "snappy" => Compression::SNAPPY,
         "gzip" => Compression::GZIP(GzipLevel::default()),
-        "brotli" => Compression::BROTLI(BrotliLevel::default()),
         "zstd" => Compression::ZSTD(ZstdLevel::default()),
         "lz4" => Compression::LZ4_RAW,
         "none" | "uncompressed" | "" => Compression::UNCOMPRESSED,
-        _ => Compression::SNAPPY, // 默认 snappy（与 pandas 默认一致）
+        // brotli 已移除（极少使用），未知算法回退到 snappy（与 pandas 默认一致）
+        _ => Compression::SNAPPY,
     }
 }
 

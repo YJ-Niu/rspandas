@@ -802,10 +802,10 @@ class Series:
         return Series(result, name=self.name, dtype=self._dtype_str)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        """支持 numpy 通用函数 (ufunc) 作用于 Series。
+        """支持 rsnumpy 通用函数 (ufunc) 作用于 Series。
 
-        当 np.exp(series) / np.remainder(s1, s2) 等调用时，
-        numpy 会调用此方法，返回 Series 而非 list。
+        当 rnp.exp(series) / rnp.remainder(s1, s2) 等调用时，
+        rsnumpy 会调用此方法，返回 Series 而非 list。
         """
         if method != "__call__":
             return NotImplemented
@@ -880,7 +880,7 @@ class Series:
         return Series(result_values, name=result_name, dtype=dtype, index=result_index)
 
     def __array__(self, dtype=None):
-        """支持 numpy.array(series) 转换。"""
+        """支持 rnp.array(series) 转换。"""
         return rnp.array(self.values, dtype=dtype)
 
     # ---------- 命名算术方法 ----------
@@ -1096,7 +1096,7 @@ class Series:
                     col_key = idx[-1]
                 else:
                     row_key = (
-                        idx[:level] + idx[level + 1 :]
+                        idx[:level] + idx[level + 1 :]  # noqa
                         if len(idx) > 1 and level < len(idx)
                         else idx[0]
                     )
@@ -3164,8 +3164,8 @@ class Series:
         if self._index is not None and item in self._index:
             pos = self._index.index(item)
             val = self.values[pos]
-            new_values = self.values[:pos] + self.values[pos + 1 :]
-            new_index = self._index[:pos] + self._index[pos + 1 :]
+            new_values = self.values[:pos] + self.values[pos + 1 :]  # noqa
+            new_index = self._index[:pos] + self._index[pos + 1 :]  # noqa
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
             return val
@@ -4108,7 +4108,7 @@ class Series:
             """计算第 i 位的移动平均值。"""
             if i < window - 1:
                 return None
-            win = values[i - window + 1 : i + 1]
+            win = values[i - window + 1 : i + 1]  # noqa
             non_null = [v for v in win if v is not None]
             if not non_null:
                 return None
@@ -4195,15 +4195,15 @@ class _ExtensionArray:
         self._dtype = dtype_str or "float64"
 
     def __repr__(self) -> str:
-        import numpy as np
+        import rsnumpy as rnp
 
-        arr = np.array(self._data)
+        arr = rnp.array(self._data)
         # 如果是二维数组 (1, n)，squeeze 成一维
         if arr.ndim > 1:
             arr = arr.squeeze()
-        # 使用 numpy 的 array2string，用逗号分隔，匹配 pandas 格式
+        # 使用 rsnumpy 的 array2string，用逗号分隔，匹配 pandas 格式
         # pandas 使用 float64 的完整精度（约 16 位），所以指定 precision=16
-        values_str = np.array2string(
+        values_str = rnp.array2string(
             arr, separator=", ", prefix=" ", suffix="", precision=16
         )
         # array2string 返回的字符串已包含方括号，直接使用
@@ -4224,9 +4224,9 @@ class _ExtensionArray:
         return self._data[idx]
 
     def __array__(self, dtype=None):
-        import numpy as np
+        import rsnumpy as rnp
 
-        return np.array(self._data, dtype=dtype)
+        return rnp.array(self._data, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -4420,7 +4420,7 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            win = values[start : i + 1]
+            win = values[start : i + 1]  # noqa
             cnt = sum(1 for v in win if v is not None)
             if cnt < self._min_periods:
                 out.append(None)
@@ -4438,8 +4438,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start : i + 1]
-            wb = values_b[start : i + 1]
+            wa = values_a[start : i + 1]  # noqa
+            wb = values_b[start : i + 1]  # noqa
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)
@@ -4465,8 +4465,8 @@ class Rolling:
         out = []
         for i in range(n):
             start = max(0, i - self._window + 1)
-            wa = values_a[start : i + 1]
-            wb = values_b[start : i + 1]
+            wa = values_a[start : i + 1]  # noqa
+            wb = values_b[start : i + 1]  # noqa
             pairs = [(a, b) for a, b in zip(wa, wb) if a is not None and b is not None]
             if len(pairs) < self._min_periods or len(pairs) < 2:
                 out.append(None)

@@ -405,7 +405,9 @@ class DataFrame:
         self._columns: List[str] = str_col_names
         self._nrows: int = n
         self._index = index if index is not None else list(range(n))
-        self._index_name_val: Optional[str] = None  # 索引名称（如 from_records 的 index 参数）
+        self._index_name_val: Optional[str] = (
+            None  # 索引名称（如 from_records 的 index 参数）
+        )
         self._col_dtypes: Dict[str, str] = (
             col_dtype_overrides  # 列 dtype 覆盖（如 category）
         )
@@ -4014,13 +4016,15 @@ class DataFrame:
 
             if not valid_floats:
                 return [
-                    "NaN"
-                    if (
-                        v is None
-                        or (isinstance(v, float) and v != v)
-                        or (isinstance(v, str) and v in ("NaN", "None", "nan"))
+                    (
+                        "NaN"
+                        if (
+                            v is None
+                            or (isinstance(v, float) and v != v)
+                            or (isinstance(v, str) and v in ("NaN", "None", "nan"))
+                        )
+                        else str(v)
                     )
-                    else str(v)
                     for v in values
                 ]
 
@@ -4042,8 +4046,7 @@ class DataFrame:
 
             # 极大/极小值用科学计数法
             use_sci = [
-                abs(fv) >= 1e15 or (fv != 0 and abs(fv) < 0.001)
-                for fv in valid_floats
+                abs(fv) >= 1e15 or (fv != 0 and abs(fv) < 0.001) for fv in valid_floats
             ]
 
             precise_format = f".{max_decimals}f"
@@ -4134,10 +4137,9 @@ class DataFrame:
                 # 基于 display.width 截断: 计算能放下的列数
                 avail_width = display_width - idx_width_est - 2
                 # 估算每列平均宽度
-                avg_col_width = (
-                    sum(col_widths.get(c, len(str(c))) + 2 for c in display_columns)
-                    / len(display_columns)
-                )
+                avg_col_width = sum(
+                    col_widths.get(c, len(str(c))) + 2 for c in display_columns
+                ) / len(display_columns)
                 # 计算能放下的列数（预留 ... 的空间）
                 fit_cols = max(int(avail_width / avg_col_width) - 1, 1)
                 half = max(fit_cols // 2, 1)
@@ -4209,7 +4211,11 @@ class DataFrame:
 
         if is_col_multiindex:
             # MultiIndex 列: 构建多层表头
-            col_levels = len(self._raw_columns[0]) if isinstance(self._raw_columns[0], tuple) else 1
+            col_levels = (
+                len(self._raw_columns[0])
+                if isinstance(self._raw_columns[0], tuple)
+                else 1
+            )
 
             # 构建每层表头
             header_lines = []
@@ -4329,7 +4335,10 @@ class DataFrame:
                         # 找到第一个不同的级别
                         first_diff = 0
                         for lvl in range(len(idx_levels)):
-                            if lvl >= len(prev_idx_levels) or idx_levels[lvl] != prev_idx_levels[lvl]:
+                            if (
+                                lvl >= len(prev_idx_levels)
+                                or idx_levels[lvl] != prev_idx_levels[lvl]
+                            ):
                                 first_diff = lvl
                                 break
                             first_diff = lvl + 1
@@ -4338,7 +4347,7 @@ class DataFrame:
                     else:
                         display_levels = idx_levels
                     # 计算每个级别的显示宽度
-                    if 'level_widths' in locals():
+                    if "level_widths" in locals():
                         if len(level_widths) == len(display_levels):
                             parts = [
                                 display_levels[lvl].ljust(level_widths[lvl])
@@ -4367,7 +4376,9 @@ class DataFrame:
             or is_col_truncated
         )
         if is_truncated:
-            return "\n".join(lines) + f"\n\n[{n} rows x {len(self._raw_columns)} columns]"
+            return (
+                "\n".join(lines) + f"\n\n[{n} rows x {len(self._raw_columns)} columns]"
+            )
         return "\n".join(lines)
 
     def groupby(
@@ -7711,7 +7722,7 @@ class DataFrame:
         from .io import StreamDataFrame
 
         nrows = self._nrows
-        chunks = [self.iloc[i:i + chunk_size] for i in range(0, nrows, chunk_size)]
+        chunks = [self.iloc[i : i + chunk_size] for i in range(0, nrows, chunk_size)]
         return StreamDataFrame(chunks)
 
     def pipeline(self, *funcs):
