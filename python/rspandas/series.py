@@ -6,7 +6,7 @@ import rsnumpy as rnp
 
 from .rspandas import _DataFrame as _PyDataFrame
 from .rspandas import _Series as _PySeries  # type: ignore
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -74,20 +74,38 @@ def _infer_dtype(values: list) -> str:
 
 
 def _to_python_list(data: Any) -> list:
-    """将输入标准化为 Python list。"""
+    """将输入标准化为 Python list。
+
+    对 datetime/date 元素转换为 ISO 字符串（Rust 端不支持 Python datetime 对象）。
+    """
+    from ._datetime import DatetimeSeries  # 延迟 import 避免循环引用
+
+    if isinstance(data, DatetimeSeries):
+        return list(data._inner.values)  # ISO 字符串
     if isinstance(data, _PySeries):
         return list(data.values)
     if isinstance(data, (list, tuple)):
-        return list(data)
+        return [
+            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            for v in data
+        ]
     if isinstance(data, dict):
         # dict: 默认用 values
         return list(data.values())
     if hasattr(data, "tolist"):
-        return data.tolist()
+        raw = data.tolist()
+        return [
+            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            for v in raw
+        ]
     if data is None:
         return []
     if hasattr(data, "__iter__"):
-        return list(data)
+        out = list(data)
+        return [
+            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            for v in out
+        ]
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
 
 
@@ -97,19 +115,31 @@ def _to_python_list_and_index(data: Any, index=None):
     当 data 是 dict 且指定了 index 时，按 index 顺序查找 dict 值，
     缺失的索引对应 None。
     """
+    from ._datetime import DatetimeSeries
+
+    def _conv(values):
+        return [
+            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            for v in values
+        ]
+
+    if isinstance(data, DatetimeSeries):
+        values = list(data._inner.values)
+        idx = list(data._index) if data._index is not None else None
+        return values, idx
     if isinstance(data, _PySeries):
         return list(data.values), None
     if isinstance(data, (list, tuple)):
-        return list(data), None
+        return _conv(list(data)), None
     if isinstance(data, dict):
         if index is not None:
             # 按指定 index 顺序取 dict 值，缺失的填 None
             idx_list = list(index) if not isinstance(index, list) else index
             values = [data.get(k, None) for k in idx_list]
-            return values, idx_list
-        return list(data.values()), list(data.keys())
+            return _conv(values), idx_list
+        return _conv(list(data.values())), list(data.keys())
     if hasattr(data, "tolist"):
-        return data.tolist(), None
+        return _conv(data.tolist()), None
     if data is None:
         return [], None
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
@@ -158,6 +188,12 @@ class Series:
         :param copy: 是否复制数据
         :param fastpath: 是否走快速路径 (内部使用)
         """
+        from ._datetime import DatetimeSeries  # 延迟 import 避免循环引用
+
+        # 额外的 datetime 缓存（当源是 DatetimeSeries / datetime 对象列表时保留）
+        self._dt_values: Optional[list] = None
+        self._dt_tz: Any = None
+
         # 如果输入是 Series，直接复制
         if isinstance(data, Series):
             if copy:
@@ -170,6 +206,21 @@ class Series:
                 index = list(data._index) if data._index is not None else None
                 name = data.name if name is None else name
                 dtype = data._dtype_str if dtype is None else dtype
+            # 如果原始 Series 有 datetime 缓存，同步
+            if getattr(data, "_dt_values", None) is not None:
+                self._dt_values = list(data._dt_values)
+                self._dt_tz = getattr(data, "_dt_tz", None)
+        elif isinstance(data, DatetimeSeries):
+            # 直接取内部 ISO 字符串 values，同时保留 datetime 列表缓存
+            values = list(data._inner.values)
+            if name is None:
+                name = data.name
+            if index is None and data._index is not None:
+                index = list(data._index)
+            self._dt_values = list(data.values)  # datetime 对象列表
+            self._dt_tz = data._tz
+            if dtype is None:
+                dtype = "datetime64[ns]"  # 语义 dtype（底层仍用 object 存 ISO）
         elif isinstance(data, dict):
             values, index = _to_python_list_and_index(data, index)
         else:
@@ -186,7 +237,31 @@ class Series:
                 )
                 values = [data] * index_len
             else:
+                # 检测原始数据是否含 datetime（在转换前先保留缓存）
+                raw_iter = None
+                if isinstance(data, (list, tuple)):
+                    raw_iter = data
+                elif hasattr(data, "__iter__") and not hasattr(data, "tolist"):
+                    raw_iter = list(data)
                 values = _to_python_list(data)
+                # 如果原始数据含 datetime/date，则保留对象缓存（用于 to_numpy dtype=object）
+                if raw_iter is not None and any(
+                    isinstance(v, (datetime, date)) and not isinstance(v, bool)
+                    for v in raw_iter
+                ):
+                    self._dt_values = [
+                        v
+                        for v in (
+                            raw_iter if isinstance(raw_iter, list) else list(raw_iter)
+                        )
+                    ]
+                    tz_infos = {
+                        v.tzinfo
+                        for v in self._dt_values
+                        if isinstance(v, datetime) and v.tzinfo is not None
+                    }
+                    if len(tz_infos) == 1:
+                        self._dt_tz = next(iter(tz_infos))
 
         # 推断 dtype
         if dtype is None:
@@ -1036,12 +1111,81 @@ class Series:
             col_name = 0
         return DataFrame({col_name: list(self.values)}, index=self._index)
 
-    def to_numpy(self, dtype=None):
-        """转换为 rsnumpy array。
+    def to_numpy(self, dtype=None, copy: bool = True, na_value: Any = None):
+        """转换为 rsnumpy array（对齐 pandas Series.to_numpy）。
 
-        :param dtype: 目标 dtype
+        当 Series 内部有 datetime 缓存（源自 DatetimeSeries 或 datetime 列表），
+        支持 `dtype=object`（返回 datetime 对象数组）和
+        `dtype='datetime64[ns]'`（返回 int64 纳秒纪元数组）。
+
+        :param dtype: 目标 dtype ('object' / 'datetime64[ns]' / None 等)
+        :param copy: 是否拷贝 (保留参数对齐 pandas，本实现始终返回新数组)
+        :param na_value: 替换 None 的值 (仅在 dtype=object / datetime64[ns] 场景生效)
         """
-        return rnp.array(self.values, dtype=dtype) if dtype else rnp.array(self.values)
+        import rsnumpy as rnp
+
+        has_dt_cache = self._dt_values is not None and len(self._dt_values) > 0
+        if dtype is None:
+            dtype_str = ""
+            dtype_is_object = False
+            dtype_is_datetime64 = False
+        elif dtype is object:
+            dtype_str = "object"
+            dtype_is_object = True
+            dtype_is_datetime64 = False
+        elif isinstance(dtype, str):
+            dtype_str = dtype.lower().replace(" ", "")
+            dtype_is_object = dtype_str in ("object", "o")
+            dtype_is_datetime64 = dtype_str.startswith("datetime64")
+        else:
+            dtype_str = str(dtype).lower()
+            dtype_is_object = "'object'" in dtype_str or dtype_str == "<class 'object'>"
+            dtype_is_datetime64 = "datetime64" in dtype_str
+
+        if has_dt_cache and (dtype_is_object or dtype_is_datetime64 or dtype_str == ""):
+            vals = list(self._dt_values)
+            if na_value is not None:
+                vals = [na_value if v is None else v for v in vals]
+            if dtype_is_object:
+                # rsnumpy 不支持 datetime 对象，退回 ISO 字符串 (object dtype)
+                iso_strs = [
+                    v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+                    for v in vals
+                ]
+                return rnp.array(iso_strs)
+            # 默认或 datetime64[ns]: 转纳秒纪元
+            sample_tz = (
+                vals[0].tzinfo
+                if vals and isinstance(vals[0], datetime) and vals[0].tzinfo is not None
+                else None
+            )
+            epoch = datetime(1970, 1, 1, tzinfo=sample_tz)
+            nano_vals: list = []
+            for v in vals:
+                if v is None:
+                    nano_vals.append(float("nan"))
+                elif isinstance(v, datetime):
+                    delta = v - epoch
+                    ns = (
+                        delta.days * 86_400_000_000_000
+                        + delta.seconds * 1_000_000_000
+                        + delta.microseconds * 1000
+                    )
+                    nano_vals.append(ns)
+                elif isinstance(v, date):
+                    dt = datetime(v.year, v.month, v.day, tzinfo=sample_tz)
+                    delta = dt - epoch
+                    nano_vals.append(
+                        delta.days * 86_400_000_000_000 + delta.seconds * 1_000_000_000
+                    )
+                else:
+                    nano_vals.append(float("nan"))
+            return rnp.array(nano_vals)
+
+        # 普通路径
+        if dtype:
+            return rnp.array(self.values, dtype=dtype)
+        return rnp.array(self.values)
 
     @classmethod
     def from_numpy(cls, arr, name=None, index=None) -> "Series":

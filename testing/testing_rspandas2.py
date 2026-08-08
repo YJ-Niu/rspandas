@@ -186,5 +186,31 @@ print_series(96, s.array)
 print_series(97, s.index.array)
 print_series(98, s.to_numpy())
 print_series(99, np.asarray(s))
+ser = pd.Series(pd.date_range("2000", periods=2, tz="CET"))
+print_series(100, ser.to_numpy(dtype=object))
+print_series(101, ser.to_numpy(dtype="datetime64[ns]"))
+print_series(102, df.to_numpy())
+pd.set_option("compute.use_bottleneck", False)
+pd.set_option("compute.use_numexpr", False)
+df = pd.DataFrame(
+    {
+        "one": pd.Series(np.random.randn(3), index=["a", "b", "c"]),
+        "two": pd.Series(np.random.randn(4), index=["a", "b", "c", "d"]),
+        "three": pd.Series(np.random.randn(3), index=["b", "c", "d"]),
+    }
+)
+
+print_series(103, df)
+row = df.iloc[1]
+column = df["two"]
+print_series(104, df.sub(row, axis="columns"))
+print_series(105, df.sub(row, axis=1))
+print_series(106, df.sub(column, axis="index"))
+print_series(107, df.sub(column, axis=0))
+dfmi = df.copy()
+dfmi.index = pd.MultiIndex.from_tuples(
+    [(1, "a"), (1, "b"), (1, "c"), (2, "a")], names=["first", "second"]
+)
+print_series(108, dfmi.sub(column, axis=0, level="second"))
 end_time = time.time()
 print("end_time - start_time:", end_time - start_time)

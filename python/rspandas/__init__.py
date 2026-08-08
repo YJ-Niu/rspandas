@@ -86,6 +86,8 @@ _options: Dict[str, Any] = {
     "display.latex.repr": False,
     "mode.chained_assignment": "warn",
     "mode.use_inf_as_na": False,
+    "compute.use_bottleneck": True,
+    "compute.use_numexpr": True,
 }
 
 # 默认选项的副本（用于 reset_option）
