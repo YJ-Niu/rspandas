@@ -209,7 +209,7 @@ class DatetimeSeries:
         indent = " " * 15  # 对齐 pandas 的缩进
         n = len(date_strs)
         for i in range(0, n, items_per_line):
-            chunk = date_strs[i : i + items_per_line]
+            chunk = date_strs[i : i + items_per_line]  # noqa
             joined = ", ".join(chunk)
             if i == 0:
                 line = "DatetimeIndex([" + joined + ","
@@ -779,13 +779,6 @@ def _normalize_tz(tz: Any) -> Any:
             return timezone(timedelta(minutes=mins), name=name)
         # 4) 形如 "UTC+3" / "GMT-5" 等固定偏移
         if name.upper().startswith(("UTC", "GMT")):
-            import re
-
-            m = re.fullmatch(
-                r"(?i)(?:UTC|GMT)([+-]?)(\d{1,2})(?::(\d{2}))?", name[len(name) - len(name) + 3 :]
-                if False
-                else name[3:] if name.upper().startswith(("UTC", "GMT")) else ""
-            )
             # 简单实现：手动解析
             tail = name[3:]
             if not tail:

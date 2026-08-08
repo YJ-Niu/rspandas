@@ -532,11 +532,114 @@ class Series:
 
     # ---------- 算术运算符 (v0.3.0) ----------
 
-    def _arith(self, other, op: str, reverse: bool = False) -> _PySeries:
+    def _compare(self, other, op_name: str, fill_value=None) -> _PySeries:
+        """逐元素比较运算，支持索引对齐和 fill_value。
+
+        :param op_name: "eq", "ne", "lt", "gt", "le", "ge"
+        :param fill_value: 当"至多一个"操作数缺失时用此值替换缺失方后比较；
+            两者均缺失时遵循 NaN 比较规则 (ne → True, 其他 → False)。
+        """
+        _ops = {
+            "eq": lambda a, b: a == b,
+            "ne": lambda a, b: a != b,
+            "lt": lambda a, b: a < b,
+            "gt": lambda a, b: a > b,
+            "le": lambda a, b: a <= b,
+            "ge": lambda a, b: a >= b,
+        }
+        fn = _ops[op_name]
+
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        def _compare_pair(a, b) -> bool:
+            a_missing = _is_missing(a)
+            b_missing = _is_missing(b)
+            # 两者都缺失 → NaN 比较规则: ne → True, 其他 → False
+            if a_missing and b_missing:
+                return op_name == "ne"
+            # 至多一个缺失：用 fill_value 替换缺失方
+            if a_missing:
+                a = fill_value
+            if b_missing:
+                b = fill_value
+            # 替换后仍缺失（fill_value 为 None 时）
+            if _is_missing(a) or _is_missing(b):
+                return op_name == "ne"
+            try:
+                return bool(fn(a, b))
+            except (TypeError, ValueError):
+                return op_name == "ne"
+
+        if isinstance(other, Series):
+            # Series vs Series: 按索引对齐
+            self_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
+            other_index = (
+                list(other._index)
+                if other._index is not None
+                else list(range(len(other)))
+            )
+            union_index = list(self_index)
+            seen = set(self_index)
+            for idx in other_index:
+                if idx not in seen:
+                    seen.add(idx)
+                    union_index.append(idx)
+            try:
+                union_index = sorted(union_index)
+            except TypeError:
+                pass
+            self_map = dict(zip(self_index, self.values))
+            other_map = dict(zip(other_index, other.values))
+            self_vals = [self_map.get(idx) for idx in union_index]
+            other_vals = [other_map.get(idx) for idx in union_index]
+        else:
+            # 标量广播
+            self_vals = list(self.values)
+            other_vals = [other] * len(self)
+            union_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
+
+        result = [_compare_pair(a, b) for a, b in zip(self_vals, other_vals)]
+        return Series(result, name=self.name, dtype="bool", index=union_index)
+
+    def _arith(self, other, op: str, reverse: bool = False, fill_value=None) -> _PySeries:
         """逐元素算术运算，缺失值用 None。
 
         :param reverse: 为 True 时交换操作数顺序（用于反向运算符 __rsub__ 等）
+        :param fill_value: 当"至多一个"操作数缺失 (None/NaN) 时用此值替换缺失方
+            后再做运算；两个操作数均缺失时结果仍为 NaN (与 pandas 行为一致)。
         """
+
+        def _is_missing(v) -> bool:
+            """判断值是否为缺失 (None 或 NaN)。"""
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        # 算术运算 lambda (已处理 reverse: x=self侧, y=other侧)
+        _ops = {
+            "add": lambda x, y: x + y,
+            "sub": lambda x, y: x - y,
+            "mul": lambda x, y: x * y,
+            "truediv": lambda x, y: (x / y) if y != 0 else None,
+            "floordiv": lambda x, y: (x // y) if y != 0 else None,
+            "mod": lambda x, y: (x % y) if y != 0 else None,
+            "pow": lambda x, y: x**y,
+        }
+        fn = _ops[op]
+
         if isinstance(other, Series):
             # Series + Series: 按索引对齐
             self_index = (
@@ -575,36 +678,26 @@ class Series:
 
         result = []
         for a, b in zip(self_vals, other_vals):
-            if a is None or b is None:
+            a_missing = _is_missing(a)
+            b_missing = _is_missing(b)
+            # 两者都缺失 → None (NaN)
+            if a_missing and b_missing:
+                result.append(None)
+                continue
+            # 至多一个缺失：用 fill_value 替换缺失方
+            if a_missing:
+                a = fill_value
+            if b_missing:
+                b = fill_value
+            # 替换后仍可能为缺失（fill_value 为 None 时）
+            if _is_missing(a) or _is_missing(b):
                 result.append(None)
                 continue
             # 反向运算符交换左右操作数
             x, y = (b, a) if reverse else (a, b)
             try:
-                if op == "add":
-                    result.append(x + y)
-                elif op == "sub":
-                    result.append(x - y)
-                elif op == "mul":
-                    result.append(x * y)
-                elif op == "truediv":
-                    if y == 0:
-                        result.append(None)
-                    else:
-                        result.append(x / y)
-                elif op == "floordiv":
-                    if y == 0:
-                        result.append(None)
-                    else:
-                        result.append(x // y)
-                elif op == "mod":
-                    if y == 0:
-                        result.append(None)
-                    else:
-                        result.append(x % y)
-                elif op == "pow":
-                    result.append(x**y)
-            except (TypeError, ValueError):
+                result.append(fn(x, y))
+            except (TypeError, ValueError, ZeroDivisionError):
                 result.append(None)
         # 推断结果 dtype
         nums = [v for v in result if isinstance(v, (int, float))]
@@ -686,31 +779,91 @@ class Series:
         return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
 
     def __divmod__(self, other):
-        """divmod 运算: self divmod other"""
-        # 使用列表推导式替代显式 for 循环
-        pairs = [
-            (None, None) if (v is None or other is None) else divmod(v, other)
-            for v in self.values
-        ]
+        """divmod 运算: self divmod other
+
+        支持 other 为标量、list、Series 或 rsnumpy.ndarray，按位置对齐做元素级 divmod。
+        """
+        self_vals = list(self.values)
+        # 解析 other 为值列表或标量
+        if isinstance(other, Series):
+            other_vals = list(other.values)
+            scalar_other = None
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+            scalar_other = None
+        elif hasattr(other, "tolist"):
+            other_vals = list(other.tolist())
+            scalar_other = None
+        else:
+            other_vals = None
+            scalar_other = other
+
+        if other_vals is not None:
+            if len(other_vals) != len(self_vals):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self_vals)},) ({len(other_vals)},)"
+                )
+            pairs = [
+                (None, None) if (v is None or o is None) else divmod(v, o)
+                for v, o in zip(self_vals, other_vals)
+            ]
+        else:
+            pairs = [
+                (None, None) if (v is None or scalar_other is None) else divmod(v, scalar_other)
+                for v in self_vals
+            ]
         quot = [p[0] for p in pairs]
         rem = [p[1] for p in pairs]
+        # 推断 dtype：含 None 则 float64，否则 int64
+        has_none = any(q is None for q in quot)
+        dtype = "float64" if has_none else "int64"
         return (
-            Series(quot, name=self.name, index=self._index, dtype=self._dtype_str),
-            Series(rem, name=self.name, index=self._index, dtype=self._dtype_str),
+            Series(quot, name=self.name, index=self._index, dtype=dtype),
+            Series(rem, name=self.name, index=self._index, dtype=dtype),
         )
 
     def __rdivmod__(self, other):
-        """反向 divmod 运算: other divmod self"""
-        # 使用列表推导式替代显式 for 循环
-        pairs = [
-            (None, None) if (v is None or other is None) else divmod(other, v)
-            for v in self.values
-        ]
+        """反向 divmod 运算: other divmod self
+
+        支持 other 为标量、list、Series 或 rsnumpy.ndarray，按位置对齐做元素级 divmod。
+        """
+        self_vals = list(self.values)
+        if isinstance(other, Series):
+            other_vals = list(other.values)
+            scalar_other = None
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+            scalar_other = None
+        elif hasattr(other, "tolist"):
+            other_vals = list(other.tolist())
+            scalar_other = None
+        else:
+            other_vals = None
+            scalar_other = other
+
+        if other_vals is not None:
+            if len(other_vals) != len(self_vals):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self_vals)},)"
+                )
+            pairs = [
+                (None, None) if (v is None or o is None) else divmod(o, v)
+                for v, o in zip(self_vals, other_vals)
+            ]
+        else:
+            pairs = [
+                (None, None) if (v is None or scalar_other is None) else divmod(scalar_other, v)
+                for v in self_vals
+            ]
         quot = [p[0] for p in pairs]
         rem = [p[1] for p in pairs]
+        has_none = any(q is None for q in quot)
+        dtype = "float64" if has_none else "int64"
         return (
-            Series(quot, name=self.name, index=self._index, dtype=self._dtype_str),
-            Series(rem, name=self.name, index=self._index, dtype=self._dtype_str),
+            Series(quot, name=self.name, index=self._index, dtype=dtype),
+            Series(rem, name=self.name, index=self._index, dtype=dtype),
         )
 
     def __invert__(self):
@@ -960,37 +1113,37 @@ class Series:
 
     # ---------- 命名算术方法 ----------
 
-    def radd(self, other) -> _PySeries:
+    def radd(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向加法: other + self"""
-        return self.__radd__(other)
+        return self._arith(other, "add", reverse=True, fill_value=fill_value)
 
-    def rsub(self, other) -> _PySeries:
+    def rsub(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向减法: other - self"""
-        return self.__rsub__(other)
+        return self._arith(other, "sub", reverse=True, fill_value=fill_value)
 
-    def rmul(self, other) -> _PySeries:
+    def rmul(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向乘法: other * self"""
-        return self.__rmul__(other)
+        return self._arith(other, "mul", reverse=True, fill_value=fill_value)
 
-    def rdiv(self, other) -> _PySeries:
+    def rdiv(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向除法: other / self"""
-        return self.__rtruediv__(other)
+        return self._arith(other, "truediv", reverse=True, fill_value=fill_value)
 
-    def rtruediv(self, other) -> _PySeries:
+    def rtruediv(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向真除法: other / self"""
-        return self.__rtruediv__(other)
+        return self._arith(other, "truediv", reverse=True, fill_value=fill_value)
 
-    def rfloordiv(self, other) -> _PySeries:
+    def rfloordiv(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向整除: other // self"""
-        return self.__rfloordiv__(other)
+        return self._arith(other, "floordiv", reverse=True, fill_value=fill_value)
 
-    def rmod(self, other) -> _PySeries:
+    def rmod(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向取模: other % self"""
-        return self.__rmod__(other)
+        return self._arith(other, "mod", reverse=True, fill_value=fill_value)
 
-    def rpow(self, other) -> _PySeries:
+    def rpow(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """反向幂运算: other ** self"""
-        return self.__rpow__(other)
+        return self._arith(other, "pow", reverse=True, fill_value=fill_value)
 
     def rdivmod(self, other):
         """反向 divmod: divmod(other, self)"""
@@ -998,29 +1151,29 @@ class Series:
 
     # ---------- 比较命名方法 ----------
 
-    def eq(self, other) -> _PySeries:
+    def eq(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """等于: self == other"""
-        return self.__eq__(other)
+        return self._compare(other, "eq", fill_value=fill_value)
 
-    def ne(self, other) -> _PySeries:
+    def ne(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """不等于: self != other"""
-        return self.__ne__(other)
+        return self._compare(other, "ne", fill_value=fill_value)
 
-    def lt(self, other) -> _PySeries:
+    def lt(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """小于: self < other"""
-        return self.__lt__(other)
+        return self._compare(other, "lt", fill_value=fill_value)
 
-    def gt(self, other) -> _PySeries:
+    def gt(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """大于: self > other"""
-        return self.__gt__(other)
+        return self._compare(other, "gt", fill_value=fill_value)
 
-    def le(self, other) -> _PySeries:
+    def le(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """小于等于: self <= other"""
-        return self.__le__(other)
+        return self._compare(other, "le", fill_value=fill_value)
 
-    def ge(self, other) -> _PySeries:
+    def ge(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """大于等于: self >= other"""
-        return self.__ge__(other)
+        return self._compare(other, "ge", fill_value=fill_value)
 
     # ---------- 合并方法 ----------
 
@@ -2180,19 +2333,19 @@ class Series:
 
     def add(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """加法运算。"""
-        return self._arith(other, "add")
+        return self._arith(other, "add", fill_value=fill_value)
 
     def sub(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """减法运算。"""
-        return self._arith(other, "sub")
+        return self._arith(other, "sub", fill_value=fill_value)
 
     def mul(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """乘法运算。"""
-        return self._arith(other, "mul")
+        return self._arith(other, "mul", fill_value=fill_value)
 
     def div(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """除法运算。"""
-        return self._arith(other, "truediv")
+        return self._arith(other, "truediv", fill_value=fill_value)
 
     def divide(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """div 的别名。"""
@@ -2200,15 +2353,15 @@ class Series:
 
     def floordiv(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """整除运算。"""
-        return self._arith(other, "floordiv")
+        return self._arith(other, "floordiv", fill_value=fill_value)
 
     def mod(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """取模运算。"""
-        return self._arith(other, "mod")
+        return self._arith(other, "mod", fill_value=fill_value)
 
     def pow(self, other, level=None, fill_value=None, axis: int = 0) -> _PySeries:
         """幂运算。"""
-        return self._arith(other, "pow")
+        return self._arith(other, "pow", fill_value=fill_value)
 
     def divmod(self, other, level=None, fill_value=None, axis: int = 0) -> tuple:
         """同时返回整除和取模的结果。"""

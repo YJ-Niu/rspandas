@@ -157,6 +157,140 @@ class Index:
             return self._data == other._data
         return False
 
+    # ---------- 算术运算 ----------
+
+    def _binary_op(self, other, op):
+        """对每个元素应用二元运算，返回新 Index。
+
+        :param other: 标量 / list / Index
+        :param op: 二元函数 (a, b) -> result
+        """
+        if isinstance(other, Index):
+            other_vals = other._data
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+        else:
+            other_vals = None
+        if other_vals is not None:
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self._data)},) ({len(other_vals)},)"
+                )
+            result = [op(a, b) for a, b in zip(self._data, other_vals)]
+        else:
+            result = [op(a, other) for a in self._data]
+        return Index(result, name=self._name)
+
+    def _binary_rop(self, other, op):
+        """反向二元运算（other op self）。"""
+        if isinstance(other, Index):
+            other_vals = other._data
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+        else:
+            other_vals = None
+        if other_vals is not None:
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self._data)},)"
+                )
+            result = [op(a, b) for a, b in zip(other_vals, self._data)]
+        else:
+            result = [op(other, a) for a in self._data]
+        return Index(result, name=self._name)
+
+    def __add__(self, other):
+        return self._binary_op(other, lambda a, b: a + b)
+
+    def __radd__(self, other):
+        return self._binary_rop(other, lambda a, b: a + b)
+
+    def __sub__(self, other):
+        return self._binary_op(other, lambda a, b: a - b)
+
+    def __rsub__(self, other):
+        return self._binary_rop(other, lambda a, b: a - b)
+
+    def __mul__(self, other):
+        return self._binary_op(other, lambda a, b: a * b)
+
+    def __rmul__(self, other):
+        return self._binary_rop(other, lambda a, b: a * b)
+
+    def __truediv__(self, other):
+        return self._binary_op(other, lambda a, b: a / b)
+
+    def __rtruediv__(self, other):
+        return self._binary_rop(other, lambda a, b: a / b)
+
+    def __floordiv__(self, other):
+        return self._binary_op(other, lambda a, b: a // b)
+
+    def __rfloordiv__(self, other):
+        return self._binary_rop(other, lambda a, b: a // b)
+
+    def __mod__(self, other):
+        return self._binary_op(other, lambda a, b: a % b)
+
+    def __rmod__(self, other):
+        return self._binary_rop(other, lambda a, b: a % b)
+
+    def __pow__(self, other):
+        return self._binary_op(other, lambda a, b: a**b)
+
+    def __rpow__(self, other):
+        return self._binary_rop(other, lambda a, b: a**b)
+
+    def __divmod__(self, other):
+        """返回 (商 Index, 余数 Index)，与 Python divmod 语义一致。"""
+        if isinstance(other, Index):
+            other_vals = other._data
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self._data)},) ({len(other_vals)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(self._data, other_vals)]
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self._data)},) ({len(other_vals)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(self._data, other_vals)]
+        else:
+            pairs = [divmod(a, other) for a in self._data]
+        quot = [p[0] for p in pairs]
+        rem = [p[1] for p in pairs]
+        return Index(quot, name=self._name), Index(rem, name=self._name)
+
+    def __rdivmod__(self, other):
+        """反向 divmod：divmod(other, self)。"""
+        if isinstance(other, Index):
+            other_vals = other._data
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self._data)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(other_vals, self._data)]
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self._data)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(other_vals, self._data)]
+        else:
+            pairs = [divmod(other, a) for a in self._data]
+        quot = [p[0] for p in pairs]
+        rem = [p[1] for p in pairs]
+        return Index(quot, name=self._name), Index(rem, name=self._name)
+
     # ---------- 方法 ----------
 
     def tolist(self) -> list:
