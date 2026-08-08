@@ -426,8 +426,10 @@ class Index:
 
     @property
     def array(self):
-        """返回底层值的列表（Arrow 数组接口的简化版本）。"""
-        return list(self._data)
+        """返回底层 rsnumpy ndarray（与 pandas Index.array 行为一致，返回 NumpyExtensionArray）。"""
+        import rsnumpy as rnp
+
+        return rnp.array(self._data)
 
 
 # ============================================================================
@@ -1401,7 +1403,7 @@ class DatetimeIndex(Index):
         indent = " " * 15  # 对齐 pandas 的缩进
         n = len(date_strs)
         for i in range(0, n, items_per_line):
-            chunk = date_strs[i : i + items_per_line]
+            chunk = date_strs[i : i + items_per_line]  # noqa
             joined = ", ".join(chunk)
             if i == 0:
                 line = "DatetimeIndex([" + joined + ","

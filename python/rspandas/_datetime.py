@@ -143,6 +143,17 @@ class DatetimeSeries:
         return "datetime64[ns]"
 
     @property
+    def array(self):
+        """返回底层 rsnumpy ndarray（与 pandas Index.array 行为一致）。
+
+        由于 rsnumpy 底层仅支持 f64，此处返回 ISO 字符串数组，
+        调用方如需 datetime 对象应使用 .values 属性。
+        """
+        import rsnumpy as rnp
+
+        return rnp.array(self._inner.values)
+
+    @property
     def shape(self) -> tuple:
         return self._inner.shape
 
