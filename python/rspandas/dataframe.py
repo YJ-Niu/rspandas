@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import rsnumpy as rnp
 
-from .series import Series
+from .series import Series, _is_missing
 from rspandas.rspandas import _DataFrame as _PyDataFrame  # type: ignore
 from rspandas.rspandas import _Series as _PySeries
 from rspandas.rspandas import (
@@ -2183,31 +2183,98 @@ class DataFrame:
                     result[c] = None
             return Series(result)
         elif isinstance(func, list):
-            # 多个聚合函数
-            result_data = {}
+            # 多个聚合函数 → DataFrame, 行索引为函数名
+            row_names = []
             for agg_func in func:
-                row_data = {}
-                for c in self._columns:
-                    ser = self._get_column_as_series(c)
-                    if hasattr(ser, agg_func):
-                        row_data[c] = getattr(ser, agg_func)()
+                # 确定行名
+                if isinstance(agg_func, str):
+                    row_name = agg_func
+                elif callable(agg_func):
+                    row_name = getattr(agg_func, "__name__", "<lambda>")
+                else:
+                    row_name = str(agg_func)
+                row_names.append(row_name)
+
+            # 构建数据: 每列一个 list, 每个元素对应一个聚合函数的结果
+            new_data = {}
+            for c in self._columns:
+                ser = self._get_column_as_series(c)
+                col_results = []
+                for agg_func in func:
+                    if isinstance(agg_func, str):
+                        if hasattr(ser, agg_func):
+                            col_results.append(getattr(ser, agg_func)())
+                        else:
+                            col_results.append(None)
+                    elif callable(agg_func):
+                        col_results.append(agg_func(ser))
                     else:
-                        row_data[c] = None
-                result_data[agg_func] = row_data
-            return DataFrame(result_data)
+                        col_results.append(None)
+                new_data[c] = col_results
+            return DataFrame(new_data, index=row_names)
         elif isinstance(func, dict):
             # 每列指定聚合函数
-            result = {}
-            for c, agg_func in func.items():
-                ser = self._get_column_as_series(c)
-                if isinstance(agg_func, str):
-                    if hasattr(ser, agg_func):
-                        result[c] = getattr(ser, agg_func)()
+            # 判断是否有 list-like 值
+            has_list = any(isinstance(v, list) for v in func.values())
+
+            if not has_list:
+                # 所有值都是标量 → Series
+                result = {}
+                for c, agg_func in func.items():
+                    ser = self._get_column_as_series(c)
+                    if isinstance(agg_func, str):
+                        if hasattr(ser, agg_func):
+                            result[c] = getattr(ser, agg_func)()
+                        else:
+                            result[c] = None
+                    elif callable(agg_func):
+                        result[c] = agg_func(ser)
                     else:
                         result[c] = None
-                elif callable(agg_func):
-                    result[c] = agg_func(ser)
-            return Series(result)
+                return Series(result)
+            else:
+                # 有 list-like → DataFrame (矩阵式输出)
+                # 收集所有唯一的函数名 (保持顺序)
+                all_func_names = []
+                for c, agg_funcs in func.items():
+                    funcs = agg_funcs if isinstance(agg_funcs, list) else [agg_funcs]
+                    for f in funcs:
+                        name = (
+                            f
+                            if isinstance(f, str)
+                            else getattr(f, "__name__", "<lambda>")
+                        )
+                        if name not in all_func_names:
+                            all_func_names.append(name)
+
+                # 为每列计算每个函数的结果
+                new_data = {}
+                for c, agg_funcs in func.items():
+                    ser = self._get_column_as_series(c)
+                    funcs = agg_funcs if isinstance(agg_funcs, list) else [agg_funcs]
+
+                    # 计算该列指定的函数结果
+                    col_results = {}
+                    for f in funcs:
+                        if isinstance(f, str):
+                            name = f
+                            if hasattr(ser, f):
+                                col_results[name] = getattr(ser, f)()
+                            else:
+                                col_results[name] = None
+                        elif callable(f):
+                            name = getattr(f, "__name__", "<lambda>")
+                            col_results[name] = f(ser)
+                        else:
+                            name = str(f)
+                            col_results[name] = None
+
+                    # 填充所有函数名，不适用的为 NaN
+                    new_data[c] = [
+                        col_results.get(fn, float("nan")) for fn in all_func_names
+                    ]
+
+                return DataFrame(new_data, index=all_func_names)
         elif callable(func):
             # 可调用对象
             result = {}
@@ -2413,18 +2480,33 @@ class DataFrame:
         # 标量结果 → Series
         return Series(results, index=result_index)
 
-    def applymap(self, func) -> "DataFrame":
-        """对每个元素应用 func。"""
-        # 使用字典推导式替代显式 for 循环
-        new_data: Dict[str, list] = {
-            c: [None if v is None else func(v) for v in self[c].values]
-            for c in self._columns
-        }
-        return DataFrame(new_data)
+    def applymap(self, func, na_action: Optional[str] = None) -> "DataFrame":
+        """对每个元素应用 func。
 
-    def map(self, func) -> "DataFrame":
-        """applymap 的别名 (pandas 2.1+ 推荐)。"""
-        return self.applymap(func)
+        :param func: 元素级函数
+        :param na_action: 'ignore' 跳过 NA, None 对 NA 也调用函数
+        """
+        if na_action == "ignore":
+            new_data: Dict[str, list] = {
+                c: [v if _is_missing(v) else func(v) for v in self[c].values]
+                for c in self._columns
+            }
+        else:
+            # na_action=None: 对所有值调用 func (包括 None/NaN)
+            # None 转为 float('nan') 以匹配 pandas 行为 (str(nan)="nan")
+            new_data = {
+                c: [func(float("nan") if v is None else v) for v in self[c].values]
+                for c in self._columns
+            }
+        return DataFrame(new_data, index=self._index)
+
+    def map(self, func, na_action: Optional[str] = None) -> "DataFrame":
+        """applymap 的别名 (pandas 2.1+ 推荐)。
+
+        :param func: 元素级函数
+        :param na_action: 'ignore' 跳过 NA, None 对 NA 也调用函数
+        """
+        return self.applymap(func, na_action=na_action)
 
     def abs(self) -> "DataFrame":
         """返回绝对值的 DataFrame。"""
@@ -3001,17 +3083,21 @@ class DataFrame:
     def transform(self, func, axis: int = 0, *args, **kwargs) -> "DataFrame":
         """对每列应用 func 并返回相同形状的 DataFrame。
 
-        :param func: 变换函数（str/callable/list）
+        :param func: 变换函数（str/callable/list/dict）
         :param axis: 轴方向（仅支持 0）
         :param args: 位置参数
         :param kwargs: 关键字参数
         """
         new_data: Dict[str, list] = {}
 
-        if isinstance(func, list):
-            # 多个函数：生成多列
-            for f in func:
-                for c in self._columns:
+        if isinstance(func, dict):
+            # dict: 选择性变换指定列
+            # 判断是否有 list 值
+            has_list = any(isinstance(v, list) for v in func.values())
+
+            if not has_list:
+                # 标量 dict → 普通列名 DataFrame
+                for c, f in func.items():
                     ser = self[c]
                     if isinstance(f, str):
                         if hasattr(ser, f):
@@ -3022,9 +3108,68 @@ class DataFrame:
                         result = f(ser, *args, **kwargs)
 
                     if isinstance(result, Series):
-                        new_data[f"{c}_{f}"] = list(result.values)
+                        new_data[c] = list(result.values)
                     else:
-                        new_data[f"{c}_{f}"] = [result] * self._nrows
+                        new_data[c] = [result] * self._nrows
+            else:
+                # list dict → MultiIndex 列 DataFrame
+                for c, funcs in func.items():
+                    ser = self[c]
+                    # 标准化为 list
+                    funcs_list = funcs if isinstance(funcs, list) else [funcs]
+
+                    for f in funcs_list:
+                        # 确定函数名
+                        if isinstance(f, str):
+                            fname = f
+                        elif callable(f):
+                            fname = getattr(f, "__name__", "<lambda>")
+                        else:
+                            fname = str(f)
+
+                        # 应用函数
+                        if isinstance(f, str):
+                            if hasattr(ser, f):
+                                result = getattr(ser, f)(*args, **kwargs)
+                            else:
+                                result = f
+                        else:
+                            result = f(ser, *args, **kwargs)
+
+                        col_key = (c, fname)
+                        if isinstance(result, Series):
+                            new_data[col_key] = list(result.values)
+                        else:
+                            new_data[col_key] = [result] * self._nrows
+        elif isinstance(func, list):
+            # 多个函数：生成 MultiIndex 列 (原始列名, 函数名)
+            # 收集函数名
+            func_names = []
+            for f in func:
+                if isinstance(f, str):
+                    func_names.append(f)
+                elif callable(f):
+                    func_names.append(getattr(f, "__name__", "<lambda>"))
+                else:
+                    func_names.append(str(f))
+
+            # 按原始列分组，每个列下有多个函数结果
+            for c in self._columns:
+                for f, fname in zip(func, func_names):
+                    ser = self[c]
+                    if isinstance(f, str):
+                        if hasattr(ser, f):
+                            result = getattr(ser, f)(*args, **kwargs)
+                        else:
+                            result = f
+                    else:
+                        result = f(ser, *args, **kwargs)
+
+                    col_key = (c, fname)
+                    if isinstance(result, Series):
+                        new_data[col_key] = list(result.values)
+                    else:
+                        new_data[col_key] = [result] * self._nrows
         else:
             # 单个函数
             for c in self._columns:

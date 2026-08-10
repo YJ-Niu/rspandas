@@ -1,5 +1,6 @@
 import time
 start_time = time.time()
+from functools import partial  # noqa: E402
 
 import numpy as np  # noqa: E402
 from collections import namedtuple  # noqa: E402
@@ -324,7 +325,112 @@ df5 = pd.DataFrame(
         "B": np.random.randint(-10, 15, size=50),
     }
 )
-print_series(172, df5)
-print_series(171, df5.mode())
+print_series(171, df5)
+print_series(172, df5.mode())
+arr = np.random.randn(20)
+factor = pd.cut(arr, 4)
+print_series(173, factor)
+arr = np.random.randn(30)
+factor = pd.qcut(arr, [0, 0.25, 0.5, 0.75, 1])
+print_series(174, factor)
+def extract_city_name(df):
+    """
+    Chicago, IL -> Chicago for city_name column
+    """
+    df["city_name"] = df["city_and_code"].str.split(",").str.get(0)
+    return df
+
+
+def add_country_name(df, country_name=None):
+    """
+    Chicago -> Chicago-US for city_name column
+    """
+    col = "city_name"
+    df["city_and_country"] = df[col] + country_name
+    return df
+
+
+df_p = pd.DataFrame({"city_and_code": ["Chicago, IL"]})
+print_series(175, add_country_name(extract_city_name(df_p), country_name="US"))
+print_series(176, df_p.pipe(extract_city_name).pipe(add_country_name, country_name="US"))
+print_series(177, df.apply(lambda x: np.mean(x)))
+print_series(178, df.apply(lambda x: np.mean(x), axis=1))
+print_series(179, df.apply(lambda x: x.max() - x.min()))
+print_series(180, df.apply(np.cumsum))
+print_series(181, df.apply(np.exp))
+print_series(182, df.apply("mean"))
+print_series(183, df.apply("mean", axis=1))
+tsdf = pd.DataFrame(
+    np.random.randn(1000, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=1000),
+)
+print_series(184, tsdf.apply(lambda x: x.idxmax()))
+
+def subtract_and_divide(x, sub, divide=1):
+    return (x - sub) / divide
+
+
+df_udf = pd.DataFrame(np.ones((2, 2)))
+print_series(185, df_udf.apply(subtract_and_divide, args=(5,), divide=3))
+tsdf = pd.DataFrame(
+    np.random.randn(10, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=10),
+)
+tsdf.iloc[3:7] = np.nan
+print_series(186, tsdf)
+print_series(187, tsdf.apply(pd.Series.interpolate))
+tsdf = pd.DataFrame(
+    np.random.randn(10, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=10),
+)
+tsdf.iloc[3:7] = np.nan
+print_series(188, tsdf)
+print_series(189, tsdf.agg(lambda x: np.sum(x)))
+print_series(190, tsdf.agg("sum"))
+print_series(191, tsdf.sum())
+print_series(192, tsdf["A"].agg("sum"))
+print_series(193, tsdf.agg(["sum"]))
+print_series(194, tsdf.agg(["sum", "mean"]))
+print_series(195, tsdf["A"].agg(["sum", "mean"]))
+print_series(196, tsdf["A"].agg(["sum", lambda x: x.mean()]))
+def mymean(x):
+    return x.mean()
+
+
+print_series(197, tsdf["A"].agg(["sum", mymean]))
+print_series(198, tsdf.agg({"A": "mean", "B": "sum"}))
+print_series(199, tsdf.agg({"A": ["mean", "min"], "B": "sum"}))
+q_25 = partial(pd.Series.quantile, q=0.25)
+q_25.__name__ = "25%"
+q_75 = partial(pd.Series.quantile, q=0.75)
+q_75.__name__ = "75%"
+print_series(200, tsdf.agg(["count", "mean", "std", "min", q_25, "median", q_75, "max"]))
+tsdf = pd.DataFrame(
+    np.random.randn(10, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=10),
+)
+tsdf.iloc[3:7] = np.nan
+print_series(201, tsdf)
+print_series(202, tsdf.transform(np.abs))
+print_series(203, tsdf.transform("abs"))
+print_series(204, tsdf.transform(lambda x: x.abs()))
+print_series(205, np.abs(tsdf))
+print_series(206, tsdf["A"].transform(np.abs))
+print_series(207, tsdf.transform([np.abs, lambda x: x + 1]))
+print_series(208, tsdf["A"].transform([np.abs, lambda x: x + 1]))
+print_series(209, tsdf.transform({"A": np.abs, "B": lambda x: x + 1}))
+print_series(210, tsdf.transform({"A": np.abs, "B": [lambda x: x + 1, "sqrt"]}))
+df4 = df.copy()
+print_series(211, df4)
+def f(x):
+    return len(str(x))
+
+
+print_series(212, df4["one"].map(f))
+print_series(213, df4.map(f))
 end_time = time.time()
 print("end_time - start_time:", end_time - start_time)

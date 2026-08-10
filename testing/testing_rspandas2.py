@@ -1,5 +1,6 @@
 import time
 start_time = time.time()
+from functools import partial  # noqa: E402
 
 import rsnumpy as np  # noqa: E402
 from collections import namedtuple  # noqa: E402
@@ -380,6 +381,56 @@ tsdf = pd.DataFrame(
 tsdf.iloc[3:7] = np.nan
 print_series(186, tsdf)
 print_series(187, tsdf.apply(pd.Series.interpolate))
+tsdf = pd.DataFrame(
+    np.random.randn(10, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=10),
+)
+tsdf.iloc[3:7] = np.nan
+print_series(188, tsdf)
+print_series(189, tsdf.agg(lambda x: np.sum(x)))
+print_series(190, tsdf.agg("sum"))
+print_series(191, tsdf.sum())
+print_series(192, tsdf["A"].agg("sum"))
+print_series(193, tsdf.agg(["sum"]))
+print_series(194, tsdf.agg(["sum", "mean"]))
+print_series(195, tsdf["A"].agg(["sum", "mean"]))
+print_series(196, tsdf["A"].agg(["sum", lambda x: x.mean()]))
+def mymean(x):
+    return x.mean()
 
+
+print_series(197, tsdf["A"].agg(["sum", mymean]))
+print_series(198, tsdf.agg({"A": "mean", "B": "sum"}))
+print_series(199, tsdf.agg({"A": ["mean", "min"], "B": "sum"}))
+q_25 = partial(pd.Series.quantile, q=0.25)
+q_25.__name__ = "25%"
+q_75 = partial(pd.Series.quantile, q=0.75)
+q_75.__name__ = "75%"
+print_series(200, tsdf.agg(["count", "mean", "std", "min", q_25, "median", q_75, "max"]))
+tsdf = pd.DataFrame(
+    np.random.randn(10, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=10),
+)
+tsdf.iloc[3:7] = np.nan
+print_series(201, tsdf)
+print_series(202, tsdf.transform(np.abs))
+print_series(203, tsdf.transform("abs"))
+print_series(204, tsdf.transform(lambda x: x.abs()))
+print_series(205, np.abs(tsdf))
+print_series(206, tsdf["A"].transform(np.abs))
+print_series(207, tsdf.transform([np.abs, lambda x: x + 1]))
+print_series(208, tsdf["A"].transform([np.abs, lambda x: x + 1]))
+print_series(209, tsdf.transform({"A": np.abs, "B": lambda x: x + 1}))
+print_series(210, tsdf.transform({"A": np.abs, "B": [lambda x: x + 1, "sqrt"]}))
+df4 = df.copy()
+print_series(211, df4)
+def f(x):
+    return len(str(x))
+
+
+print_series(212, df4["one"].map(f))
+print_series(213, df4.map(f))
 end_time = time.time()
 print("end_time - start_time:", end_time - start_time)

@@ -335,7 +335,12 @@ impl Series {
     }
     pub fn sum_f64(&self) -> Option<f64> {
         if let ColumnData::Float(v) = &self.data {
-            Some(v.par_iter().filter_map(|x| *x).sum())
+            Some(
+                v.par_iter()
+                    .filter_map(|x| *x)
+                    .filter(|x| !x.is_nan())
+                    .sum(),
+            )
         } else {
             None
         }
@@ -2198,7 +2203,13 @@ impl PySeries {
                     } else if let Ok(i) = item.cast::<PyInt>() {
                         v.push(Some(i.extract::<i64>()?.to_string()));
                     } else if let Ok(f) = item.cast::<PyFloat>() {
-                        v.push(Some(f.extract::<f64>()?.to_string()));
+                        let fv = f.extract::<f64>()?;
+                        if fv.is_nan() {
+                            // NaN 在 object dtype 中存储为 None, 便于缺失值检测
+                            v.push(None);
+                        } else {
+                            v.push(Some(fv.to_string()));
+                        }
                     } else {
                         // 其他类型 (如 list/dict) 使用 str() 转为字符串
                         let s = item.str()?;
@@ -2382,7 +2393,13 @@ impl PySeries {
                     } else if let Ok(i) = item.cast::<PyInt>() {
                         v.push(Some(i.extract::<i64>()?.to_string()));
                     } else if let Ok(f) = item.cast::<PyFloat>() {
-                        v.push(Some(f.extract::<f64>()?.to_string()));
+                        let fv = f.extract::<f64>()?;
+                        if fv.is_nan() {
+                            // NaN 在 object dtype 中存储为 None, 便于缺失值检测
+                            v.push(None);
+                        } else {
+                            v.push(Some(fv.to_string()));
+                        }
                     } else {
                         // 其他类型 (如 list/dict) 使用 str() 转为字符串
                         let s = item.str()?;

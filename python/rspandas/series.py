@@ -1740,22 +1740,37 @@ class Series:
         return Series(out, name=self.name, index=self._index)
 
     def map(self, arg, na_action: Optional[str] = None) -> _PySeries:
-        """映射: 可以传 dict 或 callable。
+        """映射: 可以传 dict、callable 或 Series。
 
-        :param arg: 映射字典或可调用函数
-        :param na_action: None 值处理方式 ('ignore' 或 None)
+        :param arg: 映射字典、可调用函数或 Series (用索引作映射键)
+        :param na_action: None 值处理方式 ('ignore' 跳过 NA, None 对 NA 也调用函数)
         """
         if isinstance(arg, dict):
             if na_action == "ignore":
-                out = [arg.get(v, v) if v is not None else None for v in self.values]
+                out = [
+                    arg.get(v, v) if not _is_missing(v) else v
+                    for v in self.values
+                ]
             else:
-                out = [None if v is None else arg.get(v, None) for v in self.values]
+                out = [arg.get(v, None) for v in self.values]
+        elif isinstance(arg, Series):
+            # Series 映射: 用 arg 的 index->value 构建字典
+            mapping = dict(zip(arg.index, arg.values))
+            if na_action == "ignore":
+                out = [
+                    mapping.get(v, v) if not _is_missing(v) else v
+                    for v in self.values
+                ]
+            else:
+                out = [mapping.get(v, float("nan")) for v in self.values]
         else:
             # callable
             if na_action == "ignore":
-                out = [None if v is None else arg(v) for v in self.values]
+                out = [v if _is_missing(v) else arg(v) for v in self.values]
             else:
-                out = [None if v is None else arg(v) for v in self.values]
+                # na_action=None: 对所有值调用 func (包括 None/NaN)
+                # None 转为 float('nan') 以匹配 pandas 行为 (str(nan)="nan")
+                out = [arg(float("nan") if v is None else v) for v in self.values]
         return Series(out, name=self.name, index=self._index)
 
     def replace(
@@ -1956,6 +1971,20 @@ class Series:
         """返回绝对值 Series。"""
         out = [None if v is None else abs(v) for v in self.values]
         return Series(out, name=self.name, dtype=self._dtype_str, index=self._index)
+
+    def sqrt(self) -> _PySeries:
+        """逐元素求平方根。"""
+        import math
+
+        def _sqrt(v):
+            if v is None or _is_missing(v):
+                return None
+            if v < 0:
+                return float("nan")
+            return math.sqrt(v)
+
+        out = [_sqrt(v) for v in self.values]
+        return Series(out, name=self.name, dtype="float64", index=self._index)
 
     def copy(self, deep: bool = True) -> _PySeries:
         """复制 Series。
@@ -2289,30 +2318,97 @@ class Series:
         df._index = keys
         return df
 
-    def transform(self, func, axis: int = 0, *args, **kwargs) -> _PySeries:
+    def transform(self, func, axis: int = 0, *args, **kwargs) -> Any:
         """对 Series 应用函数并返回相同长度的结果。
 
-        :param func: 可调用函数或函数名
+        :param func: 可调用函数、函数名或其列表
         :param axis: 轴 (未使用，保持兼容性)
         :param args: 传递给 func 的额外位置参数
         :param kwargs: 传递给 func 的关键字参数
         """
-        if callable(func):
+        if isinstance(func, list):
+            # 多个函数 → DataFrame, 列名为函数名
+            from .dataframe import DataFrame
+
+            new_data = {}
+            for f in func:
+                # 确定函数名
+                if isinstance(f, str):
+                    fname = f
+                elif callable(f):
+                    fname = getattr(f, "__name__", "<lambda>")
+                else:
+                    fname = str(f)
+
+                # 应用函数
+                if isinstance(f, str):
+                    if hasattr(self, f):
+                        result = getattr(self, f)(*args, **kwargs)
+                    else:
+                        raise ValueError(f"Unknown function: {f}")
+                else:
+                    result = f(self, *args, **kwargs)
+
+                if isinstance(result, Series):
+                    new_data[fname] = list(result.values)
+                else:
+                    new_data[fname] = [result] * len(self)
+
+            return DataFrame(new_data, index=self._index)
+        elif isinstance(func, str):
+            # 字符串方法名
+            if hasattr(self, func):
+                result = getattr(self, func)(*args, **kwargs)
+            else:
+                raise ValueError(f"Unknown function: {func}")
+            if isinstance(result, Series):
+                return result
+            return Series(
+                [result] * len(self), name=self.name, index=self._index
+            )
+        elif callable(func):
             result = func(self, *args, **kwargs)
             if isinstance(result, Series):
                 return result
-            return Series([result] * len(self), name=self.name, index=self._index)
-        raise TypeError("func must be callable")
+            return Series(
+                [result] * len(self), name=self.name, index=self._index
+            )
+        raise TypeError("func must be callable, string, or list")
 
     def agg(self, func, axis: int = 0, *args, **kwargs) -> Any:
         """聚合操作。
 
-        :param func: 聚合函数或函数名 ('sum'/'mean'/'min'/'max'/'std'/'var'/'count')
+        :param func: 聚合函数、函数名或其列表
         :param axis: 轴 (未使用，保持兼容性)
         :param args: 传递给 func 的额外位置参数
         :param kwargs: 传递给 func 的关键字参数
         """
-        if callable(func):
+        if isinstance(func, list):
+            # 多个聚合函数 → Series, 索引为函数名
+            results = []
+            names = []
+            for agg_func in func:
+                if isinstance(agg_func, str):
+                    name = agg_func
+                elif callable(agg_func):
+                    name = getattr(agg_func, "__name__", "<lambda>")
+                else:
+                    name = str(agg_func)
+
+                if isinstance(agg_func, str):
+                    if hasattr(self, agg_func):
+                        results.append(getattr(self, agg_func)())
+                    else:
+                        raise ValueError(
+                            f"Unknown aggregation function: {agg_func}"
+                        )
+                elif callable(agg_func):
+                    results.append(agg_func(self))
+                else:
+                    results.append(None)
+                names.append(name)
+            return Series(results, index=names, name=self.name)
+        elif callable(func):
             return func(self, *args, **kwargs)
         elif isinstance(func, str):
             if func == "sum":
@@ -2334,7 +2430,7 @@ class Series:
             else:
                 raise ValueError(f"Unknown aggregation function: {func}")
         else:
-            raise TypeError("func must be callable or string")
+            raise TypeError("func must be callable, string, or list")
 
     aggregate = agg  # 别名
 
@@ -2613,7 +2709,8 @@ class Series:
         return self._inner.max()
 
     def count(self) -> int:
-        return self._inner.count()
+        # 过滤 None 和 NaN (np.nan 存为 Some(f64::NAN), Rust 层 count 不过滤 NaN)
+        return sum(1 for v in self.values if not _is_missing(v))
 
     def std(
         self,
