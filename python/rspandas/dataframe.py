@@ -4899,9 +4899,17 @@ class DataFrame:
         display_width = get_option("display.width")
 
         # 对齐 pandas: max_columns=0 表示根据 display.width 自动检测
-        if max_columns > 0 and len(display_columns) > max_columns:
-            half_cols = max(max_columns // 2, 5)
-            shown_cols = display_columns[:half_cols] + display_columns[-half_cols:]
+        ellipsis_pos = None  # ... 的插入位置
+        if max_columns > 0:
+            if len(display_columns) > max_columns:
+                # 最多显示 max_columns 列: 前 (max_columns - 3) 列 + ... + 后 3 列
+                front = max(max_columns - 3, 1)
+                back = min(3, max_columns - 1)
+                shown_cols = display_columns[:front] + display_columns[-back:]
+                ellipsis_pos = front
+            else:
+                # 列数 <= max_columns，显示所有列 (不受 display.width 影响)
+                shown_cols = list(display_columns)
         else:
             # 根据 display.width 判断是否截断
             # 计算所有列的总宽度
@@ -4927,6 +4935,7 @@ class DataFrame:
                 fit_cols = max(int(avail_width / avg_col_width) - 1, 1)
                 half = max(fit_cols // 2, 1)
                 shown_cols = display_columns[:half] + display_columns[-half:]
+                ellipsis_pos = half
             else:
                 shown_cols = list(display_columns)
 
@@ -5064,7 +5073,7 @@ class DataFrame:
                         cw = col_widths.get(c, len(str(c)))
                         cells.append(val.ljust(cw))
                     if is_col_truncated:
-                        mid = len(shown_cols) // 2
+                        mid = ellipsis_pos if ellipsis_pos is not None else len(shown_cols) // 2
                         cells.insert(mid, "...")
                     header_lines.append("  ".join(cells))
 
@@ -5081,7 +5090,7 @@ class DataFrame:
             # 对齐 pandas: 每列右对齐到 (col_width + 2)，索引后直接接列
             header_cells = [str(c).rjust(col_widths[c] + 2) for c in shown_cols]
             if is_col_truncated:
-                mid = len(shown_cols) // 2
+                mid = ellipsis_pos if ellipsis_pos is not None else len(shown_cols) // 2
                 header_cells.insert(mid, "  ...")
             header = " " * idx_width + "".join(header_cells)
             lines = [header]
@@ -5098,7 +5107,7 @@ class DataFrame:
                 # 行截断时，每列显示 ...
                 ellipsis_cells = ["...".rjust(col_widths[c] + 2) for c in shown_cols]
                 if is_col_truncated:
-                    mid = len(shown_cols) // 2
+                    mid = ellipsis_pos if ellipsis_pos is not None else len(shown_cols) // 2
                     ellipsis_cells.insert(mid, "  ...")
                 lines.append("..." + "".join(ellipsis_cells))
             # 值右对齐到 (col_width + 2)（对齐 pandas 行为）
@@ -5107,7 +5116,7 @@ class DataFrame:
                 for c in shown_cols
             ]
             if is_col_truncated:
-                mid = len(shown_cols) // 2
+                mid = ellipsis_pos if ellipsis_pos is not None else len(shown_cols) // 2
                 row_cells.insert(mid, "  ...")
             if is_multiindex:
                 idx = self._index[i]

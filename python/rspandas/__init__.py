@@ -63,7 +63,7 @@ from typing import Any, Dict
 
 _options: Dict[str, Any] = {
     "display.max_rows": 60,
-    "display.max_columns": 0,
+    "display.max_columns": 8,
     "display.width": 80,
     "display.precision": 6,
     "display.max_colwidth": 50,
