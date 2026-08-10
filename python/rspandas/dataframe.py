@@ -86,6 +86,11 @@ def _normalize_dtype(dtype) -> Optional[str]:
 
 def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, list]:
     """将 dict/list/ndarray 输入解析为 dict[str, list]。"""
+    # data=None 且指定 columns: 创建空列的 DataFrame (0 行)
+    if data is None:
+        if columns is None:
+            return {}
+        return {c: [] for c in columns}
     if isinstance(data, dict):
         result = {}
         # 检查是否有 Series 带自定义 index
@@ -220,6 +225,15 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
                 for c in columns:
                     result[c].append(getattr(row, c, None))
             return result
+        # 一维标量列表: 作为单列处理 (与 pandas 一致)
+        # 元素为 int/float/str/bool/None/nan 等标量值
+        if columns is None:
+            columns = ["0"]
+        elif len(columns) != 1:
+            raise ValueError(
+                f"一维标量列表需要 1 个列名，得到 {len(columns)} 个"
+            )
+        return {columns[0]: list(data)}
 
     if _is_ndarray(data):
         # rsnumpy ndarray: 转换为 list[list] 后按列组织
@@ -4081,132 +4095,206 @@ class DataFrame:
             print(f"memory usage: {total_bytes / (1024 * 1024):.1f} MB")
 
     def describe(self, percentiles=None, include=None, exclude=None) -> "DataFrame":
-        """对数值列做统计。
+        """对列做统计摘要。
 
-        :param percentiles: 分位数列表（默认 [0.25, 0.5, 0.75]）
-        :param include: 包含的列类型（None/'all'/类型列表）
+        数值列: count/mean/std/min/分位数/max
+        非数值列: count/unique/top/freq
+        include="all": 所有列，混合统计 (不适用的用 NaN 填充)
+
+        :param percentiles: 分位数列表 (默认 [0.25, 0.5, 0.75])
+        :param include: 包含的列类型 (None/'all'/'number'/'str'/类型列表)
         :param exclude: 排除的列类型
         :return: DataFrame
         """
-        # 默认分位数
+        from collections import Counter
+
+        nan = float("nan")
+
+        def _is_missing(v) -> bool:
+            """判断值是否为缺失 (None 或 NaN)。"""
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        # 分位数处理
         if percentiles is None:
             percentiles = [0.25, 0.5, 0.75]
         else:
             percentiles = list(percentiles)
+        # 中位数 (50%) 始终包含
+        if 0.5 not in percentiles:
+            percentiles = list(percentiles) + [0.5]
+        # 校验分位数范围
+        for p in percentiles:
+            if not (0.0 <= p <= 1.0):
+                raise ValueError(f"percentiles 应在 [0, 1] 范围内，得到 {p}")
+        percentiles = sorted(set(percentiles))
+
+        def _col_dtype(c):
+            return self._inner.get_column(c).dtype
+
+        def _is_numeric(c):
+            return _col_dtype(c) in ("int64", "float64")
+
+        def _is_string(c):
+            return _col_dtype(c) in ("object", "string")
 
         # 确定要分析的列
         if include == "all":
-            cols_to_analyze = self._columns
+            cols_to_analyze = list(self._columns)
         elif include is not None:
-            if isinstance(include, str):
-                include = [include]
-            # 使用列表推导式 + 辅助函数替代显式 for 循环
-            include_strs = [str(t) for t in include]
-
-            def _include_match(c):
-                """判断列 dtype 是否匹配 include 条件。"""
-                dt = self._inner.get_column(c).dtype
-                return dt in include or dt in include_strs
-
-            cols_to_analyze = [c for c in self._columns if _include_match(c)]
+            sub = self.select_dtypes(include=include)
+            cols_to_analyze = list(sub._columns)
         else:
-            # 默认仅数值列
-            cols_to_analyze = [
-                c
-                for c in self._columns
-                if self._inner.get_column(c).dtype in ("int64", "float64")
-            ]
+            # 默认仅数值列；若无数值列则用字符串列
+            numeric_cols = [c for c in self._columns if _is_numeric(c)]
+            cols_to_analyze = (
+                numeric_cols
+                if numeric_cols
+                else [c for c in self._columns if _is_string(c)]
+            )
 
         # 排除列
         if exclude is not None:
-            if isinstance(exclude, str):
-                exclude = [exclude]
-            cols_to_analyze = [
-                c
-                for c in cols_to_analyze
-                if self._inner.get_column(c).dtype not in exclude
-                and self._inner.get_column(c).dtype not in [str(t) for t in exclude]
-            ]
+            excluded = set(self.select_dtypes(include=exclude)._columns)
+            cols_to_analyze = [c for c in cols_to_analyze if c not in excluded]
 
-        # 构建统计指标
-        stat_names = (
-            ["count", "mean", "std", "min"]
-            + [f"{int(p*100)}%" for p in percentiles]
-            + ["max"]
-        )
+        if not cols_to_analyze:
+            return DataFrame({}, index=[])
 
-        # 预取列数据，避免循环内重复访问
-        cols_data = {
-            c: [
-                v
-                for v in self._inner.get_column(c).values
-                if v is not None and isinstance(v, (int, float))
-            ]
-            for c in cols_to_analyze
-        }
+        # 判断列类型组合，决定统计指标顺序
+        has_numeric = any(_is_numeric(c) for c in cols_to_analyze)
+        has_string = any(_is_string(c) for c in cols_to_analyze)
 
-        def _col_stats(vals):
-            """计算单列的统计指标。"""
-            if not vals:
-                return {
-                    "count": 0.0,
-                    "mean": None,
-                    "std": None,
-                    "min": None,
-                    "max": None,
-                    **{f"{int(p*100)}%": None for p in percentiles},
-                }
-            mean_val = sum(vals) / len(vals)
-            std_val = (
-                (sum((v - mean_val) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
-                if len(vals) > 1
-                else None
+        if has_numeric and has_string:
+            # 混合统计 (include="all" 场景)
+            stat_names = (
+                ["count", "unique", "top", "freq"]
+                + ["mean", "std", "min"]
+                + [f"{int(p * 100)}%" for p in percentiles]
+                + ["max"]
             )
-            sorted_vals = sorted(vals)
-            quantiles = {}
-            for p in percentiles:
-                pos = p * (len(sorted_vals) - 1)
-                lo = int(pos)
-                hi = min(lo + 1, len(sorted_vals) - 1)
-                frac = pos - lo
-                quantiles[f"{int(p*100)}%"] = (
-                    sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
-                )
-            return {
-                "count": float(len(vals)),
-                "mean": mean_val,
-                "std": std_val,
-                "min": min(vals),
-                "max": max(vals),
-                **quantiles,
-            }
+        elif has_numeric:
+            stat_names = (
+                ["count", "mean", "std", "min"]
+                + [f"{int(p * 100)}%" for p in percentiles]
+                + ["max"]
+            )
+        else:
+            stat_names = ["count", "unique", "top", "freq"]
 
-        # 使用列表推导式 + 辅助函数替代显式 for 循环
-        all_stats = [_col_stats(cols_data[c]) for c in cols_to_analyze]
+        def _quantile(sorted_vals: list, q: float) -> float:
+            """线性插值法计算分位数。"""
+            n = len(sorted_vals)
+            if n == 1:
+                return sorted_vals[0]
+            pos = q * (n - 1)
+            lo = int(pos)
+            hi = min(lo + 1, n - 1)
+            frac = pos - lo
+            return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
 
-        # 转置输出：统计指标为行，原始列为列
-        out: Dict[str, list] = {}
-        for i, c in enumerate(cols_to_analyze):
-            out[c] = [stat[s] for s in stat_names for stat in [all_stats[i]]]
-        # 添加行索引列（统计指标名）
-        # 使用列表推导式替代显式 for 循环
-        stat_index = stat_names
-        return DataFrame(out, index=stat_index)
+        def _col_stats(c):
+            """计算单列统计指标。"""
+            vals_all = list(self._inner.get_column(c).values)
+            # 过滤 None 和 NaN
+            non_null = [v for v in vals_all if not _is_missing(v)]
+            stats: dict = {}
+
+            if _is_numeric(c):
+                # count 为 float (与 pandas 一致)
+                stats["count"] = float(len(non_null))
+                # 提取纯数值 (排除 bool)
+                vals = [
+                    float(v)
+                    for v in non_null
+                    if isinstance(v, (int, float)) and not isinstance(v, bool)
+                ]
+                n = len(vals)
+                if n > 0:
+                    mean_val = sum(vals) / n
+                    # pandas describe 默认 ddof=1
+                    if n > 1:
+                        std_val = (
+                            sum((v - mean_val) ** 2 for v in vals) / (n - 1)
+                        ) ** 0.5
+                    else:
+                        std_val = nan
+                    sorted_vals = sorted(vals)
+                    stats["mean"] = mean_val
+                    stats["std"] = std_val
+                    stats["min"] = sorted_vals[0]
+                    stats["max"] = sorted_vals[-1]
+                    for p in percentiles:
+                        stats[f"{int(p * 100)}%"] = _quantile(sorted_vals, p)
+                else:
+                    stats["mean"] = nan
+                    stats["std"] = nan
+                    stats["min"] = nan
+                    stats["max"] = nan
+                    for p in percentiles:
+                        stats[f"{int(p * 100)}%"] = nan
+                # 字符串统计为 NaN (混合场景下显示为 NaN)
+                stats["unique"] = nan
+                stats["top"] = nan
+                stats["freq"] = nan
+            else:
+                # 非数值列: count 为 int
+                stats["count"] = len(non_null)
+                counter = Counter(non_null)
+                if counter:
+                    # most_common(1) 返回频次最高且首次出现的值 (与 pandas 一致)
+                    top, freq = counter.most_common(1)[0]
+                else:
+                    top, freq = nan, 0
+                stats["unique"] = len(counter)
+                stats["top"] = top
+                stats["freq"] = freq
+                # 数值统计为 NaN
+                stats["mean"] = nan
+                stats["std"] = nan
+                stats["min"] = nan
+                stats["max"] = nan
+                for p in percentiles:
+                    stats[f"{int(p * 100)}%"] = nan
+
+            return stats
+
+        # 对每列计算统计
+        all_stats = {c: _col_stats(c) for c in cols_to_analyze}
+
+        # 转置输出: 统计指标为行，列为列
+        out: Dict[str, list] = {
+            c: [all_stats[c][s] for s in stat_names] for c in cols_to_analyze
+        }
+        return DataFrame(out, index=stat_names)
 
     # ---------- 统计方法 ----------
 
     def sum(
         self, axis=None, skipna=True, level=None, numeric_only=None, min_count=0
     ) -> "Series":
-        """按列求和。
+        """按列或按行求和。
 
-        :param axis: 轴方向（None/0=按列）
-        :param skipna: 是否跳过 NaN
+        :param axis: 轴方向（None/0=按列, 1/"columns"=按行）
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         :param min_count: 最少非空值数
         """
-        # 确定要计算的列 - 使用列表推导式
+
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        # 确定要计算的列
         target_cols = [
             c
             for c in self._columns
@@ -4215,48 +4303,76 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
 
-        # 使用 Rust 层实现：逐列调用 _get_column_as_series(c).sum()
-        return Series({c: self._get_column_as_series(c).sum() for c in target_cols})
+        if axis == 1 or axis == "columns":
+            # 按行求和
+            result = []
+            for i in range(self._nrows):
+                vals = []
+                for c in target_cols:
+                    v = self._inner.get_column(c).values[i]
+                    if _is_missing(v):
+                        if not skipna:
+                            result.append(None)
+                            break
+                    else:
+                        vals.append(v)
+                else:
+                    if len(vals) < min_count:
+                        result.append(None)
+                    else:
+                        result.append(sum(vals) if vals else None)
+            return Series(result, index=self._index)
+        # 按列求和 (默认)
+        data = {}
+        for c in target_cols:
+            col = self._get_column_as_series(c)
+            data[c] = col.sum(skipna=skipna, min_count=min_count)
+        return Series(data)
 
     def mean(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
-        """按列求均值。
+        """按列或按行求均值。
 
-        :param axis: 轴方向（None/0=按列, 1=按行）
-        :param skipna: 是否跳过 NaN
+        :param axis: 轴方向（None/0=按列, 1/"columns"=按行）
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
+        target_cols = [
+            c
+            for c in self._columns
+            if numeric_only is None
+            or not numeric_only
+            or self._inner.get_column(c).dtype in ("int64", "float64")
+        ]
         if axis == 1 or axis == "columns":
             # 按行求均值
             result = []
             for i in range(self._nrows):
                 vals = []
-                for c in self._columns:
+                has_missing = False
+                for c in target_cols:
                     v = self._inner.get_column(c).values[i]
-                    if v is not None:
-                        if isinstance(v, (int, float)):
-                            vals.append(v)
-                if vals:
+                    if v is None or (isinstance(v, float) and v != v):
+                        has_missing = True
+                    elif isinstance(v, (int, float)):
+                        vals.append(v)
+                if not skipna and has_missing:
+                    result.append(None)
+                elif vals:
                     result.append(sum(vals) / len(vals))
                 else:
                     result.append(None)
             return Series(result, index=self._index)
         # 按列求均值
-        target_cols = [
-            c
-            for c in self._columns
-            if numeric_only is None
-            or not numeric_only
-            or self._inner.get_column(c).dtype in ("int64", "float64")
-        ]
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: self._get_column_as_series(c).mean() for c in target_cols})
+        return Series(
+            {c: self._get_column_as_series(c).mean(skipna=skipna) for c in target_cols}
+        )
 
     def min(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
-        """按列求最小值。
+        """按列或按行求最小值。
 
-        :param axis: 轴方向（None/0=按列）
-        :param skipna: 是否跳过 NaN
+        :param axis: 轴方向（None/0=按列, 1/"columns"=按行）
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
@@ -4267,14 +4383,35 @@ class DataFrame:
             or not numeric_only
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: self._get_column_as_series(c).min() for c in target_cols})
+        if axis == 1 or axis == "columns":
+            # 按行求最小值
+            result = []
+            for i in range(self._nrows):
+                vals = []
+                has_missing = False
+                for c in target_cols:
+                    v = self._inner.get_column(c).values[i]
+                    if v is None or (isinstance(v, float) and v != v):
+                        has_missing = True
+                    elif isinstance(v, (int, float)):
+                        vals.append(v)
+                if not skipna and has_missing:
+                    result.append(None)
+                elif vals:
+                    result.append(min(vals))
+                else:
+                    result.append(None)
+            return Series(result, index=self._index)
+        # 按列求最小值
+        return Series(
+            {c: self._get_column_as_series(c).min(skipna=skipna) for c in target_cols}
+        )
 
     def max(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
-        """按列求最大值。
+        """按列或按行求最大值。
 
-        :param axis: 轴方向（None/0=按列）
-        :param skipna: 是否跳过 NaN
+        :param axis: 轴方向（None/0=按列, 1/"columns"=按行）
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
         :param level: 多级索引层级（暂不支持）
         :param numeric_only: 是否仅计算数值列
         """
@@ -4285,8 +4422,29 @@ class DataFrame:
             or not numeric_only
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: self._get_column_as_series(c).max() for c in target_cols})
+        if axis == 1 or axis == "columns":
+            # 按行求最大值
+            result = []
+            for i in range(self._nrows):
+                vals = []
+                has_missing = False
+                for c in target_cols:
+                    v = self._inner.get_column(c).values[i]
+                    if v is None or (isinstance(v, float) and v != v):
+                        has_missing = True
+                    elif isinstance(v, (int, float)):
+                        vals.append(v)
+                if not skipna and has_missing:
+                    result.append(None)
+                elif vals:
+                    result.append(max(vals))
+                else:
+                    result.append(None)
+            return Series(result, index=self._index)
+        # 按列求最大值
+        return Series(
+            {c: self._get_column_as_series(c).max(skipna=skipna) for c in target_cols}
+        )
 
     def count(self, axis: int = 0) -> "Series":
         """按列计数 (非空值)。"""
@@ -4296,12 +4454,12 @@ class DataFrame:
     def std(
         self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None
     ) -> "Series":
-        """按列求标准差。
+        """按列或按行求标准差。
 
-        :param axis: 轴方向（None/0=按列）
-        :param skipna: 是否跳过 NaN
+        :param axis: 轴方向（None/0=按列, 1/"columns"=按行）
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
         :param level: 多级索引层级（暂不支持）
-        :param ddof: 自由度修正值
+        :param ddof: 自由度修正值 (默认 1)
         :param numeric_only: 是否仅计算数值列
         """
         target_cols = [
@@ -4312,31 +4470,46 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
 
-        def _std_col(c):
-            """计算单列的标准差。"""
-            vals = [
-                v
-                for v in self._inner.get_column(c).values
-                if v is not None and isinstance(v, (int, float))
-            ]
-            if len(vals) < 2:
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        def _std_vals(vals):
+            """计算一组值的标准差。"""
+            non_null = [v for v in vals if not _is_missing(v)]
+            if not skipna and len(non_null) < len(vals):
                 return None
-            m = sum(vals) / len(vals)
-            var = sum((v - m) ** 2 for v in vals) / (len(vals) - ddof)
+            if len(non_null) < 2:
+                return None
+            m = sum(non_null) / len(non_null)
+            var = sum((v - m) ** 2 for v in non_null) / (len(non_null) - ddof)
             return var**0.5
 
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: _std_col(c) for c in target_cols})
+        if axis == 1 or axis == "columns":
+            # 按行求标准差
+            result = []
+            for i in range(self._nrows):
+                vals = [self._inner.get_column(c).values[i] for c in target_cols]
+                result.append(_std_vals(vals))
+            return Series(result, index=self._index)
+        # 按列求标准差
+        return Series(
+            {c: _std_vals(list(self._inner.get_column(c).values)) for c in target_cols}
+        )
 
     def var(
         self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None
     ) -> "Series":
-        """按列求方差。
+        """按列或按行求方差。
 
-        :param axis: 轴方向（None/0=按列）
-        :param skipna: 是否跳过 NaN
+        :param axis: 轴方向（None/0=按列, 1/"columns"=按行）
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
         :param level: 多级索引层级（暂不支持）
-        :param ddof: 自由度修正值
+        :param ddof: 自由度修正值 (默认 1)
         :param numeric_only: 是否仅计算数值列
         """
         target_cols = [
@@ -4347,20 +4520,35 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
 
-        def _var_col(c):
-            """计算单列的方差。"""
-            vals = [
-                v
-                for v in self._inner.get_column(c).values
-                if v is not None and isinstance(v, (int, float))
-            ]
-            if len(vals) < 2:
-                return None
-            m = sum(vals) / len(vals)
-            return sum((v - m) ** 2 for v in vals) / (len(vals) - ddof)
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
 
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: _var_col(c) for c in target_cols})
+        def _var_vals(vals):
+            """计算一组值的方差。"""
+            non_null = [v for v in vals if not _is_missing(v)]
+            if not skipna and len(non_null) < len(vals):
+                return None
+            if len(non_null) < 2:
+                return None
+            m = sum(non_null) / len(non_null)
+            return sum((v - m) ** 2 for v in non_null) / (len(non_null) - ddof)
+
+        if axis == 1 or axis == "columns":
+            # 按行求方差
+            result = []
+            for i in range(self._nrows):
+                vals = [self._inner.get_column(c).values[i] for c in target_cols]
+                result.append(_var_vals(vals))
+            return Series(result, index=self._index)
+        # 按列求方差
+        return Series(
+            {c: _var_vals(list(self._inner.get_column(c).values)) for c in target_cols}
+        )
 
     def median(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列求中位数。
@@ -6614,6 +6802,76 @@ class DataFrame:
         else:
             return self.T.idxmin(axis=0, skipna=skipna)
 
+    def value_counts(
+        self,
+        subset=None,
+        normalize: bool = False,
+        sort: bool = True,
+        ascending: bool = False,
+        dropna: bool = True,
+    ) -> "Series":
+        """统计每行组合的出现次数。
+
+        :param subset: 要统计的列名列表 (None 表示所有列)
+        :param normalize: 是否返回比例而非计数 (默认 False)
+        :param sort: 是否按计数排序 (默认 True)
+        :param ascending: 是否升序排序 (默认 False，即降序)
+        :param dropna: 是否排除包含 NaN 的行 (默认 True)
+        :return: Series，索引为每行值的 tuple
+        """
+        from collections import Counter
+
+        from .series import Series
+
+        # 确定要统计的列
+        if subset is None:
+            cols = list(self._columns)
+        else:
+            if isinstance(subset, str):
+                subset = [subset]
+            cols = list(subset)
+
+        # 收集每行作为 tuple
+        col_values = {c: list(self._inner.get_column(c).values) for c in cols}
+        rows: list = []
+        for i in range(self._nrows):
+            row_tuple = tuple(col_values[c][i] for c in cols)
+            if dropna:
+                # 排除包含 None 或 NaN 的行
+                has_na = False
+                for v in row_tuple:
+                    if v is None:
+                        has_na = True
+                        break
+                    try:
+                        if v != v:  # type: ignore[operator]
+                            has_na = True
+                            break
+                    except TypeError:
+                        pass
+                if has_na:
+                    continue
+            rows.append(row_tuple)
+
+        # 计数
+        counter = Counter(rows)
+        items = list(counter.items())
+
+        # 排序
+        if sort:
+            items.sort(key=lambda x: x[1], reverse=not ascending)
+
+        # 提取索引和计数
+        index_tuples = [t for t, _ in items]
+        counts = [c for _, c in items]
+
+        # 归一化
+        if normalize:
+            total = sum(counts)
+            counts = [c / total for c in counts]
+
+        return Series(counts, index=index_tuples, name="count")
+
     # ---------- v2.0.0: 排序 ----------
 
     def sort_columns(self) -> "DataFrame":
@@ -7426,43 +7684,178 @@ class DataFrame:
         other_aligned = other.reindex(index=new_index)
         return self_aligned, other_aligned
 
+    def combine(
+        self, other: "DataFrame", func, fill_value=None, overwrite: bool = True
+    ) -> "DataFrame":
+        """用 func 逐列合并两个 DataFrame。
+
+        :param other: 另一个 DataFrame
+        :param func: 接受两个参数的函数，逐列调用 func(self_col, other_col)
+        :param fill_value: 调用 func 前用此值填充缺失值
+        :param overwrite: True 时 self 独有列被 NaN 覆盖；False 时保留 self 值
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("combine requires DataFrame inputs")
+
+        import rsnumpy as rnp
+
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        # 索引并集
+        self_index = (
+            list(self._index) if self._index is not None else list(range(self._nrows))
+        )
+        other_index = (
+            list(other._index) if other._index is not None else list(range(other._nrows))
+        )
+        union_index = list(self_index)
+        seen = set(self_index)
+        for idx in other_index:
+            if idx not in seen:
+                seen.add(idx)
+                union_index.append(idx)
+        # 列名并集
+        all_cols = list(dict.fromkeys(list(self._columns) + list(other._columns)))
+
+        def _to_array(values):
+            """将值列表转为 rsnumpy 数组，None → nan。"""
+            float_vals = [
+                float("nan") if _is_missing(v) else float(v) for v in values
+            ]
+            return rnp.array(float_vals)
+
+        def _from_array(arr):
+            """将 rsnumpy 数组转回值列表，nan → None。"""
+            vals = arr.tolist() if hasattr(arr, "tolist") else list(arr)
+            return [None if _is_missing(v) else v for v in vals]
+
+        new_data = {}
+        for c in all_cols:
+            in_self = c in self._columns
+            in_other = c in other._columns
+            if in_self and in_other:
+                # 两方都有此列：按索引对齐后调用 func
+                self_vals_raw = list(self._inner.get_column(c).values)
+                other_vals_raw = list(other._inner.get_column(c).values)
+                self_map = dict(zip(self_index, self_vals_raw))
+                other_map = dict(zip(other_index, other_vals_raw))
+                sv = [self_map.get(idx) for idx in union_index]
+                ov = [other_map.get(idx) for idx in union_index]
+                # fill_value 处理
+                if fill_value is not None:
+                    sv = [fill_value if _is_missing(v) else v for v in sv]
+                    ov = [fill_value if _is_missing(v) else v for v in ov]
+                # 转为数组调用 func
+                try:
+                    sa = _to_array(sv)
+                    oa = _to_array(ov)
+                    result = func(sa, oa)
+                    new_data[c] = _from_array(result)
+                except (TypeError, ValueError):
+                    # func 不支持数组，回退到逐元素标量调用
+                    new_data[c] = [
+                        (None if (_is_missing(a) or _is_missing(b)) else func(a, b))
+                        for a, b in zip(sv, ov)
+                    ]
+            elif in_self and not in_other:
+                # 仅 self 有此列
+                self_vals_raw = list(self._inner.get_column(c).values)
+                self_map = dict(zip(self_index, self_vals_raw))
+                sv = [self_map.get(idx) for idx in union_index]
+                if overwrite:
+                    new_data[c] = [None] * len(union_index)
+                else:
+                    new_data[c] = sv
+            elif in_other and not in_self:
+                # 仅 other 有此列：self 视为全缺失
+                other_vals_raw = list(other._inner.get_column(c).values)
+                other_map = dict(zip(other_index, other_vals_raw))
+                ov = [other_map.get(idx) for idx in union_index]
+                sv = [None] * len(union_index)
+                if fill_value is not None:
+                    sv = [fill_value] * len(union_index)
+                try:
+                    sa = _to_array(sv)
+                    oa = _to_array(ov)
+                    result = func(sa, oa)
+                    new_data[c] = _from_array(result)
+                except (TypeError, ValueError):
+                    new_data[c] = [
+                        (None if (_is_missing(a) or _is_missing(b)) else func(a, b))
+                        for a, b in zip(sv, ov)
+                    ]
+
+        result_df = DataFrame(new_data, index=union_index, columns=all_cols)
+        return result_df
+
     def combine_first(self, other: "DataFrame") -> "DataFrame":
         """用 other 的值填充 self 中的缺失值。
+
+        按 index/column 标签对齐：self 优先，self 缺失时取 other，
+        两者均缺失则结果为 NaN。结果索引/列名为两者的并集。
 
         :param other: 另一个 DataFrame
         """
         if not isinstance(other, DataFrame):
             raise TypeError("combine_first requires DataFrame inputs")
 
-        # 合并列名 - 使用 dict.fromkeys 保持顺序去重，替代显式 for 循环
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        # 合并索引 (并集，保持顺序)
+        self_index = (
+            list(self._index) if self._index is not None else list(range(self._nrows))
+        )
+        other_index = (
+            list(other._index) if other._index is not None else list(range(other._nrows))
+        )
+        union_index = list(self_index)
+        seen = set(self_index)
+        for idx in other_index:
+            if idx not in seen:
+                seen.add(idx)
+                union_index.append(idx)
+        # 合并列名 (并集，保持顺序去重)
         all_cols = list(dict.fromkeys(list(self._columns) + list(other._columns)))
 
         def _combine_col(c):
-            """合并单列：self 优先，None 用 other 填充。"""
-            self_vals = (
-                list(self._inner.get_column(c).values)
-                if c in self._columns
-                else [None] * self._nrows
-            )
-            other_vals = (
-                list(other._inner.get_column(c).values)
-                if c in other._columns
-                else [None] * other._nrows
-            )
-            max_len = max(len(self_vals), len(other_vals))
-            # 使用列表推导式替代显式 for 循环
-            return [
-                (
-                    (self_vals[i] if i < len(self_vals) else None)
-                    if (i < len(self_vals) and self_vals[i] is not None)
-                    else (other_vals[i] if i < len(other_vals) else None)
-                )
-                for i in range(max_len)
-            ]
+            """合并单列：self 优先，缺失用 other 填充，按标签对齐。"""
+            # 获取 self 和 other 在该列的值映射
+            if c in self._columns:
+                self_vals = list(self._inner.get_column(c).values)
+                self_map = dict(zip(self_index, self_vals))
+            else:
+                self_map = {}
+            if c in other._columns:
+                other_vals = list(other._inner.get_column(c).values)
+                other_map = dict(zip(other_index, other_vals))
+            else:
+                other_map = {}
+            # 按并集索引逐行合并
+            result = []
+            for idx in union_index:
+                sv = self_map.get(idx)
+                if not _is_missing(sv):
+                    result.append(sv)
+                else:
+                    ov = other_map.get(idx)
+                    result.append(ov)  # other 也可能缺失 → None/NaN
+            return result
 
-        # 使用字典推导式替代显式 for 循环
         new_data = {c: _combine_col(c) for c in all_cols}
-        return DataFrame(new_data)
+        result_df = DataFrame(new_data, index=union_index, columns=all_cols)
+        return result_df
 
     def update(
         self,
@@ -9864,3 +10257,81 @@ class _ILocIndexer(_IndexerBase):
         if isinstance(rows_df, DataFrame) and rows_df._nrows == 1:
             return rows_df._to_series_row(0)
         return rows_df
+
+    def __setitem__(self, key, value) -> None:
+        """df.iloc[row_key] = value 或 df.iloc[row_key, col_key] = value。
+
+        :param key: 行键，或 (行键, 列键) 元组
+        :param value: 标量、列表或 DataFrame
+        """
+        if isinstance(key, tuple):
+            row_key, col_key = key
+        else:
+            row_key = key
+            col_key = None
+
+        df = self._df
+
+        # 解析行索引为位置列表
+        if isinstance(row_key, int):
+            idx = int(row_key)
+            if idx < 0:
+                idx += df._nrows
+            row_indices = [idx]
+        elif isinstance(row_key, slice):
+            start, stop, step = row_key.indices(df._nrows)
+            row_indices = list(range(start, stop, step))
+        elif isinstance(row_key, list):
+            row_indices = [
+                int(i) + df._nrows if i < 0 else int(i) for i in row_key
+            ]
+        else:
+            raise TypeError(
+                f"iloc: unsupported row key {type(row_key).__name__}"
+            )
+
+        # 解析列索引为列名列表
+        if col_key is not None:
+            cols = df._columns
+            if isinstance(col_key, int):
+                ci = int(col_key) + len(cols) if col_key < 0 else int(col_key)
+                col_names = [cols[ci]]
+            elif isinstance(col_key, list):
+                if all(isinstance(x, bool) for x in col_key):
+                    col_names = [c for c, b in zip(cols, col_key) if b]
+                else:
+                    col_names = [
+                        cols[int(i) + len(cols) if i < 0 else int(i)]
+                        for i in col_key
+                    ]
+            elif isinstance(col_key, slice):
+                col_names = list(cols[col_key])
+            else:
+                raise TypeError(
+                    f"iloc: unsupported column key {type(col_key).__name__}"
+                )
+        else:
+            col_names = list(df._columns)
+
+        # 判断 value 类型
+        is_scalar = isinstance(value, (int, float, bool)) or value is None
+
+        # 构建新数据并赋值
+        new_data = {}
+        for c in df._columns:
+            vals = list(df._inner.get_column(c).values)
+            if c in col_names:
+                if is_scalar:
+                    # 标量赋值: 所有选中行设为同一值
+                    for idx in row_indices:
+                        if 0 <= idx < len(vals):
+                            vals[idx] = value
+                elif hasattr(value, "__iter__") and not isinstance(value, str):
+                    # 列表/Series 赋值: 按顺序赋值
+                    val_list = list(value)
+                    for i, idx in enumerate(row_indices):
+                        if i < len(val_list) and 0 <= idx < len(vals):
+                            vals[idx] = val_list[i]
+            new_data[c] = vals
+
+        df._reload(new_data)

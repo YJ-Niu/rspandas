@@ -313,15 +313,22 @@ def concat(
 
 
 def isnull(obj):
-    """检测缺失值 (None)。"""
+    """检测缺失值 (None 或 NaN)。"""
     if isinstance(obj, _Series):
         return obj.isnull()
     elif isinstance(obj, DataFrame):
         return obj.isnull()
     elif isinstance(obj, list):
-        return [v is None for v in obj]
+        return [v is None or (isinstance(v, float) and v != v) for v in obj]
+    elif hasattr(obj, "tolist") and hasattr(obj, "dtype"):
+        # rsnumpy.ndarray: 逐元素检测 NaN
+        import rsnumpy as _rnp
+
+        vals = obj.tolist() if hasattr(obj, "tolist") else list(obj)
+        mask = [v is None or (isinstance(v, float) and v != v) for v in vals]
+        return _rnp.array(mask)
     else:
-        return obj is None
+        return obj is None or (isinstance(obj, float) and obj != obj)
 
 
 def notnull(obj):
@@ -331,9 +338,16 @@ def notnull(obj):
     elif isinstance(obj, DataFrame):
         return obj.notnull()
     elif isinstance(obj, list):
-        return [v is not None for v in obj]
+        return [v is not None and not (isinstance(v, float) and v != v) for v in obj]
+    elif hasattr(obj, "tolist") and hasattr(obj, "dtype"):
+        # rsnumpy.ndarray: 逐元素检测非缺失
+        import rsnumpy as _rnp
+
+        vals = obj.tolist() if hasattr(obj, "tolist") else list(obj)
+        mask = [v is not None and not (isinstance(v, float) and v != v) for v in vals]
+        return _rnp.array(mask)
     else:
-        return obj is not None
+        return obj is not None and not (isinstance(obj, float) and obj != obj)
 
 
 # isna / notna 别名
@@ -785,6 +799,63 @@ def _wrap_rsnumpy_functions():
             return original_asarray(a, *args, **kwargs)
 
         _rnp.asarray = _wrap_asarray
+
+    # 包装聚合函数 (mean/sum/std/var/min/max/median/prod)
+    # 使 Series 输入时默认排除 NA (与 pandas 行为一致):
+    #   np.mean(series)            -> 排除 NA (委托给 series.mean(skipna=True))
+    #   np.mean(series.to_numpy()) -> 不排除 NA (走 rsnumpy 原生路径)
+    _reduction_map = {
+        "mean": "mean",
+        "sum": "sum",
+        "std": "std",
+        "var": "var",
+        "min": "min",
+        "max": "max",
+        "amin": "min",
+        "amax": "max",
+        "median": "median",
+        "prod": "prod",
+        "product": "prod",
+    }
+    for fname, method_name in _reduction_map.items():
+        if not hasattr(_rnp, fname):
+            continue
+        _original = getattr(_rnp, fname)
+
+        def _make_reduction(_fn, _mn, _orig):
+            def wrapper(a, *args, **kwargs):
+                if isinstance(a, _Series):
+                    method = getattr(a, _mn)
+                    if _fn in ("std", "var"):
+                        # pandas 默认 ddof=1, numpy 默认 ddof=0
+                        # np.std(series) 采用 pandas 语义 (ddof=1)
+                        ddof = kwargs.get("ddof", None)
+                        if ddof is None and len(args) > 3:
+                            ddof = args[3]
+                        if ddof is None:
+                            ddof = 1
+                        return method(skipna=True, ddof=ddof)
+                    return method()
+                if isinstance(a, _DataFrame):
+                    from .series import Series as _SSeries
+
+                    target_cols = [
+                        c
+                        for c in a._columns
+                        if a._inner.get_column(c).dtype in ("int64", "float64")
+                    ]
+                    return _SSeries(
+                        {
+                            c: wrapper(a._get_column_as_series(c), *args, **kwargs)
+                            for c in target_cols
+                        }
+                    )
+                return _orig(a, *args, **kwargs)
+
+            wrapper.__name__ = _fn
+            return wrapper
+
+        setattr(_rnp, fname, _make_reduction(fname, method_name, _original))
 
 
 # 在模块加载时执行包装

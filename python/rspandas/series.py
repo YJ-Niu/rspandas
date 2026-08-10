@@ -18,6 +18,16 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def _is_missing(v) -> bool:
+    """判断值是否为缺失 (None 或 NaN)。"""
+    if v is None:
+        return True
+    try:
+        return v != v  # type: ignore[operator]
+    except TypeError:
+        return False
+
+
 def _infer_dtype(values: list) -> str:
     """根据数据推断 dtype（对齐 pandas 的行为）。"""
     if not values:
@@ -86,7 +96,11 @@ def _to_python_list(data: Any) -> list:
         return list(data.values)
     if isinstance(data, (list, tuple)):
         return [
-            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            (
+                v.isoformat()
+                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
+                else v
+            )
             for v in data
         ]
     if isinstance(data, dict):
@@ -95,7 +109,11 @@ def _to_python_list(data: Any) -> list:
     if hasattr(data, "tolist"):
         raw = data.tolist()
         return [
-            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            (
+                v.isoformat()
+                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
+                else v
+            )
             for v in raw
         ]
     if data is None:
@@ -103,7 +121,11 @@ def _to_python_list(data: Any) -> list:
     if hasattr(data, "__iter__"):
         out = list(data)
         return [
-            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            (
+                v.isoformat()
+                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
+                else v
+            )
             for v in out
         ]
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
@@ -119,7 +141,11 @@ def _to_python_list_and_index(data: Any, index=None):
 
     def _conv(values):
         return [
-            v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+            (
+                v.isoformat()
+                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
+                else v
+            )
             for v in values
         ]
 
@@ -443,12 +469,30 @@ class Series:
 
     def __setitem__(self, key, value):
         """按标签或位置赋值。"""
+        if isinstance(key, slice):
+            # 切片赋值: 按位置 (与 pandas 整数切片一致)
+            start, stop, step = key.indices(len(self))
+            indices = list(range(start, stop, step))
+            if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+                # 可迭代值: 逐元素赋值
+                val_list = list(value)
+                if len(val_list) != len(indices):
+                    raise ValueError(
+                        f"无法将长度 {len(val_list)} 的值赋给长度 {len(indices)} 的切片"
+                    )
+                for i, v in zip(indices, val_list):
+                    self._inner.set_value(i, v)
+            else:
+                # 标量广播
+                for i in indices:
+                    self._inner.set_value(i, value)
+            return
         if self._index is not None and not _is_range_index(self._index):
             # 自定义 index: 按 label 查找
             if isinstance(key, (str, int, float, bool)):
                 try:
                     pos = self._index.index(key)
-                    self._inner.values[pos] = value
+                    self._inner.set_value(pos, value)
                     return
                 except ValueError:
                     raise KeyError(key)
@@ -458,7 +502,7 @@ class Series:
                 key += len(self)
             if key < 0 or key >= len(self):
                 raise IndexError("index out of range")
-            self._inner.values[key] = value
+            self._inner.set_value(key, value)
             return
         raise TypeError(f"Cannot index Series with {type(key).__name__}")
 
@@ -488,13 +532,17 @@ class Series:
         )
 
     def __eq__(self, other) -> _PySeries:
-        mask = self._inner.eq_scalar(other)
-        return Series(mask, name=self.name, dtype="bool")
+        # 标量走 Rust 快速路径；list-like 走 _compare 逐元素比较
+        if isinstance(other, (int, float, bool, str, type(None))):
+            mask = self._inner.eq_scalar(other)
+            return Series(mask, name=self.name, dtype="bool")
+        return self._compare(other, "eq")
 
     def __ne__(self, other) -> _PySeries:
-        # ne = not eq
-        eq_mask = self._inner.eq_scalar(other)
-        return Series([not x for x in eq_mask], name=self.name, dtype="bool")
+        if isinstance(other, (int, float, bool, str, type(None))):
+            eq_mask = self._inner.eq_scalar(other)
+            return Series([not x for x in eq_mask], name=self.name, dtype="bool")
+        return self._compare(other, "ne")
 
     def _cmp_scalar(self, other, op_name: str) -> _PySeries:
         """对标量进行比较，自动处理类型转换。"""
@@ -519,16 +567,24 @@ class Series:
         return Series(mask, name=self.name, dtype="bool")
 
     def __lt__(self, other) -> _PySeries:
-        return self._cmp_scalar(other, "lt")
+        if isinstance(other, (int, float, bool, str, type(None))):
+            return self._cmp_scalar(other, "lt")
+        return self._compare(other, "lt")
 
     def __gt__(self, other) -> _PySeries:
-        return self._cmp_scalar(other, "gt")
+        if isinstance(other, (int, float, bool, str, type(None))):
+            return self._cmp_scalar(other, "gt")
+        return self._compare(other, "gt")
 
     def __le__(self, other) -> _PySeries:
-        return self._cmp_scalar(other, "le")
+        if isinstance(other, (int, float, bool, str, type(None))):
+            return self._cmp_scalar(other, "le")
+        return self._compare(other, "le")
 
     def __ge__(self, other) -> _PySeries:
-        return self._cmp_scalar(other, "ge")
+        if isinstance(other, (int, float, bool, str, type(None))):
+            return self._cmp_scalar(other, "ge")
+        return self._compare(other, "ge")
 
     # ---------- 算术运算符 (v0.3.0) ----------
 
@@ -600,6 +656,39 @@ class Series:
             other_map = dict(zip(other_index, other.values))
             self_vals = [self_map.get(idx) for idx in union_index]
             other_vals = [other_map.get(idx) for idx in union_index]
+        elif isinstance(other, (list, tuple)):
+            # Series vs list/tuple: 按位置对齐
+            self_vals = list(self.values)
+            other_vals = list(other)
+            if len(other_vals) != len(self_vals):
+                raise ValueError(
+                    f"Length mismatch: {len(self_vals)} vs {len(other_vals)}"
+                )
+            union_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
+        elif hasattr(other, "_data") and hasattr(other, "values"):
+            # Index 等有 _data/values 属性的对象
+            self_vals = list(self.values)
+            other_vals = list(other.values)
+            if len(other_vals) != len(self_vals):
+                raise ValueError(
+                    f"Length mismatch: {len(self_vals)} vs {len(other_vals)}"
+                )
+            union_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
+        elif hasattr(other, "tolist"):
+            # ndarray 等有 tolist 方法的对象
+            self_vals = list(self.values)
+            other_vals = list(other.tolist())
+            if len(other_vals) != len(self_vals):
+                raise ValueError(
+                    f"Length mismatch: {len(self_vals)} vs {len(other_vals)}"
+                )
+            union_index = (
+                list(self._index) if self._index is not None else list(range(len(self)))
+            )
         else:
             # 标量广播
             self_vals = list(self.values)
@@ -611,7 +700,9 @@ class Series:
         result = [_compare_pair(a, b) for a, b in zip(self_vals, other_vals)]
         return Series(result, name=self.name, dtype="bool", index=union_index)
 
-    def _arith(self, other, op: str, reverse: bool = False, fill_value=None) -> _PySeries:
+    def _arith(
+        self, other, op: str, reverse: bool = False, fill_value=None
+    ) -> _PySeries:
         """逐元素算术运算，缺失值用 None。
 
         :param reverse: 为 True 时交换操作数顺序（用于反向运算符 __rsub__ 等）
@@ -810,7 +901,11 @@ class Series:
             ]
         else:
             pairs = [
-                (None, None) if (v is None or scalar_other is None) else divmod(v, scalar_other)
+                (
+                    (None, None)
+                    if (v is None or scalar_other is None)
+                    else divmod(v, scalar_other)
+                )
                 for v in self_vals
             ]
         quot = [p[0] for p in pairs]
@@ -854,7 +949,11 @@ class Series:
             ]
         else:
             pairs = [
-                (None, None) if (v is None or scalar_other is None) else divmod(scalar_other, v)
+                (
+                    (None, None)
+                    if (v is None or scalar_other is None)
+                    else divmod(scalar_other, v)
+                )
                 for v in self_vals
             ]
         quot = [p[0] for p in pairs]
@@ -1201,16 +1300,46 @@ class Series:
     def combine_first(self, other) -> _PySeries:
         """用 other 的非空值填充 self 的空值。
 
+        按 index 标签对齐：self 优先，self 缺失时取 other，
+        两者均缺失则结果为 NaN。结果索引为两者的并集。
+
         :param other: 另一个 Series
         """
-        # 使用列表推导式替代显式 for 循环
-        other_vals = other.values
-        other_len = len(other_vals)
-        result = [
-            (v if v is not None else (other_vals[i] if i < other_len else None))
-            for i, v in enumerate(self.values)
-        ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+
+        def _is_missing(v) -> bool:
+            if v is None:
+                return True
+            try:
+                return v != v  # type: ignore[operator]
+            except TypeError:
+                return False
+
+        self_index = (
+            list(self._index) if self._index is not None else list(range(len(self)))
+        )
+        other_index = (
+            list(other._index) if other._index is not None else list(range(len(other)))
+        )
+        # 索引并集 (保持顺序)
+        union_index = list(self_index)
+        seen = set(self_index)
+        for idx in other_index:
+            if idx not in seen:
+                seen.add(idx)
+                union_index.append(idx)
+        # 构建值映射
+        self_map = dict(zip(self_index, self.values))
+        other_map = dict(zip(other_index, other.values))
+        # 按并集索引逐行合并
+        result = []
+        for idx in union_index:
+            sv = self_map.get(idx)
+            if not _is_missing(sv):
+                result.append(sv)
+            else:
+                ov = other_map.get(idx)
+                result.append(ov)  # other 也可能缺失 → None/NaN
+        return Series(result, name=self.name, index=union_index)
 
     @property
     def str(self):
@@ -1302,7 +1431,11 @@ class Series:
             if dtype_is_object:
                 # rsnumpy 不支持 datetime 对象，退回 ISO 字符串 (object dtype)
                 iso_strs = [
-                    v.isoformat() if isinstance(v, (datetime, date)) and not isinstance(v, bool) else v
+                    (
+                        v.isoformat()
+                        if isinstance(v, (datetime, date)) and not isinstance(v, bool)
+                        else v
+                    )
                     for v in vals
                 ]
                 return rnp.array(iso_strs)
@@ -1336,9 +1469,19 @@ class Series:
             return rnp.array(nano_vals)
 
         # 普通路径
+        # rsnumpy 不支持 None 与数值混合，将 None 转为 nan (float 数组)
+        vals = list(self.values)
+        if any(v is None for v in vals):
+            non_none = [v for v in vals if v is not None]
+            # 仅当其余值为数值时，将 None 转为 nan
+            if non_none and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                for v in non_none
+            ):
+                vals = [float("nan") if v is None else float(v) for v in vals]
         if dtype:
-            return rnp.array(self.values, dtype=dtype)
-        return rnp.array(self.values)
+            return rnp.array(vals, dtype=dtype)
+        return rnp.array(vals)
 
     @classmethod
     def from_numpy(cls, arr, name=None, index=None) -> "Series":
@@ -2396,12 +2539,17 @@ class Series:
         """求和。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param numeric_only: 是否仅计算数值 (未实现)
         :param min_count: 最少非空值数 (默认 0)
         """
-        # 使用 Rust 层实现
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
+        if len(non_null) < min_count:
+            return None
         return self._inner.sum()
 
     def mean(
@@ -2414,10 +2562,14 @@ class Series:
         """均值。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param numeric_only: 是否仅计算数值 (未实现)
         """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
         return self._inner.mean()
 
     def min(
@@ -2430,10 +2582,14 @@ class Series:
         """最小值。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param numeric_only: 是否仅计算数值 (未实现)
         """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
         return self._inner.min()
 
     def max(
@@ -2446,10 +2602,14 @@ class Series:
         """最大值。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param numeric_only: 是否仅计算数值 (未实现)
         """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
         return self._inner.max()
 
     def count(self) -> int:
@@ -2466,11 +2626,15 @@ class Series:
         """标准差。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param ddof: 自由度调整 (默认 1)
         :param numeric_only: 是否仅计算数值 (未实现)
         """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
         return self._inner.std()
 
     def var(
@@ -2484,20 +2648,43 @@ class Series:
         """方差。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param ddof: 自由度调整 (默认 1)
         :param numeric_only: 是否仅计算数值 (未实现)
         """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
         return self._inner.var()
 
-    def sem(self) -> Any:
-        """返回平均值的标准误差。"""
-        std_val = self._inner.std()
-        n = self._inner.count()
-        if n is not None and n > 0:
-            return std_val / (n**0.5) if std_val is not None else None
-        return None
+    def sem(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        ddof: int = 1,
+        numeric_only=None,
+    ) -> Any:
+        """返回平均值的标准误差。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param ddof: 自由度调整 (默认 1)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
+        n = len(non_null)
+        if n - ddof <= 0:
+            return None
+        m = sum(non_null) / n
+        var = sum((v - m) ** 2 for v in non_null) / (n - ddof)
+        return (var**0.5) / (n**0.5)
 
     def median(
         self,
@@ -2509,10 +2696,14 @@ class Series:
         """中位数。
 
         :param axis: 轴 (未使用，保持兼容性)
-        :param skipna: 是否忽略 None 值 (默认 True)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
         :param level: 多级索引级别 (未实现)
         :param numeric_only: 是否仅计算数值 (未实现)
         """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
         return self._inner.median()
 
     def any(self) -> Any:
@@ -2529,31 +2720,110 @@ class Series:
     ) -> _PySeries:
         """返回统计摘要 Series。
 
+        数值型: count/mean/std/min/分位数/max
+        非数值型: count/unique/top/freq
+
         :param percentiles: 要包含的分位数列表 (默认 [0.25, 0.5, 0.75])
-        :param include: 要包含的数据类型 (未实现)
-        :param exclude: 要排除的数据类型 (未实现)
+        :param include: 要包含的数据类型 (Series 未使用，保持签名兼容)
+        :param exclude: 要排除的数据类型 (Series 未使用，保持签名兼容)
         """
+        from collections import Counter
+
+        non_null = [v for v in self.values if not _is_missing(v)]
+
+        # 判断是否为数值型 (dtype 为 int64/float64，或所有非空值均为数值)
+        is_numeric = self._dtype_str in ("int64", "float64") or (
+            non_null
+            and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                for v in non_null
+            )
+        )
+
+        if not is_numeric:
+            # 非数值型: count/unique/top/freq
+            counter = Counter(non_null)
+            if counter:
+                # most_common(1) 返回频次最高且首次出现的值 (与 pandas 一致)
+                top, freq = counter.most_common(1)[0]
+            else:
+                top, freq = None, 0
+            stats = {
+                "count": len(non_null),
+                "unique": len(counter),
+                "top": top,
+                "freq": freq,
+            }
+            return Series(
+                list(stats.values()), index=list(stats.keys()), dtype="object"
+            )
+
+        # 数值型: 在 Python 层直接计算，确保 ddof=1 (pandas 默认) 和 NaN 过滤
         if percentiles is None:
             percentiles = [0.25, 0.5, 0.75]
-
-        # 确保分位数是排序列表
+        else:
+            percentiles = list(percentiles)
+        # 中位数 (50%) 始终包含
+        if 0.5 not in percentiles:
+            percentiles = list(percentiles) + [0.5]
+        # 校验分位数范围
+        for p in percentiles:
+            if not (0.0 <= p <= 1.0):
+                raise ValueError(
+                    f"percentiles 应在 [0, 1] 范围内，得到 {p}"
+                )
         percentiles = sorted(set(percentiles))
 
+        # 提取纯数值 (排除 None/NaN/bool)
+        vals = [
+            float(v)
+            for v in non_null
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        ]
+        n = len(vals)
+
+        if n == 0:
+            # 全部为缺失值时返回 NaN 填充的统计
+            stat_names = (
+                ["count", "mean", "std", "min"]
+                + [f"{int(p * 100)}%" for p in percentiles]
+                + ["max"]
+            )
+            return Series(
+                [0.0] + [float("nan")] * (len(stat_names) - 1),
+                index=stat_names,
+            )
+
+        # 计算统计值
+        mean_val = sum(vals) / n
+        # pandas describe 默认 ddof=1
+        if n > 1:
+            std_val = (sum((v - mean_val) ** 2 for v in vals) / (n - 1)) ** 0.5
+        else:
+            std_val = float("nan")
+
+        sorted_vals = sorted(vals)
+
+        def _quantile(q: float) -> float:
+            """线性插值法计算分位数。"""
+            if len(sorted_vals) == 1:
+                return sorted_vals[0]
+            pos = q * (len(sorted_vals) - 1)
+            lo = int(pos)
+            hi = min(lo + 1, len(sorted_vals) - 1)
+            frac = pos - lo
+            return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+
         stats = {
-            "count": self.count(),
-            "mean": self.mean(),
-            "std": self.std(),
-            "min": self.min(),
+            "count": float(n),
+            "mean": mean_val,
+            "std": std_val,
+            "min": sorted_vals[0],
         }
+        stats.update({f"{int(p * 100)}%": _quantile(p) for p in percentiles})
+        stats["max"] = sorted_vals[-1]
 
-        # 添加分位数
-        stats.update({f"{int(p * 100)}%": self.quantile(p) for p in percentiles})
-
-        stats["max"] = self.max()
-
-        # 构建一个 Series
-        result = Series(list(stats.values()), index=list(stats.keys()))
-        return result
+        return Series(list(stats.values()), index=list(stats.keys()))
 
     # ---------- 极值位置 (v1.0.0) ----------
 
@@ -2667,9 +2937,23 @@ class Series:
         """返回去重后的 Series (保持首次出现顺序)。"""
         return Series(self._inner.unique(), name=self.name, dtype=self._dtype_str)
 
-    def nunique(self) -> int:
-        """返回不同值的数量 (None 不计入)。"""
-        return self._inner.nunique()
+    def nunique(self, dropna: bool = True) -> int:
+        """返回不同值的数量。
+
+        :param dropna: 是否排除 None/NaN (默认 True)
+        """
+        values = list(self.values)
+        if dropna:
+            values = [v for v in values if not _is_missing(v)]
+        try:
+            return len(set(values))
+        except TypeError:
+            # 含不可哈希类型，用列表去重
+            seen = []
+            for v in values:
+                if v not in seen:
+                    seen.append(v)
+            return len(seen)
 
     def value_counts(
         self,
@@ -2900,33 +3184,78 @@ class Series:
         modes = [v for v, cnt in counter.items() if cnt == max_count]
         return Series(sorted(modes), name=self.name)
 
-    def skew(self) -> float:
-        """计算偏度。"""
-        values = [v for v in self.values if v is not None]
-        n = len(values)
+    def skew(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        bias: bool = True,
+    ) -> float:
+        """计算样本偏度 (3rd moment)。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        :param bias: 是否计算有偏估计 (默认 True; False 时进行无偏修正)
+        """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
+        n = len(non_null)
         if n < 3:
             return None
-        m = sum(values) / n
-        var = sum((x - m) ** 2 for x in values) / n
+        m = sum(non_null) / n
+        var = sum((x - m) ** 2 for x in non_null) / n
         if var == 0:
             return 0.0
         std = var**0.5
-        skew = sum((x - m) ** 3 for x in values) / (n * std**3)
-        return skew
+        g = sum((x - m) ** 3 for x in non_null) / (n * std**3)
+        if not bias:
+            # 无偏修正 (与 pandas/scipy 一致)
+            g *= (n * (n - 1)) ** 0.5 / (n - 2)
+        return g
 
-    def kurt(self) -> float:
-        """计算峰度。"""
-        values = [v for v in self.values if v is not None]
-        n = len(values)
+    def kurt(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        bias: bool = True,
+        fisher: bool = True,
+    ) -> float:
+        """计算样本峰度 (4th moment)。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否忽略 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        :param bias: 是否计算有偏估计 (默认 True; False 时进行无偏修正)
+        :param fisher: True 时返回 Fisher 峰度 (正态分布=0); False 时返回 Pearson 峰度 (+3)
+        """
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
+        n = len(non_null)
         if n < 4:
             return None
-        m = sum(values) / n
-        var = sum((x - m) ** 2 for x in values) / n
+        m = sum(non_null) / n
+        var = sum((x - m) ** 2 for x in non_null) / n
         if var == 0:
             return 0.0
         std = var**0.5
-        kurt = sum((x - m) ** 4 for x in values) / (n * std**4) - 3
-        return kurt
+        g2 = sum((x - m) ** 4 for x in non_null) / (n * std**4) - 3
+        if not bias and n > 3:
+            # 无偏修正 (与 pandas/scipy 一致)
+            factor = ((n - 1) * (n + 1)) / ((n - 2) * (n - 3))
+            g2 = factor * (g2 + 6 / (n + 1))
+        if not fisher:
+            g2 += 3
+        return g2
 
     # ---------- 过滤 ----------
 
@@ -3010,8 +3339,22 @@ class Series:
         out = pad + body if periods > 0 else body + pad
         return Series(out, name=self.name, index=self._index)
 
-    def cumsum(self, skipna: bool = True) -> _PySeries:
-        """累加和。"""
+    def cumsum(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        *args,
+        **kwargs,
+    ) -> _PySeries:
+        """累加和。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        """
         from itertools import accumulate
 
         values = self.values
@@ -3034,8 +3377,22 @@ class Series:
             )
         return Series(out, name=self.name, index=self._index)
 
-    def cumprod(self, skipna: bool = True) -> _PySeries:
-        """累乘积。"""
+    def cumprod(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        *args,
+        **kwargs,
+    ) -> _PySeries:
+        """累乘积。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        """
         from itertools import accumulate
 
         values = self.values
@@ -3056,8 +3413,22 @@ class Series:
             )
         return Series(out, name=self.name, index=self._index)
 
-    def cummax(self, skipna: bool = True) -> _PySeries:
-        """累计最大值。"""
+    def cummax(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        *args,
+        **kwargs,
+    ) -> _PySeries:
+        """累计最大值。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        """
         from itertools import accumulate
 
         values = self.values
@@ -3078,8 +3449,22 @@ class Series:
             )
         return Series(out, name=self.name, index=self._index)
 
-    def cummin(self, skipna: bool = True) -> _PySeries:
-        """累计最小值。"""
+    def cummin(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        *args,
+        **kwargs,
+    ) -> _PySeries:
+        """累计最小值。
+
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        """
         from itertools import accumulate
 
         values = self.values
@@ -3342,18 +3727,33 @@ class Series:
 
     # ---------- 聚合扩展 ----------
 
-    def prod(self, skipna: bool = True) -> Any:
+    def prod(
+        self,
+        axis=None,
+        skipna: bool = True,
+        level=None,
+        numeric_only=None,
+        min_count: int = 0,
+    ) -> Any:
         """返回所有元素的乘积。
 
-        :param skipna: 是否跳过 None
+        :param axis: 轴 (未使用，保持兼容性)
+        :param skipna: 是否跳过 None/NaN 值 (默认 True)
+        :param level: 多级索引级别 (未实现)
+        :param numeric_only: 是否仅计算数值 (未实现)
+        :param min_count: 最少非空值数 (默认 0)
         """
         import math
 
-        values = [v for v in self.values if v is not None] if skipna else self.values
-        if not values:
+        values = list(self.values)
+        non_null = [v for v in values if not _is_missing(v)]
+        if not skipna and len(non_null) < len(values):
+            return None
+        if len(non_null) < min_count:
+            return None
+        if not non_null:
             return 1
-        # 使用 math.prod 替代显式循环，速度更快
-        return math.prod(v for v in values if v is not None)
+        return math.prod(non_null)
 
     product = prod
 

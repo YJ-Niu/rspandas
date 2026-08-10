@@ -235,5 +235,102 @@ print_series(121, df.gt(df2))
 print_series(122, df.ne(df2))
 print_series(123, (df > 0).all())
 print_series(124, (df > 0).any())
+print_series(125, (df > 0).any().any())
+print_series(126, df.empty)
+print_series(127, pd.DataFrame(columns=list("ABC")).empty)
+print_series(128, df + df == df * 2)
+print_series(129, (df + df == df * 2).all())
+print_series(130, np.nan == np.nan)
+print_series(131, (df + df).equals(df * 2))
+df1 = pd.DataFrame({"col": ["foo", 0, np.nan]})
+df2 = pd.DataFrame({"col": [np.nan, 0, "foo"]}, index=[2, 1, 0])
+print_series(132, df1.equals(df2))
+print_series(133, df1.equals(df2.sort_index()))
+print_series(134, pd.Series(["foo", "bar", "baz"]) == "foo")
+print_series(135, pd.Series(["foo", "bar", "baz"]) == pd.Index(["foo", "bar", "qux"]))
+print_series(136, pd.Series(["foo", "bar", "baz"]) == np.array(["foo", "bar", "qux"]))
+df1 = pd.DataFrame(
+    {"A": [1.0, np.nan, 3.0, 5.0, np.nan], "B": [np.nan, 2.0, 3.0, np.nan, 6.0]}
+)
+
+
+df2 = pd.DataFrame(
+    {
+        "A": [5.0, 2.0, 4.0, np.nan, 3.0, 7.0],
+        "B": [np.nan, np.nan, 3.0, 4.0, 6.0, 8.0],
+    }
+)
+print_series(137, df1)
+print_series(138, df2)
+print_series(139, df1.combine_first(df2))
+
+def combiner(x, y):
+    return np.where(pd.isna(x), y, x)
+
+
+print_series(140, df1.combine(df2, combiner))
+print_series(141, df)
+print_series(142, df.mean(axis=0))
+print_series(143, df.mean(axis=1))
+print_series(144, df.sum(axis=0, skipna=False))
+print_series(145, df.sum(axis=1, skipna=True))
+ts_stand = (df - df.mean()) / df.std()
+print_series(146, ts_stand.std())
+xs_stand = df.sub(df.mean(axis=1), axis=0).div(df.std(axis=1), axis=0)
+print_series(147, xs_stand.std(axis=1))
+print_series(148, df.cumsum())
+print_series(149, np.mean(df["one"]))
+print_series(150, np.mean(df["one"].to_numpy()))
+series = pd.Series(np.random.randn(500))
+series[20:500] = np.nan
+series[10:20] = 5
+print_series(151, series.nunique())
+series = pd.Series(np.random.randn(1000))
+series[::2] = np.nan
+print_series(152, series.describe())
+frame = pd.DataFrame(np.random.randn(1000, 5), columns=["a", "b", "c", "d", "e"])
+frame.iloc[::2] = np.nan
+print_series(153, frame.describe())
+print_series(154, series.describe(percentiles=[0.05, 0.25, 0.75, 0.95]))
+s = pd.Series(["a", "a", "b", "b", "a", "a", np.nan, "c", "d", "a"])
+print_series(155, s.describe())
+frame = pd.DataFrame({"a": ["Yes", "Yes", "No", "No"], "b": range(4)})
+print_series(156, frame.describe())
+print_series(157, frame.describe(include=["str"]))
+print_series(158, frame.describe(include=["number"]))
+print_series(159, frame.describe(include="all"))
+s1 = pd.Series(np.random.randn(5))
+print_series(160, s1)
+print_series(161, (s1.idxmin(), s1.idxmax()))
+df1 = pd.DataFrame(np.random.randn(5, 3), columns=["A", "B", "C"])
+print_series(162, df1)
+print_series(163, df1.idxmin(axis=0))
+print_series(164, df1.idxmax(axis=1))
+df3 = pd.DataFrame([2, 1, 1, 3, np.nan], columns=["A"], index=list("edcba"))
+print_series(165, df3)
+print_series(166, df3["A"].idxmin())
+data = np.random.randint(0, 7, size=50)
+print_series(167, data)
+s = pd.Series(data)
+print_series(168, s.value_counts())
+data = {"a": [1, 2, 3, 4], "b": ["x", "x", "y", "y"]}
+frame = pd.DataFrame(data)
+print_series(169, frame.value_counts())
+s5 = pd.Series([1, 1, 3, 3, 3, 5, 5, 7, 7, 7])
+print_series(170, s5.mode())
+df5 = pd.DataFrame(
+    {
+        "A": np.random.randint(0, 7, size=50),
+        "B": np.random.randint(-10, 15, size=50),
+    }
+)
+print_series(171, df5)
+print_series(172, df5.mode())
+arr = np.random.randn(20)
+factor = pd.cut(arr, 4)
+print_series(173, factor)
+arr = np.random.randn(30)
+factor = pd.qcut(arr, [0, 0.25, 0.5, 0.75, 1])
+print_series(174, factor)
 end_time = time.time()
 print("end_time - start_time:", end_time - start_time)
