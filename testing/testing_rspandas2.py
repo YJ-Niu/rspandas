@@ -332,5 +332,54 @@ print_series(173, factor)
 arr = np.random.randn(30)
 factor = pd.qcut(arr, [0, 0.25, 0.5, 0.75, 1])
 print_series(174, factor)
+def extract_city_name(df):
+    """
+    Chicago, IL -> Chicago for city_name column
+    """
+    df["city_name"] = df["city_and_code"].str.split(",").str.get(0)
+    return df
+
+
+def add_country_name(df, country_name=None):
+    """
+    Chicago -> Chicago-US for city_name column
+    """
+    col = "city_name"
+    df["city_and_country"] = df[col] + country_name
+    return df
+
+
+df_p = pd.DataFrame({"city_and_code": ["Chicago, IL"]})
+print_series(175, add_country_name(extract_city_name(df_p), country_name="US"))
+print_series(176, df_p.pipe(extract_city_name).pipe(add_country_name, country_name="US"))
+print_series(177, df.apply(lambda x: np.mean(x)))
+print_series(178, df.apply(lambda x: np.mean(x), axis=1))
+print_series(179, df.apply(lambda x: x.max() - x.min()))
+print_series(180, df.apply(np.cumsum))
+print_series(181, df.apply(np.exp))
+print_series(182, df.apply("mean"))
+print_series(183, df.apply("mean", axis=1))
+tsdf = pd.DataFrame(
+    np.random.randn(1000, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=1000),
+)
+print_series(184, tsdf.apply(lambda x: x.idxmax()))
+
+def subtract_and_divide(x, sub, divide=1):
+    return (x - sub) / divide
+
+
+df_udf = pd.DataFrame(np.ones((2, 2)))
+print_series(185, df_udf.apply(subtract_and_divide, args=(5,), divide=3))
+tsdf = pd.DataFrame(
+    np.random.randn(10, 3),
+    columns=["A", "B", "C"],
+    index=pd.date_range("1/1/2000", periods=10),
+)
+tsdf.iloc[3:7] = np.nan
+print_series(186, tsdf)
+print_series(187, tsdf.apply(pd.Series.interpolate))
+
 end_time = time.time()
 print("end_time - start_time:", end_time - start_time)

@@ -787,12 +787,19 @@ def _wrap_rsnumpy_functions():
         def _wrap_asarray(a, *args, **kwargs):
             if isinstance(a, _Series):
                 # 返回 rsnumpy ndarray 以获得正确的显示格式
-                return _rnp.array(list(a.values), *args, **kwargs)
+                # 将 None 替换为 NaN (rsnumpy 不支持 None)
+                vals = list(a.values)
+                vals = [float("nan") if v is None else v for v in vals]
+                return _rnp.array(vals, *args, **kwargs)
             if isinstance(a, _DataFrame):
                 # 将 DataFrame 转换为 rsnumpy 二维数组
                 cols = list(a._columns)
                 data = [
-                    [a._inner.get_column(c).values[i] for c in cols]
+                    [
+                        float("nan") if a._inner.get_column(c).values[i] is None
+                        else a._inner.get_column(c).values[i]
+                        for c in cols
+                    ]
                     for i in range(a._nrows)
                 ]
                 return _rnp.array(data, *args, **kwargs)

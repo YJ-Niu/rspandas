@@ -2220,30 +2220,198 @@ class DataFrame:
 
     aggregate = agg  # 别名
 
-    def apply(self, func, axis: int = 0) -> "Series":
-        """应用函数。
+    def apply(self, func, axis=0, raw=False, result_type=None, args=(), **kwargs):
+        """沿轴应用函数。
 
-        :param axis: 0=按列 (每列传入 Series); 1=按行 (每行传入 dict)
+        :param func: 函数、字符串方法名或可调用对象
+        :param axis: 0=按列 (每列传入 Series); 1=按行 (每行传入 Series)
+        :param raw: True 时传递 ndarray 而非 Series
+        :param result_type: reduce/broadcast/expand/None
+        :param args: 传递给 func 的位置参数
+        :param kwargs: 传递给 func 的关键字参数
+        :return: Series 或 DataFrame
         """
+        from .series import Series
+
+        # 字符串方法名分发
+        if isinstance(func, str):
+            method_name = func
+
+            def _call_method(series, *a, **kw):
+                method = getattr(series, method_name)
+                return method(*a, **kw)
+
+            func = _call_method
+
+        # 判断结果是否为 list-like
+        def _is_list_like(v):
+            return isinstance(v, (list, tuple)) or (
+                hasattr(v, "__iter__") and not isinstance(v, str)
+            )
+
+        # 获取列数据
+        def _get_col_data(c):
+            col = self._inner.get_column(c)
+            values = list(col.values)
+            if raw:
+                # 转为 rsnumpy ndarray
+                try:
+                    import rsnumpy as rnp
+
+                    return rnp.array(values)
+                except ImportError:
+                    return values
+            return Series(values, name=c, index=self._index)
+
+        # 获取行数据
+        def _get_row_data(i):
+            values = [self._inner.get_column(c).values[i] for c in self._columns]
+            if raw:
+                try:
+                    import rsnumpy as rnp
+
+                    return rnp.array(values)
+                except ImportError:
+                    return values
+            row_name = str(self._index[i]) if self._index else None
+            return Series(values, index=list(self._columns), name=row_name)
+
+        # 应用函数
         if axis == 0:
-            # 使用列表推导式 + 辅助函数替代显式 for 循环
-            def _apply_col(c):
-                """对单列应用 func。"""
-                res = func(self[c])
-                return res._inner if isinstance(res, Series) else res
+            results = [func(_get_col_data(c), *args, **kwargs) for c in self._columns]
+            result_index = list(self._columns)
+        else:
+            results = [func(_get_row_data(i), *args, **kwargs) for i in range(self._nrows)]
+            result_index = list(self._index) if self._index else list(range(self._nrows))
 
-            results = [_apply_col(c) for c in self._columns]
-            return Series(results, index=list(self._columns))
-        else:  # axis == 1
-            # 使用列表推导式 + 辅助函数替代显式 for 循环
-            def _apply_row(i):
-                """对单行应用 func。"""
-                row = {c: self._inner.get_column(c).values[i] for c in self._columns}
-                res = func(row)
-                return res._inner if isinstance(res, Series) else res
+        # 返回类型推断
+        # 检查结果类型
+        all_scalar = all(
+            not isinstance(r, (Series, list, tuple)) and not _is_list_like(r)
+            for r in results
+        )
+        all_series = all(isinstance(r, Series) for r in results)
+        all_list_like = all(_is_list_like(r) for r in results)
 
-            results = [_apply_row(i) for i in range(self._nrows)]
-            return Series(results, index=list(range(self._nrows)))
+        if result_type == "reduce":
+            # 强制返回 Series
+            return Series(results, index=result_index)
+
+        if result_type == "broadcast":
+            # 广播为原始形状
+            if axis == 0:
+                new_data = {}
+                for i, c in enumerate(self._columns):
+                    new_data[c] = list(results[i]) if _is_list_like(results[i]) else [results[i]] * self._nrows
+                return DataFrame(new_data, index=self._index)
+            else:
+                new_data = {}
+                for j, c in enumerate(self._columns):
+                    new_data[c] = [
+                        (list(results[i])[j] if _is_list_like(results[i]) else results[i])
+                        for i in range(self._nrows)
+                    ]
+                return DataFrame(new_data, index=self._index)
+
+        if result_type == "expand":
+            # list-like 结果展开为多列
+            if axis == 0:
+                # 每个结果是一个 list，展开为行
+                max_len = max(
+                    (len(list(r)) for r in results if _is_list_like(r)),
+                    default=0,
+                )
+                new_data = {}
+                for j in range(max_len):
+                    new_data[j] = [
+                        (list(results[i])[j] if _is_list_like(results[i]) and j < len(list(results[i])) else None)
+                        for i in range(len(results))
+                    ]
+                return DataFrame(new_data, index=result_index)
+            else:
+                max_len = max(
+                    (len(list(r)) for r in results if _is_list_like(r)),
+                    default=0,
+                )
+                new_data = {}
+                for j in range(max_len):
+                    new_data[j] = [
+                        (list(results[i])[j] if _is_list_like(results[i]) and j < len(list(results[i])) else None)
+                        for i in range(len(results))
+                    ]
+                return DataFrame(new_data, index=result_index)
+
+        # 默认行为
+        if all_series:
+            # 函数返回 Series → DataFrame
+            if axis == 0:
+                # 列方向: 每个 Series 结果成为一列
+                new_data = {}
+                for i, c in enumerate(self._columns):
+                    s = results[i]
+                    new_data[c] = list(s.values)
+                # index 来自第一个 Series
+                first_series = results[0]
+                df_index = first_series._index if first_series._index else None
+                return DataFrame(new_data, index=df_index)
+            else:
+                # 行方向: 每个 Series 结果成为一行
+                # 收集所有列名
+                all_cols = []
+                for r in results:
+                    for idx in r._index:
+                        if idx not in all_cols:
+                            all_cols.append(idx)
+                new_data = {c: [] for c in all_cols}
+                for r in results:
+                    val_map = dict(zip(r._index, r.values))
+                    for c in all_cols:
+                        new_data[c].append(val_map.get(c))
+                return DataFrame(new_data, index=result_index)
+
+        if all_list_like and not all_scalar:
+            # list-like 结果: 默认尝试展开
+            # 检查所有 list 长度是否相同
+            lengths = [len(list(r)) for r in results]
+            if len(set(lengths)) == 1 and lengths[0] > 0:
+                # 长度相同
+                common_len = lengths[0]
+                if axis == 0:
+                    # 列方向: 如果结果长度等于行数，保持原始结构 (每列一个结果)
+                    if common_len == self._nrows:
+                        new_data = {}
+                        for i, c in enumerate(self._columns):
+                            new_data[c] = list(results[i])
+                        return DataFrame(new_data, index=self._index)
+                    # 否则展开为行
+                    new_data = {}
+                    for j in range(common_len):
+                        new_data[j] = [
+                            list(results[i])[j] for i in range(len(results))
+                        ]
+                    return DataFrame(new_data, index=result_index)
+                else:
+                    # 行方向: 如果结果长度等于列数，保持原始结构
+                    if common_len == len(self._columns):
+                        new_data = {}
+                        for j, c in enumerate(self._columns):
+                            new_data[c] = [
+                                list(results[i])[j] for i in range(len(results))
+                            ]
+                        return DataFrame(new_data, index=result_index)
+                    # 否则展开为列
+                    new_data = {}
+                    for j in range(common_len):
+                        new_data[j] = [
+                            list(results[i])[j] for i in range(len(results))
+                        ]
+                    return DataFrame(new_data, index=result_index)
+            else:
+                # 长度不同 → 返回 Series (list 作为元素)
+                return Series(results, index=result_index)
+
+        # 标量结果 → Series
+        return Series(results, index=result_index)
 
     def applymap(self, func) -> "DataFrame":
         """对每个元素应用 func。"""

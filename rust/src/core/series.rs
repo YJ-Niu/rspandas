@@ -2200,7 +2200,9 @@ impl PySeries {
                     } else if let Ok(f) = item.cast::<PyFloat>() {
                         v.push(Some(f.extract::<f64>()?.to_string()));
                     } else {
-                        return Err(pyo3::exceptions::PyTypeError::new_err("unsupported type"));
+                        // 其他类型 (如 list/dict) 使用 str() 转为字符串
+                        let s = item.str()?;
+                        v.push(Some(s.extract::<String>()?));
                     }
                 }
                 Series::new_string(name, v)
@@ -2382,7 +2384,9 @@ impl PySeries {
                     } else if let Ok(f) = item.cast::<PyFloat>() {
                         v.push(Some(f.extract::<f64>()?.to_string()));
                     } else {
-                        return Err(pyo3::exceptions::PyTypeError::new_err("unsupported type"));
+                        // 其他类型 (如 list/dict) 使用 str() 转为字符串
+                        let s = item.str()?;
+                        v.push(Some(s.extract::<String>()?));
                     }
                 }
                 Series::new_string(name, v)

@@ -2129,57 +2129,101 @@ def cut(
     -------
     Series
     """
+    import math
+
     values = list(x.values) if isinstance(x, Series) else list(x)
 
-    # 计算 bins
-    non_null = [v for v in values if v is not None]
+    # 过滤缺失值
+    def _is_missing(v) -> bool:
+        if v is None:
+            return True
+        try:
+            return v != v  # type: ignore[operator]
+        except TypeError:
+            return False
+
+    non_null = [v for v in values if not _is_missing(v)]
     if not non_null:
         return Series([None] * len(values), dtype="category")
 
+    # 计算 bins
     if isinstance(bins, int):
         min_val = min(non_null)
         max_val = max(non_null)
         if min_val == max_val:
-            # 只有一个唯一值
+            # 只有一个唯一值，构造一个包含它的区间
             bins = [min_val - 0.5, min_val + 0.5]
         else:
             bin_width = (max_val - min_val) / bins
             bins = [min_val + i * bin_width for i in range(bins + 1)]
+            # 修正浮点精度: 确保最后一个边界等于 max_val
+            bins[-1] = max_val
+        # 当 bins 为 int 时，自动包含最小值 (与 pandas 一致)
+        include_lowest = True
     else:
         bins = list(bins)
 
     n_bins = len(bins) - 1
 
-    # 生成标签（使用列表推导式替代显式 for 循环）
+    # 格式化边界值用于标签
+    def _fmt(v) -> str:
+        """格式化数值为字符串。"""
+        if v == float("inf"):
+            return "inf"
+        if v == float("-inf"):
+            return "-inf"
+        # 整数边界用整数格式
+        if isinstance(v, (int,)) or (isinstance(v, float) and v.is_integer()):
+            return str(int(v))
+        return repr(v)
+
+    # 生成标签
     if labels is None:
         if right:
-            labels = [f"({bins[i]}, {bins[i + 1]}]" for i in range(n_bins)]
+            labels = [f"({_fmt(bins[i])}, {_fmt(bins[i + 1])}]" for i in range(n_bins)]
+            if include_lowest:
+                labels[0] = f"[{_fmt(bins[0])}, {_fmt(bins[1])}]"
         else:
-            labels = [f"[{bins[i]}, {bins[i + 1]})" for i in range(n_bins)]
-        if include_lowest:
-            if right:
-                labels[0] = f"[{bins[0]}, {bins[1]}]"
-            else:
-                labels[-1] = f"[{bins[-2]}, {bins[-1]}]"
+            labels = [f"[{_fmt(bins[i])}, {_fmt(bins[i + 1])})" for i in range(n_bins)]
+            if include_lowest:
+                labels[-1] = f"[{_fmt(bins[-2])}, {_fmt(bins[-1])}]"
     else:
         labels = list(labels)
 
-    # 分配区间 - 使用辅助函数 + 列表推导式替代嵌套 for 循环
+    # 分配区间
     def _find_bin(v):
         """返回 v 所在区间的标签，未匹配则返回 None。"""
-        if v is None:
+        if _is_missing(v):
             return None
+        # 处理 inf 值
+        is_inf = math.isinf(v) if isinstance(v, float) else False
+
         for i in range(n_bins):
+            lo = bins[i]
+            hi = bins[i + 1]
             if right:
-                if i == 0 and include_lowest and bins[0] <= v <= bins[1]:
-                    return labels[i]
-                if bins[i] < v <= bins[i + 1]:
-                    return labels[i]
+                # 区间 (lo, hi]，第一个区间可能改为 [lo, hi]
+                if i == 0 and include_lowest:
+                    if lo <= v <= hi:
+                        return labels[i]
+                else:
+                    if lo < v <= hi:
+                        return labels[i]
             else:
-                if i == n_bins - 1 and include_lowest and bins[-2] <= v <= bins[-1]:
-                    return labels[i]
-                if bins[i] <= v < bins[i + 1]:
-                    return labels[i]
+                # 区间 [lo, hi)，最后一个区间可能改为 [lo, hi]
+                if i == n_bins - 1 and include_lowest:
+                    if lo <= v <= hi:
+                        return labels[i]
+                else:
+                    if lo <= v < hi:
+                        return labels[i]
+
+        # 浮点精度兜底: 最大值/最小值可能因精度问题未匹配
+        if not is_inf:
+            if v <= bins[0]:
+                return labels[0]
+            if v >= bins[-1]:
+                return labels[-1]
         return None
 
     result = [_find_bin(v) for v in values]
@@ -2199,7 +2243,7 @@ def qcut(
     x : list or Series
         输入数据。
     q : int or list
-        分位数数量或分位点列表。
+        分位数数量或分位点列表 (0-1)。
     labels : list, optional
         区间标签。
 
@@ -2209,7 +2253,16 @@ def qcut(
     """
     values = list(x.values) if isinstance(x, Series) else list(x)
 
-    non_null = sorted([v for v in values if v is not None])
+    # 过滤缺失值
+    def _is_missing(v) -> bool:
+        if v is None:
+            return True
+        try:
+            return v != v  # type: ignore[operator]
+        except TypeError:
+            return False
+
+    non_null = sorted([v for v in values if not _is_missing(v)])
     if not non_null:
         return Series([None] * len(values), dtype="category")
 
@@ -2218,7 +2271,7 @@ def qcut(
     if isinstance(q, int):
         n_bins = q
 
-        # 计算分位点（使用辅助函数 + 列表推导式替代显式 for 循环）
+        # 计算分位点
         def _quantile_at(i):
             pos = i * (n - 1) / n_bins
             lo = int(pos)
@@ -2228,10 +2281,26 @@ def qcut(
 
         quantiles = [_quantile_at(i) for i in range(n_bins + 1)]
     else:
-        quantiles = sorted(q)
+        # q 是分位数列表 (如 [0, 0.25, 0.5, 0.75, 1])
+        # 需要计算每个分位数对应的实际值
+        q_list = sorted(q)
+
+        def _quantile_at(p):
+            """计算分位数 p 对应的实际值 (线性插值法)。"""
+            if p <= 0:
+                return non_null[0]
+            if p >= 1:
+                return non_null[-1]
+            pos = p * (n - 1)
+            lo = int(pos)
+            hi = min(lo + 1, n - 1)
+            frac = pos - lo
+            return non_null[lo] + frac * (non_null[hi] - non_null[lo])
+
+        quantiles = [_quantile_at(p) for p in q_list]
         n_bins = len(quantiles) - 1
 
-    # 使用 cut 进行分箱
+    # 使用 cut 进行分箱，包含最低值
     return cut(values, bins=quantiles, right=True, labels=labels, include_lowest=True)
 
 

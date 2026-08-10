@@ -6014,9 +6014,23 @@ class StringAccessor:
             ]
         )
 
-    def split(self, pat: str = None, n: int = -1) -> list:
-        """字符串分割。返回 list[list[str]]。"""
-        return [str(v).split(pat, n) if v is not None else None for v in self._s.values]
+    def split(self, pat: str = None, n: int = -1, expand: bool = False):
+        """字符串分割。
+
+        :param pat: 分隔符
+        :param n: 最大分割次数 (-1 表示全部)
+        :param expand: 是否展开为多列 DataFrame (暂不支持)
+        :return: Series，每个元素为分割后的 list
+        """
+        if expand:
+            raise NotImplementedError("expand=True is not supported yet")
+        result = [
+            str(v).split(pat, n) if v is not None else None
+            for v in self._s.values
+        ]
+        return Series(
+            result, name=self._s.name, index=self._s._index, dtype="object"
+        )
 
     def slice(self, start=None, stop=None, step=None) -> _PySeries:
         s = slice(start, stop, step)
@@ -6271,11 +6285,41 @@ class StringAccessor:
         return self._wrap(out)
 
     def get(self, i) -> _PySeries:
-        return self._wrap(
-            [
-                str(v)[i] if v is not None and 0 <= i < len(str(v)) else None
-                for v in self._s.values
-            ]
+        """从每个元素中取第 i 个值。
+
+        - list/tuple: 取第 i 个元素 (支持负索引)
+        - str: 取第 i 个字符 (支持负索引)
+        """
+        import ast
+
+        def _get_one(v):
+            if v is None:
+                return None
+            if isinstance(v, (list, tuple)):
+                if -len(v) <= i < len(v):
+                    return v[i]
+                return None
+            # 字符串: 尝试解析为 list (str.split 的结果)
+            s = str(v)
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    parsed = ast.literal_eval(s)
+                    if isinstance(parsed, (list, tuple)):
+                        if -len(parsed) <= i < len(parsed):
+                            return parsed[i]
+                        return None
+                except (ValueError, SyntaxError):
+                    pass
+            # 普通字符串取字符
+            if -len(s) <= i < len(s):
+                return s[i]
+            return None
+
+        return Series(
+            [_get_one(v) for v in self._s.values],
+            name=self._s.name,
+            index=self._s._index,
+            dtype="object",
         )
 
     def get_dummies(self, sep="|"):
