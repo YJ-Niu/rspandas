@@ -414,11 +414,20 @@ class DataFrame:
         # 构造 Rust 端 DataFrame
         self._inner = _PyDataFrame(str_col_names, rust_series_list)
 
-        # 保存原始列名（保留 tuple 等复合类型用于显示）
         self._raw_columns: List[Any] = list(col_names)
         self._columns: List[str] = str_col_names
         self._nrows: int = n
-        self._index = index if index is not None else list(range(n))
+        # 索引共享缓存：如果传入 Index 对象，保存引用用于 rs.index is df.index 判断
+        from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
+
+        self._cached_index_ref: Optional[object] = None
+        if isinstance(index, (Index, RangeIndex, MultiIndex, DatetimeIndex)):
+            self._cached_index_ref = index
+            self._index = list(index._data) if hasattr(index, "_data") else list(index)
+        elif index is not None:
+            self._index = list(index)
+        else:
+            self._index = list(range(n))
         # MultiIndex 元数据缓存（供 sub(level=...) 等使用）
         self._index_names: Optional[list] = getattr(index, "names", None) if index is not None else None
         if self._index_names is None and index is not None:
@@ -516,6 +525,10 @@ class DataFrame:
         from .indexes import DatetimeIndex, Index
         from datetime import datetime
 
+        # 优先返回缓存的 Index 对象引用，实现索引共享
+        if self._cached_index_ref is not None:
+            return self._cached_index_ref
+
         if self._index is not None:
             # 获取 freq（如果存储的 index 有 _freq 属性）
             idx_freq = (
@@ -523,8 +536,12 @@ class DataFrame:
             )
             # 如果是 datetime 值列表，返回 DatetimeIndex
             if self._index and all(isinstance(v, datetime) for v in self._index):
-                return DatetimeIndex(self._index, freq=idx_freq)
-            return Index(self._index)
+                result = DatetimeIndex(self._index, freq=idx_freq)
+            else:
+                result = Index(self._index)
+            # 缓存创建的 Index 对象，后续访问返回同一引用
+            self._cached_index_ref = result
+            return result
         return None
 
     @index.setter
@@ -533,11 +550,16 @@ class DataFrame:
 
         :param value: Index / MultiIndex / list / RangeIndex / Series 等
         """
-        from .indexes import Index, MultiIndex, RangeIndex
+        from .indexes import Index, MultiIndex, RangeIndex, DatetimeIndex
 
         # 提取内部 list 及可能的 names / freq
         names = None
         freq = None
+        # 清除旧的缓存引用
+        self._cached_index_ref = None
+        if isinstance(value, (MultiIndex, Index, RangeIndex, DatetimeIndex)):
+            # 保存 Index 对象引用，用于共享
+            self._cached_index_ref = value
         if isinstance(value, MultiIndex):
             values = list(value.values)
             names = getattr(value, "names", None)
@@ -2913,10 +2935,62 @@ class DataFrame:
         else:
             raise ValueError(f"axis must be 0 or 1, got {axis}")
 
-    def reindex(self, index=None, columns=None, **kwargs) -> "DataFrame":
-        """重新索引。"""
+    def reindex(
+        self,
+        labels=None,
+        index=None,
+        columns=None,
+        axis=None,
+        method=None,
+        copy=None,
+        level=None,
+        fill_value=None,
+        limit=None,
+        tolerance=None,
+    ) -> "DataFrame":
+        """重新索引。
+
+        :param labels: 新的轴标签 (配合 axis 使用)
+        :param index: 新的行索引
+        :param columns: 新的列标签
+        :param axis: 'index'/0 或 'columns'/1，决定 labels 应用到哪个轴
+        :param method: 填充方法 (未实现，仅占位)
+        :param copy: 是否复制 (未实现，仅占位)
+        :param level: 多级索引级别 (未实现，仅占位)
+        :param fill_value: 缺失值填充 (未实现，仅占位)
+        :param limit: 填充限制 (未实现，仅占位)
+        :param tolerance: 容差 (未实现，仅占位)
+        """
+        # 处理 labels + axis 组合：将 labels 分发到 index 或 columns
+        # pandas 行为：axis=None 时默认应用到 index (axis=0)
+        if labels is not None:
+            if axis is None or axis in ("index", 0):
+                if index is None:
+                    index = labels
+                else:
+                    raise TypeError(
+                        "Cannot specify both 'labels' and 'index' (or default axis)"
+                    )
+            elif axis in ("columns", 1):
+                if columns is None:
+                    columns = labels
+                else:
+                    raise TypeError(
+                        "Cannot specify both 'labels' and 'columns' (or axis=1)"
+                    )
+            else:
+                raise ValueError(
+                    f"axis must be 'index'/0 or 'columns'/1, got {axis!r}"
+                )
+
         if index is None and columns is None:
             return self.copy()
+        from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
+
+        # 保存 Index 对象引用，用于共享
+        index_obj_ref = None
+        if isinstance(index, (Index, RangeIndex, MultiIndex, DatetimeIndex)):
+            index_obj_ref = index
 
         if columns is not None:
             if not isinstance(columns, list):
@@ -2927,15 +3001,17 @@ class DataFrame:
 
         if index is not None:
             if not isinstance(index, list):
-                index = list(index)
+                index_list = list(index)
+            else:
+                index_list = index
             # 使用字典推导式替代显式 for 循环
             old_index_map = {
                 idx: i for i, idx in enumerate(self._index or range(self._nrows))
             }
-            new_order = [old_index_map.get(label) for label in index]
+            new_order = [old_index_map.get(label) for label in index_list]
         else:
             new_order = list(range(self._nrows))
-            index = self._index or list(range(self._nrows))
+            index_list = self._index or list(range(self._nrows))
 
         # 使用字典推导式替代显式 for 循环
         new_data = {
@@ -2950,7 +3026,11 @@ class DataFrame:
             for c in new_cols
         }
 
-        return DataFrame(new_data, index=index)
+        result = DataFrame(new_data, index=index_list)
+        # 如果传入的是 Index 对象，共享其引用
+        if index_obj_ref is not None:
+            result._cached_index_ref = index_obj_ref
+        return result
 
     # ---------- 高级操作 (v1.0.0) ----------
 

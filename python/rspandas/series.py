@@ -317,7 +317,17 @@ class Series:
                     self._dtype_str = "str"
 
         # RangeIndex 或自定义索引
-        self._index = index if index is not None else list(range(len(values)))
+        from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
+
+        # 缓存传入的 Index 对象引用，用于索引共享 (rs.index is df.index)
+        self._cached_index_ref: Optional[object] = None
+        if isinstance(index, (Index, RangeIndex, MultiIndex, DatetimeIndex)):
+            self._cached_index_ref = index
+            self._index = list(index._data) if hasattr(index, "_data") else list(index)
+        elif index is not None:
+            self._index = list(index)
+        else:
+            self._index = list(range(len(values)))
 
         # 频率信息（从 DatetimeIndex 等传入）
         self._freq: Optional[str] = (
@@ -367,9 +377,16 @@ class Series:
     def index(self):
         from .indexes import Index, RangeIndex
 
+        # 优先返回缓存的 Index 对象引用，实现索引共享
+        if self._cached_index_ref is not None:
+            return self._cached_index_ref
         if _is_range_index(self._index):
-            return RangeIndex(len(self._index))
-        return Index(self._index)
+            result = RangeIndex(len(self._index))
+        else:
+            result = Index(self._index)
+        # 缓存创建的 Index 对象，后续访问返回同一引用
+        self._cached_index_ref = result
+        return result
 
     @property
     def ndim(self) -> int:
@@ -2189,8 +2206,17 @@ class Series:
         """重新索引。"""
         if index is None:
             return self.copy()
-        if not isinstance(index, list):
-            index = list(index)
+        from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
+
+        # 记录原始 Index 对象引用，用于索引共享
+        index_obj_ref = None
+        if isinstance(index, (Index, RangeIndex, MultiIndex, DatetimeIndex)):
+            index_obj_ref = index
+            index_list = list(index._data) if hasattr(index, "_data") else list(index)
+        elif not isinstance(index, list):
+            index_list = list(index)
+        else:
+            index_list = index
 
         # 使用字典推导式构建旧索引映射
         src_index = self._index if self._index is not None else list(range(len(self)))
@@ -2200,13 +2226,17 @@ class Series:
         self_vals = self.values
         new_values = [
             self_vals[old_index_map[label]] if label in old_index_map else None
-            for label in index
+            for label in index_list
         ]
-        new_index = list(index)
+        new_index_list = list(index_list)
 
-        return Series(
-            new_values, name=self.name, dtype=self._dtype_str, index=new_index
+        result = Series(
+            new_values, name=self.name, dtype=self._dtype_str, index=new_index_list
         )
+        # 如果传入的是 Index 对象，共享其引用
+        if index_obj_ref is not None:
+            result._cached_index_ref = index_obj_ref
+        return result
 
     def sort_index(
         self,
