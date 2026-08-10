@@ -89,11 +89,19 @@ def _parse_iso(s: str) -> datetime:
 
 
 def _to_iso(v) -> Optional[str]:
-    """将 datetime/date/None 转换为 ISO 字符串。"""
+    """将 datetime/date/None 转换为 ISO 字符串。
+
+    与 pandas 一致，日期与时间之间使用空格分隔（而非 ISO 默认的 'T'）。
+    """
     if v is None:
         return None
     if isinstance(v, datetime):
-        return v.isoformat()
+        # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+        s = v.isoformat()
+        # 处理 'T' 分隔符（不含 'T' 时保持原样，例如仅日期）
+        if "T" in s:
+            s = s.replace("T", " ", 1)
+        return s
     if isinstance(v, date):
         return datetime(v.year, v.month, v.day).isoformat()
     return None

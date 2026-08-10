@@ -184,7 +184,7 @@ def _to_python_list(data: Any) -> list:
 
     对 datetime/date 元素转换为 ISO 字符串（Rust 端不支持 Python datetime 对象）。
     """
-    from ._datetime import DatetimeSeries  # 延迟 import 避免循环引用
+    from ._datetime import DatetimeSeries, _to_iso  # 延迟 import 避免循环引用
 
     if isinstance(data, DatetimeSeries):
         return list(data._inner.values)  # ISO 字符串
@@ -193,7 +193,7 @@ def _to_python_list(data: Any) -> list:
     if isinstance(data, (list, tuple)):
         return [
             (
-                v.isoformat()
+                _to_iso(v)
                 if isinstance(v, (datetime, date)) and not isinstance(v, bool)
                 else v
             )
@@ -206,7 +206,7 @@ def _to_python_list(data: Any) -> list:
         raw = data.tolist()
         return [
             (
-                v.isoformat()
+                _to_iso(v)
                 if isinstance(v, (datetime, date)) and not isinstance(v, bool)
                 else v
             )
@@ -218,7 +218,7 @@ def _to_python_list(data: Any) -> list:
         out = list(data)
         return [
             (
-                v.isoformat()
+                _to_iso(v)
                 if isinstance(v, (datetime, date)) and not isinstance(v, bool)
                 else v
             )
@@ -233,12 +233,12 @@ def _to_python_list_and_index(data: Any, index=None):
     当 data 是 dict 且指定了 index 时，按 index 顺序查找 dict 值，
     缺失的索引对应 None。
     """
-    from ._datetime import DatetimeSeries
+    from ._datetime import DatetimeSeries, _to_iso
 
     def _conv(values):
         return [
             (
-                v.isoformat()
+                _to_iso(v)
                 if isinstance(v, (datetime, date)) and not isinstance(v, bool)
                 else v
             )
@@ -1558,9 +1558,11 @@ class Series:
                 vals = [na_value if v is None else v for v in vals]
             if dtype_is_object:
                 # rsnumpy 不支持 datetime 对象，退回 ISO 字符串 (object dtype)
+                from ._datetime import _to_iso
+
                 iso_strs = [
                     (
-                        v.isoformat()
+                        _to_iso(v)
                         if isinstance(v, (datetime, date)) and not isinstance(v, bool)
                         else v
                     )
@@ -2453,7 +2455,7 @@ class Series:
         对于数值，返回 abs(diff)
         其他类型返回 None（不支持）
         """
-        from datetime import datetime, timedelta, date
+        from datetime import datetime, date
 
         a, b = idx_a, idx_b
 
@@ -7170,6 +7172,89 @@ class DatetimeAccessor:
     def month_name(self) -> Series:
         """返回月份名称。"""
         return self._apply_dt(lambda x: x.strftime("%B"))
+
+    # ---------- 时区相关 ----------
+
+    @property
+    def tz(self):
+        """返回时区信息。"""
+        dt_vals = self._get_dt_values()
+        for v in dt_vals:
+            if v is not None and v.tzinfo is not None:
+                return v.tzinfo
+        return None
+
+    def tz_localize(self, tz) -> Series:
+        """将 naive datetime 本地化为指定时区。
+
+        Parameters
+        ----------
+        tz : str or tzinfo
+            时区名称或时区对象。
+
+        Returns
+        -------
+        Series
+            带时区的 datetime Series。
+        """
+        from ._datetime import _normalize_tz, _localize
+
+        tzobj = _normalize_tz(tz)
+        dt_vals = self._get_dt_values()
+        localized = [
+            _localize(v, tzobj) if v is not None else None for v in dt_vals
+        ]
+        # 使用新的 datetime 值创建 Series
+        new_series = Series(
+            localized,
+            index=self._s._index,
+            name=self._s.name,
+        )
+        # 同步 dt 缓存
+        new_series._dt_values = localized
+        new_series._dt_tz = tzobj
+        return new_series
+
+    def tz_convert(self, tz) -> Series:
+        """将带时区的 datetime 转换到另一个时区。
+
+        Parameters
+        ----------
+        tz : str or tzinfo
+            目标时区。
+
+        Returns
+        -------
+        Series
+            转换时区后的 datetime Series。
+        """
+        from ._datetime import _normalize_tz
+
+        tzobj = _normalize_tz(tz)
+        dt_vals = self._get_dt_values()
+        converted = []
+        for v in dt_vals:
+            if v is None:
+                converted.append(None)
+            elif v.tzinfo is None:
+                # naive datetime: 先假设是 UTC，再转换
+                from datetime import timezone
+
+                converted.append(
+                    v.replace(tzinfo=timezone.utc).astimezone(tzobj)
+                )
+            else:
+                converted.append(v.astimezone(tzobj))
+        # 使用新的 datetime 值创建 Series
+        new_series = Series(
+            converted,
+            index=self._s._index,
+            name=self._s.name,
+        )
+        # 同步 dt 缓存
+        new_series._dt_values = converted
+        new_series._dt_tz = tzobj
+        return new_series
 
 
 # ==============================================================================
