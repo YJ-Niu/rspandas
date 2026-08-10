@@ -306,21 +306,25 @@ class Index:
         except ValueError:
             raise KeyError(key)
 
-    def append(self, other: "Index") -> "Index":
-        return Index(self._data + list(other._data), name=self._name)
+    def append(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
+        return Index(self._data + list(other_data), name=self._name)
 
-    def difference(self, other: "Index") -> "Index":
-        other_set = set(other._data)
+    def difference(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
+        other_set = set(other_data)
         return Index([v for v in self._data if v not in other_set])
 
-    def intersection(self, other: "Index") -> "Index":
-        other_set = set(other._data)
+    def intersection(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
+        other_set = set(other_data)
         # 使用 dict.fromkeys 保留首次出现顺序并去重
         return Index([v for v in dict.fromkeys(self._data) if v in other_set])
 
-    def union(self, other: "Index") -> "Index":
+    def union(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
         # 合并后利用 dict.fromkeys 保序去重（与 pandas union 语义一致）
-        merged = list(self._data) + list(other._data)
+        merged = list(self._data) + list(other_data)
         return Index(list(dict.fromkeys(merged)))
 
     def unique(self) -> "Index":

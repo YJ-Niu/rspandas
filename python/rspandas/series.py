@@ -28,6 +28,102 @@ def _is_missing(v) -> bool:
         return False
 
 
+class _AlignmentResult(tuple):
+    """align() 返回结果，在 repr 中逗号后自动换行，与 pandas 格式一致。"""
+
+    def __repr__(self) -> str:
+        if len(self) != 2:
+            return super().__repr__()
+
+        left = repr(self[0])
+        right = repr(self[1])
+
+        if "\n" in left or "\n" in right:
+            return f"({left},\n {right})"
+
+        return f"({left}, {right})"
+
+
+class _DtypeScalar:
+    """带 dtype 属性的标量包装，模拟 numpy 标量的行为。
+
+    允许标量值通过 .dtype 访问类型信息，如 pandas 的 np.float64(1.0).dtype。
+    """
+
+    def __init__(self, value, dtype: str = "float64"):
+        self._value = value
+        self._dtype = dtype
+
+    @property
+    def dtype(self) -> str:
+        return self._dtype
+
+    def __repr__(self) -> str:
+        return repr(self._value)
+
+    def __str__(self) -> str:
+        return str(self._value)
+
+    def __float__(self) -> float:
+        return float(self._value)
+
+    def __int__(self) -> int:
+        return int(self._value)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, _DtypeScalar):
+            return self._value == other._value
+        return self._value == other
+
+    def __hash__(self) -> int:
+        return hash(self._value)
+
+    def __lt__(self, other) -> bool:
+        if isinstance(other, _DtypeScalar):
+            return self._value < other._value
+        return self._value < other
+
+    def __gt__(self, other) -> bool:
+        if isinstance(other, _DtypeScalar):
+            return self._value > other._value
+        return self._value > other
+
+    def __le__(self, other) -> bool:
+        if isinstance(other, _DtypeScalar):
+            return self._value <= other._value
+        return self._value <= other
+
+    def __ge__(self, other) -> bool:
+        if isinstance(other, _DtypeScalar):
+            return self._value >= other._value
+        return self._value >= other
+
+    def __add__(self, other):
+        ov = other._value if isinstance(other, _DtypeScalar) else other
+        return self._value + ov
+
+    def __sub__(self, other):
+        ov = other._value if isinstance(other, _DtypeScalar) else other
+        return self._value - ov
+
+    def __mul__(self, other):
+        ov = other._value if isinstance(other, _DtypeScalar) else other
+        return self._value * ov
+
+    def __truediv__(self, other):
+        ov = other._value if isinstance(other, _DtypeScalar) else other
+        return self._value / ov
+
+    def __neg__(self):
+        return -self._value
+
+    def __pos__(self):
+        return +self._value
+
+    def __abs__(self):
+        return abs(self._value)
+
+
 def _infer_dtype(values: list) -> str:
     """根据数据推断 dtype（对齐 pandas 的行为）。"""
     if not values:
@@ -456,13 +552,28 @@ class Series:
     def __str__(self) -> str:
         return self._format_repr()
 
+    def _wrap_scalar(self, value):
+        """将标量值包装为带 dtype 的 _DtypeScalar。"""
+        if isinstance(value, _DtypeScalar) or value is None:
+            return value
+        if isinstance(value, bool):
+            return _DtypeScalar(value, "bool")
+        if isinstance(value, int):
+            return _DtypeScalar(value, "int64")
+        if isinstance(value, float):
+            dtype_str = getattr(self, "_dtype_str", None)
+            return _DtypeScalar(value, dtype_str if dtype_str else "float64")
+        if isinstance(value, str):
+            return _DtypeScalar(value, "str")
+        return _DtypeScalar(value, "object")
+
     def __getitem__(self, key):
         # 自定义 index: 优先按 label 查找
         if self._index is not None and not _is_range_index(self._index):
             if isinstance(key, (str, int, float, bool)):
                 try:
                     pos = self._index.index(key)
-                    return self.values[pos]
+                    return self._wrap_scalar(self.values[pos])
                 except ValueError:
                     raise KeyError(key)
         # RangeIndex 或其他: 走位置
@@ -471,7 +582,7 @@ class Series:
                 key += len(self)
             if key < 0 or key >= len(self):
                 raise IndexError("index out of range")
-            return self.values[key]
+            return self._wrap_scalar(self.values[key])
         if isinstance(key, slice):
             values = self.values[key]
             new_index = self._index[key] if self._index is not None else None
@@ -2202,8 +2313,17 @@ class Series:
         """删除索引级别 (多级索引时)。"""
         return self.copy()
 
-    def reindex(self, index=None, **kwargs) -> _PySeries:
-        """重新索引。"""
+    def reindex(
+        self, index=None, method=None, copy=True, limit=None, tolerance=None, **kwargs
+    ) -> _PySeries:
+        """重新索引。
+
+        :param index: 新的索引
+        :param method: 填充方法 ('ffill'/'bfill'/'nearest'/None)
+        :param copy: 是否复制数据
+        :param limit: 最大连续填充次数
+        :param tolerance: 最大距离限制（如 '1 day'、2.0）
+        """
         if index is None:
             return self.copy()
         from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
@@ -2230,6 +2350,18 @@ class Series:
         ]
         new_index_list = list(index_list)
 
+        # 如果指定了 method，对缺失值进行填充
+        if method is not None:
+            new_values = self._apply_fill_method(
+                new_values,
+                src_index,
+                old_index_map,
+                index_list,
+                method,
+                limit=limit,
+                tolerance=tolerance,
+            )
+
         result = Series(
             new_values, name=self.name, dtype=self._dtype_str, index=new_index_list
         )
@@ -2237,6 +2369,248 @@ class Series:
         if index_obj_ref is not None:
             result._cached_index_ref = index_obj_ref
         return result
+
+    @staticmethod
+    def _parse_tolerance(tolerance):
+        """解析 tolerance 参数为统一的比较值。
+
+        支持字符串形式的 Timedelta（如 "1 day", "2 hours", "30 minutes"）
+        或数值形式（用于数值索引）。
+        """
+        if tolerance is None:
+            return None
+
+        from datetime import timedelta
+
+        if isinstance(tolerance, timedelta):
+            return tolerance
+
+        if isinstance(tolerance, str):
+            # 解析 pandas 风格的时间字符串
+            parts = tolerance.strip().split()
+            if len(parts) == 1:
+                # 无空格格式: "1day", "2h", "30min"
+                return Series._parse_tolerance_short(parts[0])
+            elif len(parts) == 2:
+                # 有空格格式: "1 day", "2 hours"
+                try:
+                    val = float(parts[0])
+                    unit = parts[1].lower()
+                    return Series._timedelta_from_unit(val, unit)
+                except (ValueError, KeyError):
+                    pass
+            raise ValueError(f"Cannot parse tolerance: {tolerance!r}")
+
+        if isinstance(tolerance, (int, float)):
+            return float(tolerance)
+
+        # 尝试 timedelta 转换
+        try:
+            return timedelta(tolerance)
+        except Exception:
+            return float(tolerance)
+
+    @staticmethod
+    def _parse_tolerance_short(s):
+        """解析短格式如 '1day', '2h', '30min'。"""
+        s = s.strip().lower()
+        # 尝试提取数字部分
+        num_str = ""
+        unit = ""
+        for ch in s:
+            if ch.isdigit() or ch == ".":
+                num_str += ch
+            else:
+                unit += ch
+        if not num_str:
+            raise ValueError(f"Cannot parse tolerance: {s!r}")
+        val = float(num_str)
+        return Series._timedelta_from_unit(val, unit)
+
+    @staticmethod
+    def _timedelta_from_unit(val, unit):
+        """将数值和单位转为 timedelta。"""
+        from datetime import timedelta
+
+        unit_map = {
+            "d": "days", "day": "days", "days": "days",
+            "h": "hours", "hour": "hours", "hours": "hours", "hr": "hours",
+            "m": "minutes", "minute": "minutes", "minutes": "minutes", "min": "minutes",
+            "s": "seconds", "second": "seconds", "seconds": "seconds",
+            "ms": "milliseconds", "millisecond": "milliseconds", "milliseconds": "milliseconds",
+            "us": "microseconds", "microsecond": "microseconds", "microseconds": "microseconds",
+            "w": "weeks", "week": "weeks", "weeks": "weeks",
+        }
+        if unit not in unit_map:
+            raise ValueError(f"Unknown tolerance unit: {unit!r}")
+        return timedelta(**{unit_map[unit]: val})
+
+    @staticmethod
+    def _compute_distance(idx_a, idx_b):
+        """计算两个索引值之间的距离，返回用于比较的数值。
+
+        对于 datetime，返回 timedelta.abs()
+        对于数值，返回 abs(diff)
+        其他类型返回 None（不支持）
+        """
+        from datetime import datetime, timedelta, date
+
+        a, b = idx_a, idx_b
+
+        # 提取 Timestamp 的 datetime 值
+        if hasattr(a, "to_pydatetime"):
+            a = a.to_pydatetime()
+        if hasattr(b, "to_pydatetime"):
+            b = b.to_pydatetime()
+
+        if isinstance(a, (datetime, date)) and isinstance(b, (datetime, date)):
+            return abs(a - b)
+
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            return abs(float(a) - float(b))
+
+        # 尝试 timedelta 运算
+        try:
+            return abs(a - b)
+        except (TypeError, Exception):
+            return None
+
+    @staticmethod
+    def _check_tolerance(dist, tolerance):
+        """检查距离是否在 tolerance 范围内。"""
+        if tolerance is None or dist is None:
+            return True
+
+        from datetime import timedelta
+
+        if isinstance(tolerance, timedelta):
+            if isinstance(dist, timedelta):
+                return dist <= tolerance
+            # dist 是数值时，将 tolerance 转为数值（秒）
+            return dist.total_seconds() <= tolerance.total_seconds()
+
+        # tolerance 是数值，dist 可能是 timedelta
+        if isinstance(dist, timedelta):
+            return dist.total_seconds() <= float(tolerance)
+
+        # 两者都是数值
+        return dist <= float(tolerance)
+
+    @staticmethod
+    def _apply_fill_method(
+        new_values,
+        src_index,
+        old_index_map,
+        new_index_list,
+        method,
+        limit=None,
+        tolerance=None,
+    ):
+        """对 reindex 结果中的 None 应用填充方法。
+
+        :param new_values: reindex 后的新值列表
+        :param src_index: 原始索引
+        :param old_index_map: 旧索引到位置的映射
+        :param new_index_list: 新索引列表
+        :param method: 填充方法 ('ffill'/'bfill'/'nearest')
+        :param limit: 最大连续填充次数
+        :param tolerance: 最大距离限制
+        :return: 填充后的值列表
+        """
+        if method not in ("ffill", "bfill", "nearest"):
+            raise ValueError(f"invalid method: {method!r}")
+
+        if tolerance is not None:
+            tolerance = Series._parse_tolerance(tolerance)
+
+        n = len(new_values)
+        filled = list(new_values)
+
+        # 收集有值的位置
+        valid_positions = []
+        for i, val in enumerate(filled):
+            if val is not None:
+                valid_positions.append(i)
+
+        if not valid_positions:
+            return filled
+
+        if method == "ffill":
+            # 向前填充：逐段处理，从每个有效值向后填充最多 limit 个
+            for vp in valid_positions:
+                count = 0
+                for j in range(vp + 1, n):
+                    if filled[j] is not None:
+                        break
+                    if limit is not None and count >= limit:
+                        break
+                    if tolerance is not None:
+                        dist = Series._compute_distance(
+                            new_index_list[j], new_index_list[vp]
+                        )
+                        if dist is None or not Series._check_tolerance(dist, tolerance):
+                            break
+                    filled[j] = filled[vp]
+                    count += 1
+
+        elif method == "bfill":
+            # 向后填充：逐段处理，从每个有效值向前填充最多 limit 个
+            for vp in valid_positions:
+                count = 0
+                for j in range(vp - 1, -1, -1):
+                    if filled[j] is not None:
+                        break
+                    if limit is not None and count >= limit:
+                        break
+                    if tolerance is not None:
+                        dist = Series._compute_distance(
+                            new_index_list[j], new_index_list[vp]
+                        )
+                        if dist is None or not Series._check_tolerance(dist, tolerance):
+                            break
+                    filled[j] = filled[vp]
+                    count += 1
+
+        elif method == "nearest":
+            # 最近填充：对每个 None，找最近的有效值
+            for i in range(n):
+                if filled[i] is not None:
+                    continue
+
+                best_pos = None
+                best_dist = float("inf")
+                for vp in valid_positions:
+                    pos_dist = abs(i - vp)
+                    if pos_dist < best_dist or (
+                        pos_dist == best_dist and vp < best_pos
+                    ):
+                        # 检查 tolerance
+                        if tolerance is not None:
+                            idx_dist = Series._compute_distance(
+                                new_index_list[i], new_index_list[vp]
+                            )
+                            if idx_dist is None or not Series._check_tolerance(
+                                idx_dist, tolerance
+                            ):
+                                continue
+                        best_dist = pos_dist
+                        best_pos = vp
+                if best_pos is not None:
+                    # 检查 limit：nearest 时 limit 限制每段连续填充
+                    if limit is not None:
+                        # 查找周围连续 None 的段长度
+                        segment_len = 0
+                        for j in range(i - 1, -1, -1):
+                            if filled[j] is None:
+                                segment_len += 1
+                            else:
+                                break
+                        # 只有当本段未超过 limit 时才填充
+                        if segment_len >= limit:
+                            continue
+                    filled[i] = filled[best_pos]
+
+        return filled
 
     def sort_index(
         self,
@@ -2506,6 +2880,64 @@ class Series:
         if not isinstance(other, Series):
             raise TypeError("other must be Series")
         return self.reindex(other._index)
+
+    def align(
+        self,
+        other,
+        join: str = "outer",
+        axis=None,
+        level=None,
+        copy: bool = True,
+        fill_value=None,
+        method=None,
+    ):
+        """同时按索引对齐两个 Series。
+
+        :param other: 另一个 Series
+        :param join: 连接方式 ('outer'/'left'/'right'/'inner')
+        :param axis: 保留参数（Series 仅为 0），与 pandas 签名对齐
+        :param level: 多级索引级别（未实现，仅占位）
+        :param copy: 是否复制数据（未实现，仅占位）
+        :param fill_value: 缺失值填充（填充所有 NaN，与 pandas 行为一致）
+        :param method: 填充方法（未实现，仅占位）
+        :return: (aligned_self, aligned_other) 两个重新索引后的 Series
+        """
+        if not isinstance(other, Series):
+            raise TypeError(
+                f"align requires Series input, got {type(other).__name__}"
+            )
+
+        self_index = (
+            list(self._index) if self._index is not None else list(range(len(self)))
+        )
+        other_index = (
+            list(other._index)
+            if other._index is not None
+            else list(range(len(other)))
+        )
+
+        # 根据 join 计算新索引
+        # pandas 行为：outer/inner 返回 sorted 顺序，left/right 保持原顺序
+        if join == "outer":
+            new_index = sorted(set(self_index) | set(other_index))
+        elif join == "inner":
+            new_index = sorted(set(self_index) & set(other_index))
+        elif join == "left":
+            new_index = list(self_index)
+        elif join == "right":
+            new_index = list(other_index)
+        else:
+            raise ValueError(f"invalid join: {join!r}")
+
+        self_aligned = self.reindex(index=new_index)
+        other_aligned = other.reindex(index=new_index)
+
+        # fill_value 填充所有 NaN（包括原有与新增的），与 pandas 行为一致
+        if fill_value is not None:
+            self_aligned = self_aligned.fillna(fill_value)
+            other_aligned = other_aligned.fillna(fill_value)
+
+        return _AlignmentResult((self_aligned, other_aligned))
 
     def swaplevel(self, i: int = -2, j: int = -1) -> _PySeries:
         """交换多级索引的级别。"""
@@ -6653,59 +7085,91 @@ class DatetimeAccessor:
     def __init__(self, series: Series):
         self._s = series
 
+    def _get_dt_values(self) -> list:
+        """获取 datetime 对象列表，优先使用 _dt_values 缓存。
+
+        若无缓存，尝试将 ISO 字符串解析为 datetime。
+        """
+        # 优先使用缓存的 datetime 对象
+        dt_vals = getattr(self._s, "_dt_values", None)
+        if dt_vals is not None and len(dt_vals) > 0:
+            return dt_vals
+        # 回退：尝试解析 ISO 字符串为 datetime
+        from datetime import datetime
+        from ._datetime import _parse_iso
+
+        out = []
+        for v in self._s.values:
+            if isinstance(v, datetime):
+                out.append(v)
+            elif isinstance(v, str):
+                try:
+                    out.append(_parse_iso(v))
+                except (ValueError, TypeError):
+                    out.append(None)
+            else:
+                out.append(None)
+        return out
+
+    def _apply_dt(self, fn) -> Series:
+        """对 datetime 值应用函数，返回新 Series。"""
+        dt_vals = self._get_dt_values()
+        results = [fn(v) if v is not None else None for v in dt_vals]
+        return Series(
+            results,
+            index=self._s._index,
+            name=self._s.name,
+        )
+
     @property
     def year(self) -> Series:
         """返回年份。"""
-        return self._s.apply(lambda x: x.year if hasattr(x, "year") else None)
+        return self._apply_dt(lambda x: x.year)
 
     @property
     def month(self) -> Series:
         """返回月份。"""
-        return self._s.apply(lambda x: x.month if hasattr(x, "month") else None)
+        return self._apply_dt(lambda x: x.month)
 
     @property
     def day(self) -> Series:
         """返回日期。"""
-        return self._s.apply(lambda x: x.day if hasattr(x, "day") else None)
+        return self._apply_dt(lambda x: x.day)
 
     @property
     def hour(self) -> Series:
         """返回小时。"""
-        return self._s.apply(lambda x: x.hour if hasattr(x, "hour") else None)
+        return self._apply_dt(lambda x: x.hour)
 
     @property
     def minute(self) -> Series:
         """返回分钟。"""
-        return self._s.apply(lambda x: x.minute if hasattr(x, "minute") else None)
+        return self._apply_dt(lambda x: x.minute)
 
     @property
     def second(self) -> Series:
         """返回秒。"""
-        return self._s.apply(lambda x: x.second if hasattr(x, "second") else None)
+        return self._apply_dt(lambda x: x.second)
 
     @property
     def date(self) -> Series:
         """返回日期部分。"""
-        return self._s.apply(lambda x: x.date() if hasattr(x, "date") else None)
+        return self._apply_dt(lambda x: x.date())
 
     @property
     def time(self) -> Series:
         """返回时间部分。"""
-        return self._s.apply(lambda x: x.time() if hasattr(x, "time") else None)
+        return self._apply_dt(lambda x: x.time())
 
     @property
     def day_name(self) -> Series:
         """返回星期名称。"""
-        return self._s.apply(
-            lambda x: x.strftime("%A") if hasattr(x, "strftime") else None
-        )
+        return self._apply_dt(lambda x: x.strftime("%A"))
 
     @property
     def month_name(self) -> Series:
         """返回月份名称。"""
-        return self._s.apply(
-            lambda x: x.strftime("%B") if hasattr(x, "strftime") else None
-        )
+        return self._apply_dt(lambda x: x.strftime("%B"))
 
 
 # ==============================================================================

@@ -453,5 +453,81 @@ df3 = df2 - df2.mean()
 print_series(224, df2)
 print_series(225, df3)
 print_series(226, df.reindex_like(df2))
+s = pd.Series(np.random.randn(5), index=["a", "b", "c", "d", "e"])
+s1 = s[:4]
+s2 = s[1:]
+print_series(227, s1.align(s2))
+print_series(228, s1.align(s2, join="inner"))
+print_series(229, s1.align(s2, join="left"))
+print_series(230, df.align(df2, join="inner"))
+print_series(231, df.align(df2, join="inner", axis=0))
+print_series(232, df.align(df2.iloc[0], axis=1))
+rng = pd.date_range("1/3/2000", periods=8)
+ts = pd.Series(np.random.randn(8), index=rng)
+ts2 = ts.iloc[[0, 3, 6]]
+print_series(233, ts)
+print_series(234, ts2)
+print_series(235, ts2.reindex(ts.index))
+print_series(236, ts2.reindex(ts.index, method="ffill"))
+print_series(237, ts2.reindex(ts.index, method="bfill"))
+print_series(238, ts2.reindex(ts.index, method="nearest"))
+print_series(239, ts2.reindex(ts.index).ffill())
+print_series(240, ts2.reindex(ts.index, method="ffill", limit=1))
+print_series(241, ts2.reindex(ts.index, method="ffill", tolerance="1 day"))
+print_series(242, df)
+print_series(243, df.drop(["a", "d"], axis=0))
+print_series(244, df.drop(["one"], axis=1))
+print_series(245, df.reindex(df.index.difference(["a", "d"])))
+print_series(246, s)
+print_series(247, s.rename(str.upper))
+print_series(248, df.rename(
+    columns={"one": "foo", "two": "bar"},
+    index={"a": "apple", "b": "banana", "d": "durian"},
+))
+print_series(249, df.rename({"one": "foo", "two": "bar"}, axis="columns"))
+print_series(250, df.rename({"a": "apple", "b": "banana", "d": "durian"}, axis="index"))
+print_series(251, s.rename("scalar-name"))
+df = pd.DataFrame(
+    {"x": [1, 2, 3, 4, 5, 6], "y": [10, 20, 30, 40, 50, 60]},
+    index=pd.MultiIndex.from_product(
+        [["a", "b", "c"], [1, 2]], names=["let", "num"]
+    ),
+)
+print_series(252, df)
+print_series(253, df.rename_axis(index={"let": "abc"}))
+print_series(254, df.rename_axis(index=str.upper))
+df = pd.DataFrame(
+    {"col1": np.random.randn(3), "col2": np.random.randn(3)}, index=["a", "b", "c"]
+)
+for col in df:
+    print(col)
+df = pd.DataFrame({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+for index, row in df.iterrows():
+    row["a"] = 10
+print_series(255, df)
+for label, ser in df.items():
+    print(label)
+    print(ser)
+for row_index, row in df.iterrows():
+    print(row_index, row, sep="\n")
+df_orig = pd.DataFrame([[1, 1.5]], columns=["int", "float"])
+print_series(256, df_orig.dtypes)
+row = next(df_orig.iterrows())[1]
+print_series(257, row)
+print_series(258, row["int"].dtype)
+print_series(259, df_orig["int"].dtype)
+df2 = pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]})
+print_series(260, df2)
+print_series(261, df2.T)
+df2_t = pd.DataFrame({idx: values for idx, values in df2.iterrows()})
+print_series(262, df2_t)
+for row in df.itertuples():
+    print(row)
+s = pd.Series(pd.date_range("20130101 09:10:12", periods=4))
+print_series(263, s)
+print_series(264, s.dt.hour)
+print_series(265, s.dt.second)
+print_series(266, s.dt.day)
+print_series(267, s[s.dt.day == 2])
 end_time = time.time()
 print("end_time - start_time:", end_time - start_time)

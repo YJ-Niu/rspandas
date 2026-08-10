@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import rsnumpy as rnp
 
-from .series import Series, _is_missing
+from .series import Series, _AlignmentResult, _is_missing
 from rspandas.rspandas import _DataFrame as _PyDataFrame  # type: ignore
 from rspandas.rspandas import _Series as _PySeries
 from rspandas.rspandas import (
@@ -95,19 +95,20 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
         result = {}
         # 检查是否有 Series 带自定义 index
         has_series = False
+        has_series_with_index = False
         series_indices = set()
         has_dict_values = False
         for k, v in data.items():
             if isinstance(v, Series):
                 has_series = True
                 if v._index is not None:
+                    has_series_with_index = True
                     series_indices.add(tuple(v._index))
             elif isinstance(v, dict):
                 has_dict_values = True
-        # 如果存在多个 Series 且 index 不完全相同，在 __init__ 中处理对齐
-        # 这里只提取值
+        # 如果存在 Series 带自定义 index，在 __init__ 中处理对齐
         _series_alignment = None
-        if has_series and len(series_indices) > 1:
+        if has_series_with_index:
             all_indices = []
             for k, v in data.items():
                 if isinstance(v, Series) and v._index is not None:
@@ -115,6 +116,9 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
             if all_indices and not all(
                 idx == all_indices[0] for idx in all_indices[1:]
             ):
+                _series_alignment = all_indices
+            elif all_indices:
+                # 所有 Series index 相同，也需要传递以便用作 DataFrame 行索引
                 _series_alignment = all_indices
 
         # 如果存在 dict 值，需要收集所有唯一索引
@@ -438,6 +442,7 @@ class DataFrame:
         self._index_name_val: Optional[str] = (
             None  # 索引名称（如 from_records 的 index 参数）
         )
+        self._columns_name: Optional[str] = None  # 列轴名称
         self._col_dtypes: Dict[str, str] = (
             col_dtype_overrides  # 列 dtype 覆盖（如 category）
         )
@@ -2552,10 +2557,19 @@ class DataFrame:
             new_df = DataFrame(new_data, index=new_index)
             new_df._col_dtypes = dict(self._col_dtypes)
             new_df._col_categories = dict(self._col_categories)
+            # 保留索引元数据
+            if self._index_names is not None:
+                new_df._index_names = list(self._index_names)
+            new_df._index_name_val = self._index_name_val
+            new_df._columns_name = self._columns_name
             return new_df
         new_df = DataFrame._from_inner(self._inner)
         new_df._col_dtypes = dict(self._col_dtypes)
         new_df._col_categories = dict(self._col_categories)
+        if self._index_names is not None:
+            new_df._index_names = list(self._index_names)
+        new_df._index_name_val = self._index_name_val
+        new_df._columns_name = self._columns_name
         return new_df
 
     def isna(self) -> "DataFrame":
@@ -2954,7 +2968,7 @@ class DataFrame:
         :param index: 新的行索引
         :param columns: 新的列标签
         :param axis: 'index'/0 或 'columns'/1，决定 labels 应用到哪个轴
-        :param method: 填充方法 (未实现，仅占位)
+        :param method: 填充方法 ('ffill'/'bfill'/'nearest'/None)
         :param copy: 是否复制 (未实现，仅占位)
         :param level: 多级索引级别 (未实现，仅占位)
         :param fill_value: 缺失值填充 (未实现，仅占位)
@@ -3027,6 +3041,22 @@ class DataFrame:
         }
 
         result = DataFrame(new_data, index=index_list)
+        # 如果指定了 method，对每列的 None 值进行填充
+        if method is not None:
+            from .series import Series as _SeriesClass
+
+            for c in new_cols:
+                col_data = list(result._inner.get_column(c).values)
+                filled = _SeriesClass._apply_fill_method(
+                    col_data,
+                    [],
+                    {},
+                    index_list,
+                    method,
+                    limit=limit,
+                    tolerance=tolerance,
+                )
+                result._inner.set_column(c, filled)
         # 如果传入的是 Index 对象，共享其引用
         if index_obj_ref is not None:
             result._cached_index_ref = index_obj_ref
@@ -5308,8 +5338,12 @@ class DataFrame:
             )
             lines = [header]
             # 添加索引名称行
-            if self._index_name_val is not None:
-                idx_name_line = f"{self._index_name_val:>{idx_width}}  "
+            idx_name_line = self._build_index_name_line(
+                is_multiindex=is_multiindex,
+                level_widths=level_widths if "level_widths" in locals() else None,
+                idx_width=idx_width,
+            )
+            if idx_name_line is not None:
                 lines.append(idx_name_line)
         else:
             # 对齐 pandas: 每列右对齐到 (col_width + 2)，索引后直接接列
@@ -5320,8 +5354,12 @@ class DataFrame:
             header = " " * idx_width + "".join(header_cells)
             lines = [header]
             # 添加索引名称行
-            if self._index_name_val is not None:
-                idx_name_line = f"{self._index_name_val:>{idx_width}}  "
+            idx_name_line = self._build_index_name_line(
+                is_multiindex=is_multiindex,
+                level_widths=level_widths if "level_widths" in locals() else None,
+                idx_width=idx_width,
+            )
+            if idx_name_line is not None:
                 lines.append(idx_name_line)
 
         prev_i = -1
@@ -5397,6 +5435,44 @@ class DataFrame:
                 "\n".join(lines) + f"\n\n[{n} rows x {len(self._raw_columns)} columns]"
             )
         return "\n".join(lines)
+
+    def _build_index_name_line(
+        self,
+        is_multiindex: bool,
+        level_widths: Optional[list],
+        idx_width: int,
+    ) -> Optional[str]:
+        """构建索引名称行，支持 MultiIndex 级别名称。"""
+        if self._index_names is not None:
+            has_names = any(n is not None for n in self._index_names)
+            if not has_names:
+                # 所有级别名都为 None，检查 _index_name_val
+                if self._index_name_val is not None:
+                    return f"{self._index_name_val:>{idx_width}}  "
+                return None
+
+            if is_multiindex:
+                # MultiIndex: 显示所有级别名称
+                if level_widths is not None:
+                    name_parts = []
+                    for lvl, name in enumerate(self._index_names):
+                        if name is not None and lvl < len(level_widths):
+                            name_parts.append(name.ljust(level_widths[lvl]))
+                        elif lvl < len(level_widths):
+                            name_parts.append(" " * level_widths[lvl])
+                        else:
+                            name_parts.append(str(name) if name else "")
+                    return " ".join(name_parts) + "  "
+                else:
+                    return " ".join(str(n) for n in self._index_names if n is not None) + "  "
+            else:
+                # 单列索引: 显示单个名称
+                name = self._index_names[0] if self._index_names else None
+                if name is not None:
+                    return f"{str(name):>{idx_width}}  "
+        elif self._index_name_val is not None:
+            return f"{self._index_name_val:>{idx_width}}  "
+        return None
 
     def groupby(
         self,
@@ -7502,22 +7578,88 @@ class DataFrame:
 
     # ---------- v2.0.0: 其他 ----------
 
-    def rename_axis(self, mapper, axis: int = 0) -> "DataFrame":
+    def rename_axis(
+        self,
+        mapper=None,
+        axis: int = 0,
+        copy: bool = True,
+        inplace: bool = False,
+        index=None,
+        columns=None,
+    ) -> "DataFrame":
         """重命名轴标签。
 
-        :param mapper: 标量或函数
-        :param axis: 0=行, 1=列
+        Parameters
+        ----------
+        mapper : scalar, dict-like, or callable
+            要设置的新名称。如果为 dict-like，用于重命名 MultiIndex 级别名称。
+        axis : int, default 0
+            0=行索引, 1=列
+        index : scalar, dict-like, or callable
+            重命名索引轴（等价于 axis=0）
+        columns : scalar, dict-like, or callable
+            重命名列轴（等价于 axis=1）
+
+        Returns
+        -------
+        DataFrame
         """
+        if index is not None:
+            axis = 0
+            mapper = index
+        elif columns is not None:
+            axis = 1
+            mapper = columns
+
+        if mapper is None:
+            return self.copy() if copy else self
+
+        df = self.copy() if copy else self
+
         if axis == 0:
-            new_name = mapper(self._index_name()) if callable(mapper) else mapper
-            df = self.copy()
-            df._index_name_val = new_name
-            return df
+            # 处理索引重命名
+            if isinstance(mapper, dict):
+                # dict-like: 重命名 MultiIndex 级别名称
+                if df._index_names is not None:
+                    new_names = list(df._index_names)
+                    for old_name, new_name in mapper.items():
+                        for i, n in enumerate(new_names):
+                            if n == old_name:
+                                new_names[i] = new_name
+                                break
+                    df._index_names = new_names
+                else:
+                    # 单层索引，将 dict 的 value 作为索引名
+                    df._index_name_val = list(mapper.values())[0] if mapper else None
+            elif callable(mapper):
+                # callable: 应用到每个级别名称
+                if df._index_names is not None:
+                    df._index_names = [mapper(n) for n in df._index_names]
+                else:
+                    old_name = df._index_name_val
+                    df._index_name_val = mapper(old_name)
+            else:
+                # scalar: 设置索引名
+                if df._index_names is not None:
+                    # MultiIndex: 用 scalar 替换第一个级别名
+                    df._index_names = [mapper] + list(df._index_names[1:])
+                else:
+                    df._index_name_val = mapper
         else:
-            new_name = mapper(self._columns_name) if callable(mapper) else mapper
-            df = self.copy()
-            df._columns_name = new_name
-            return df
+            # 处理列重命名
+            if isinstance(mapper, dict):
+                df._columns_name = mapper
+            elif callable(mapper):
+                df._columns_name = mapper(df._columns_name)
+            else:
+                df._columns_name = mapper
+
+        if inplace:
+            self._index_names = df._index_names
+            self._index_name_val = df._index_name_val
+            self._columns_name = df._columns_name
+            return self
+        return df
 
     def explode(self, column, ignore_index: bool = False) -> "DataFrame":
         """将列表类列展开为多行。
@@ -7619,7 +7761,12 @@ class DataFrame:
         return DataFrame(result_data)
 
     def itertuples(self, index: bool = True, name: str = "Pandas") -> list:
-        """迭代行，返回 namedtuple。
+        """迭代行，返回 namedtuple，保留原始 dtypes。
+
+        与 iterrows 不同，itertuples 保留原始列 dtype：
+        - int 列 → Python int
+        - float 列 → Python float
+        - 其他类型 → 原始值
 
         优化：批量预取所有列的值列表（每列 1 次 FFI 调用），避免逐行 N*M 次跨 FFI 访问。
 
@@ -7637,12 +7784,28 @@ class DataFrame:
         # 一次性预取所有列的值
         col_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
         idx = self._index if self._index else list(range(self._nrows))
+        # 获取每列的 dtype 用于类型转换
+        dtypes = self.dtypes
+
+        def _convert_value(val, dtype_str):
+            """根据原始 dtype 转换值以保留类型。"""
+            if val is None:
+                return None
+            if dtype_str in ("int64", "int32", "int16", "int8"):
+                return int(val)
+            elif dtype_str in ("float64", "float32"):
+                return float(val)
+            return val
+
         # 使用列表推导式构建 namedtuple 列表
         return [
             TupleClass(
                 *(
                     ([idx[i]] if index else [])
-                    + [col_values[c][i] for c in self._columns]
+                    + [
+                        _convert_value(col_values[c][i], dtypes[c])
+                        for c in self._columns
+                    ]
                 )
             )
             for i in range(self._nrows)
@@ -7982,15 +8145,22 @@ class DataFrame:
         return self.items()
 
     def iterrows(self):
-        """迭代 (索引, 行数据) 对。
+        """迭代 (索引, Series) 对。
 
-        优化：批量预取所有列的值，避免逐行调用 _inner.get_column().values[i] 造成的 N*M 次跨 FFI 访问。
+        每行返回一个 Series，dtype 根据实际值推断：
+        - 纯 int 列 → int64
+        - 混合 int+float → float64（int 被 upcast）
+        - 含对象类型 → object
+
+        优化：批量预取所有列的值列表，避免逐行 N*M 次跨 FFI 访问。
         """
         # 一次性预取所有列的值列表（每列 1 次 FFI 调用，共 M 次）
         col_values = {c: list(self._inner.get_column(c).values) for c in self._columns}
         index = self._index if self._index else list(range(self._nrows))
         for i in range(self._nrows):
-            yield index[i], {c: col_values[c][i] for c in self._columns}
+            row_dict = {c: col_values[c][i] for c in self._columns}
+            row_series = Series(row_dict, index=self._columns)
+            yield index[i], row_series
 
     def keys(self) -> list:
         """返回列名列表。"""
@@ -8060,31 +8230,111 @@ class DataFrame:
         level=None,
         copy: bool = True,
         fill_value=None,
+        method=None,
     ):
-        """对齐两个 DataFrame 的索引和列。
+        """同时按索引和/或列对齐两个对象。
 
-        :param other: 另一个 DataFrame
+        - 当 other 为 DataFrame：
+          - axis=None (默认)：同时对 index 和 columns 应用 join
+          - axis=0/'index'：仅对 index 应用 join，columns 保持各自原样
+          - axis=1/'columns'：仅对 columns 应用 join，index 保持各自原样
+        - 当 other 为 Series：必须指定 axis
+          - axis=0/'index'：用 other 的 index 与 self 的 index 对齐
+          - axis=1/'columns'：用 other 的 index 与 self 的 columns 对齐
+
+        :param other: 另一个 DataFrame 或 Series
         :param join: 连接方式 ('outer'/'left'/'right'/'inner')
+        :param axis: 对齐轴 (None/0/'index'/1/'columns')
+        :param level: 多级索引级别（未实现，仅占位）
+        :param copy: 是否复制数据（未实现，仅占位）
+        :param fill_value: 缺失值填充（填充所有 NaN，与 pandas 行为一致）
+        :param method: 填充方法（未实现，仅占位）
         :return: (aligned_self, aligned_other)
         """
-        if not isinstance(other, DataFrame):
-            raise TypeError("align requires DataFrame inputs")
+        # 计算 join 后的索引/列
+        def _join_idx(self_idx, other_idx):
+            if join == "outer":
+                return sorted(set(self_idx) | set(other_idx))
+            elif join == "inner":
+                return sorted(set(self_idx) & set(other_idx))
+            elif join == "left":
+                return list(self_idx)
+            elif join == "right":
+                return list(other_idx)
+            else:
+                raise ValueError(f"invalid join: {join!r}")
 
-        # 对齐索引
-        if join == "outer":
-            new_index = sorted(set(self._index) | set(other._index))
-        elif join == "inner":
-            new_index = sorted(set(self._index) & set(other._index))
-        elif join == "left":
-            new_index = list(self._index)
-        elif join == "right":
-            new_index = list(other._index)
+        if isinstance(other, DataFrame):
+            self_index = (
+                list(self._index)
+                if self._index is not None
+                else list(range(self._nrows))
+            )
+            other_index = (
+                list(other._index)
+                if other._index is not None
+                else list(range(other._nrows))
+            )
+
+            if axis is None:
+                # 同时对 index 和 columns 对齐
+                new_index = _join_idx(self_index, other_index)
+                new_columns = _join_idx(self._columns, other._columns)
+                self_aligned = self.reindex(index=new_index, columns=new_columns)
+                other_aligned = other.reindex(index=new_index, columns=new_columns)
+            elif axis in (0, "index"):
+                # 仅对 index 对齐，columns 保持各自原样
+                new_index = _join_idx(self_index, other_index)
+                self_aligned = self.reindex(index=new_index)
+                other_aligned = other.reindex(index=new_index)
+            elif axis in (1, "columns"):
+                # 仅对 columns 对齐，index 保持各自原样
+                new_columns = _join_idx(self._columns, other._columns)
+                self_aligned = self.reindex(columns=new_columns)
+                other_aligned = other.reindex(columns=new_columns)
+            else:
+                raise ValueError(f"invalid axis: {axis!r}")
+        elif isinstance(other, Series):
+            # DataFrame 与 Series 对齐：必须指定 axis
+            if axis is None:
+                raise ValueError(
+                    "Must specify axis=0 or 1 when aligning DataFrame with Series"
+                )
+            other_index = (
+                list(other._index)
+                if other._index is not None
+                else list(range(len(other)))
+            )
+
+            if axis in (0, "index"):
+                # 用 other.index 与 self.index 对齐
+                self_index = (
+                    list(self._index)
+                    if self._index is not None
+                    else list(range(self._nrows))
+                )
+                new_index = _join_idx(self_index, other_index)
+                self_aligned = self.reindex(index=new_index)
+                other_aligned = other.reindex(new_index)
+            elif axis in (1, "columns"):
+                # 用 other.index 与 self.columns 对齐
+                new_columns = _join_idx(self._columns, other_index)
+                self_aligned = self.reindex(columns=new_columns)
+                other_aligned = other.reindex(new_columns)
+            else:
+                raise ValueError(f"invalid axis: {axis!r}")
         else:
-            raise ValueError(f"invalid join: {join}")
+            raise TypeError(
+                f"align requires DataFrame or Series input, got "
+                f"{type(other).__name__}"
+            )
 
-        self_aligned = self.reindex(index=new_index)
-        other_aligned = other.reindex(index=new_index)
-        return self_aligned, other_aligned
+        # fill_value 填充所有 NaN（包括原有与新增的），与 pandas 行为一致
+        if fill_value is not None:
+            self_aligned = self_aligned.fillna(fill_value)
+            other_aligned = other_aligned.fillna(fill_value)
+
+        return _AlignmentResult((self_aligned, other_aligned))
 
     def combine(
         self, other: "DataFrame", func, fill_value=None, overwrite: bool = True
