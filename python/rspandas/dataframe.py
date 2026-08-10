@@ -3656,6 +3656,8 @@ class DataFrame:
         df._index = list(range(df._nrows))
         df._col_dtypes = {}
         df._index_name_val = None
+        df._index_names: Optional[list] = None
+        df._columns_name = None
         return df
 
     # ---------- 索引操作 (v1.0.0) ----------

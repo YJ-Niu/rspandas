@@ -91,14 +91,19 @@ def _parse_iso(s: str) -> datetime:
 def _to_iso(v) -> Optional[str]:
     """将 datetime/date/None 转换为 ISO 字符串。
 
-    与 pandas 一致，日期与时间之间使用空格分隔（而非 ISO 默认的 'T'）。
+    与 pandas 一致：
+    - 日期与时间之间使用空格分隔（而非 ISO 默认的 'T'）。
+    - naive datetime 当时间部分全为 0 时，只显示日期部分。
+    - aware datetime 始终显示完整时间（含时区偏移）。
     """
     if v is None:
         return None
     if isinstance(v, datetime):
+        # naive datetime 且时间为 00:00:00 -> 只显示日期
+        if v.tzinfo is None and v.hour == 0 and v.minute == 0 and v.second == 0 and v.microsecond == 0:
+            return v.strftime("%Y-%m-%d")
         # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
         s = v.isoformat()
-        # 处理 'T' 分隔符（不含 'T' 时保持原样，例如仅日期）
         if "T" in s:
             s = s.replace("T", " ", 1)
         return s

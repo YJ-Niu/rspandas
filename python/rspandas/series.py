@@ -412,6 +412,15 @@ class Series:
                 if inferred == "str":
                     self._dtype_str = "str"
 
+        # 若存在 datetime 缓存，dtype 应为 datetime64[us]（与 pandas 一致）
+        if self._dt_values:
+            tz = getattr(self, "_dt_tz", None)
+            if tz is not None:
+                tz_name = str(tz)
+                self._dtype_str = f"datetime64[us, {tz_name}]"
+            else:
+                self._dtype_str = "datetime64[us]"
+
         # RangeIndex 或自定义索引
         from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
 
@@ -7172,6 +7181,21 @@ class DatetimeAccessor:
     def month_name(self) -> Series:
         """返回月份名称。"""
         return self._apply_dt(lambda x: x.strftime("%B"))
+
+    def strftime(self, fmt: str) -> Series:
+        """使用指定格式字符串格式化 datetime。
+
+        Parameters
+        ----------
+        fmt : str
+            strftime 格式字符串，例如 "%Y/%m/%d"。
+
+        Returns
+        -------
+        Series
+            格式化后的字符串 Series。
+        """
+        return self._apply_dt(lambda x: x.strftime(fmt) if x is not None else None)
 
     # ---------- 时区相关 ----------
 
