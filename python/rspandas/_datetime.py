@@ -944,10 +944,90 @@ def to_timedelta(arg, unit=None):
         else:
             raise ValueError(f"unsupported unit: {unit}")
     if isinstance(arg, str):
-        return timedelta(seconds=float(arg))
+        return _parse_timedelta_str(arg)
     if isinstance(arg, (list, tuple)):
         return [to_timedelta(x, unit) for x in arg]
     raise TypeError(f"cannot convert {type(arg).__name__} to timedelta")
+
+
+def _parse_timedelta_str(s: str) -> timedelta:
+    """解析 timedelta 字符串。
+
+    支持的格式（与 pandas 兼容）：
+    - "1 day 00:00:05" / "1 days 00:00:05"
+    - "1 day" / "2 days" / "3 hours" / "5 minutes" / "10 seconds"
+    - "00:00:05" (HH:MM:SS)
+    - "1 days 00:00:00.000005" (带微秒)
+    - "1D" / "2H" / "3min" / "4s" (缩写)
+    """
+    import re
+
+    s = s.strip()
+
+    # 格式 1: "N day(s) [HH:MM:SS[.ffffff]]" 或 "[N day(s)] HH:MM:SS"
+    # 先提取 "N day(s)" 部分
+    day_match = re.match(r"^(\d+)\s+days?\s*(.*)$", s, re.IGNORECASE)
+    days = 0
+    rest = s
+    if day_match:
+        days = int(day_match.group(1))
+        rest = day_match.group(2).strip()
+    elif s.lower().endswith(("day", "days")):
+        m = re.match(r"^(\d+)\s+days?$", s, re.IGNORECASE)
+        if m:
+            return timedelta(days=int(m.group(1)))
+
+    # 如果剩余部分是 HH:MM:SS 格式
+    if rest:
+        time_match = re.match(
+            r"^(\d+):(\d+):(\d+)(?:\.(\d+))?$", rest
+        )
+        if time_match:
+            h = int(time_match.group(1))
+            m = int(time_match.group(2))
+            sec = int(time_match.group(3))
+            us = 0
+            if time_match.group(4):
+                frac = time_match.group(4)
+                # 补齐到 6 位微秒
+                frac = (frac + "000000")[:6]
+                us = int(frac)
+            return timedelta(days=days, hours=h, minutes=m, seconds=sec, microseconds=us)
+        # 如果只有 days 部分
+        if days > 0:
+            return timedelta(days=days)
+
+    # 格式 2: 单位缩写 "1D" / "2H" / "3min" / "4s" / "5ms" / "6us"
+    unit_match = re.match(
+        r"^(\d+(?:\.\d+)?)\s*(ns|us|µs|ms|s|min|minutes|h|hour|hours|D|day|days|H|M|S)\b",
+        s,
+        re.IGNORECASE,
+    )
+    if unit_match:
+        val = float(unit_match.group(1))
+        u = unit_match.group(2).lower()
+        if u in ("d", "day", "days"):
+            return timedelta(days=val)
+        elif u in ("h", "hour", "hours"):
+            return timedelta(hours=val)
+        elif u in ("min", "minutes", "m"):
+            return timedelta(minutes=val)
+        elif u in ("s",):
+            return timedelta(seconds=val)
+        elif u in ("ms",):
+            return timedelta(milliseconds=val)
+        elif u in ("us", "µs"):
+            return timedelta(microseconds=val)
+        elif u in ("ns",):
+            return timedelta(microseconds=val / 1000)
+
+    # 格式 3: 纯数字字符串（默认秒）
+    try:
+        return timedelta(seconds=float(s))
+    except ValueError:
+        pass
+
+    raise ValueError(f"could not convert string to timedelta: {s!r}")
 
 
 def timedelta_range(start=None, end=None, periods=None, freq="D"):
@@ -970,19 +1050,48 @@ def timedelta_range(start=None, end=None, periods=None, freq="D"):
             end = to_timedelta(end)
         n = int((end - start) / step) + 1
     out = [start + step * i for i in range(n)]
-    return Series(out, name=None)
+    # 返回带 timedelta 缓存的 Series
+    s = Series(out, name=None)
+    s._td_values = list(out)
+    s._dtype_str = "timedelta64[us]"
+    return s
 
 
-def period_range(start=None, periods=None, freq="M"):
-    """生成周期范围。"""
+def period_range(start=None, end=None, periods=None, freq="D", name=None):
+    """生成周期范围。
+
+    与 pandas 一致，默认 freq='D'（当 start 是日期字符串时）。
+    返回 PeriodIndex，dtype 显示为 period[freq]。
+
+    :param start: 起始日期 (str/datetime/date)
+    :param end: 结束日期 (与 periods 二选一)
+    :param periods: 周期数 (与 end 二选一)
+    :param freq: 频率 ('D'/'M'/'Q'/'Y'/'H' 等)
+    :param name: 索引名称
+    """
+    from .indexes import PeriodIndex
+
     if start is None:
         start = datetime.now()
     elif isinstance(start, str):
         start = _parse_iso(start)
-    elif isinstance(start, date):
+    elif isinstance(start, date) and not isinstance(start, datetime):
         start = datetime(start.year, start.month, start.day)
-    if periods is None:
+
+    if periods is None and end is None:
         periods = 12
+
+    # 如果指定了 end，计算 periods
+    if periods is None and end is not None:
+        if isinstance(end, str):
+            end_dt = _parse_iso(end)
+        elif isinstance(end, date) and not isinstance(end, datetime):
+            end_dt = datetime(end.year, end.month, end.day)
+        else:
+            end_dt = end
+        step = _freq_to_timedelta(freq)
+        periods = int((end_dt - start) / step) + 1
+
     out = []
     for i in range(periods):
         if freq == "M":
@@ -1002,7 +1111,8 @@ def period_range(start=None, periods=None, freq="M"):
         else:
             step = _freq_to_timedelta(freq)
             out.append(start + step * i)
-    return DatetimeSeries(out, name=None)
+
+    return PeriodIndex(out, freq=freq, name=name)
 
 
 def bdate_range(start=None, end=None, periods=None):

@@ -179,6 +179,27 @@ def _infer_dtype(values: list) -> str:
     return "object"
 
 
+def _format_timedelta(td: timedelta) -> str:
+    """将 timedelta 格式化为字符串显示（与 pandas 一致）。
+
+    格式: "N days HH:MM:SS" (天数>0) 或 "HH:MM:SS" (天数为0)
+    """
+    if td is None:
+        return None
+    total_seconds = int(td.total_seconds())
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    microseconds = td.microseconds
+    if days > 0:
+        if microseconds > 0:
+            return f"{days} days {hours:02d}:{minutes:02d}:{seconds:02d}.{microseconds:06d}"
+        return f"{days} days {hours:02d}:{minutes:02d}:{seconds:02d}"
+    if microseconds > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{microseconds:06d}"
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def _to_python_list(data: Any) -> list:
     """将输入标准化为 Python list。
 
@@ -186,44 +207,34 @@ def _to_python_list(data: Any) -> list:
     """
     from ._datetime import DatetimeSeries, _to_iso  # 延迟 import 避免循环引用
 
+    def _convert_value(v):
+        """将单个值转换为可存储的 Python 类型。"""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, timedelta):
+            # timedelta 转换为字符串显示
+            return _format_timedelta(v)
+        if isinstance(v, (datetime, date)):
+            return _to_iso(v)
+        return v
+
     if isinstance(data, DatetimeSeries):
         return list(data._inner.values)  # ISO 字符串
     if isinstance(data, _PySeries):
         return list(data.values)
     if isinstance(data, (list, tuple)):
-        return [
-            (
-                _to_iso(v)
-                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
-                else v
-            )
-            for v in data
-        ]
+        return [_convert_value(v) for v in data]
     if isinstance(data, dict):
         # dict: 默认用 values
         return list(data.values())
     if hasattr(data, "tolist"):
         raw = data.tolist()
-        return [
-            (
-                _to_iso(v)
-                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
-                else v
-            )
-            for v in raw
-        ]
+        return [_convert_value(v) for v in raw]
     if data is None:
         return []
     if hasattr(data, "__iter__"):
         out = list(data)
-        return [
-            (
-                _to_iso(v)
-                if isinstance(v, (datetime, date)) and not isinstance(v, bool)
-                else v
-            )
-            for v in out
-        ]
+        return [_convert_value(v) for v in out]
     raise TypeError(f"Cannot convert {type(data).__name__} to Series")
 
 
@@ -311,10 +322,15 @@ class Series:
         :param fastpath: 是否走快速路径 (内部使用)
         """
         from ._datetime import DatetimeSeries  # 延迟 import 避免循环引用
+        from .indexes import PeriodIndex
 
         # 额外的 datetime 缓存（当源是 DatetimeSeries / datetime 对象列表时保留）
         self._dt_values: Optional[list] = None
         self._dt_tz: Any = None
+        # Period 频率缓存（当源是 PeriodIndex 时保留）
+        self._period_freq: Optional[str] = None
+        # timedelta 缓存（当源含 timedelta 对象时保留）
+        self._td_values: Optional[list] = None
 
         # 如果输入是 Series，直接复制
         if isinstance(data, Series):
@@ -332,6 +348,12 @@ class Series:
             if getattr(data, "_dt_values", None) is not None:
                 self._dt_values = list(data._dt_values)
                 self._dt_tz = getattr(data, "_dt_tz", None)
+            # 如果原始 Series 有 timedelta 缓存，同步
+            if getattr(data, "_td_values", None) is not None:
+                self._td_values = list(data._td_values)
+            # 如果原始 Series 有 period 频率，同步
+            if getattr(data, "_period_freq", None) is not None:
+                self._period_freq = data._period_freq
         elif isinstance(data, DatetimeSeries):
             # 直接取内部 ISO 字符串 values，同时保留 datetime 列表缓存
             values = list(data._inner.values)
@@ -343,6 +365,18 @@ class Series:
             self._dt_tz = data._tz
             if dtype is None:
                 dtype = "datetime64[ns]"  # 语义 dtype（底层仍用 object 存 ISO）
+        elif isinstance(data, PeriodIndex):
+            # PeriodIndex: 保留 datetime 列表和 freq 信息
+            values = [
+                (v.strftime("%Y-%m-%d") if isinstance(v, datetime) else v)
+                for v in data._data
+            ]
+            if name is None:
+                name = data._name
+            self._dt_values = list(data._data)
+            self._period_freq = data._freq
+            if dtype is None:
+                dtype = f"period[{data._freq}]"
         elif isinstance(data, dict):
             values, index = _to_python_list_and_index(data, index)
         else:
@@ -359,7 +393,7 @@ class Series:
                 )
                 values = [data] * index_len
             else:
-                # 检测原始数据是否含 datetime（在转换前先保留缓存）
+                # 检测原始数据是否含 datetime/timedelta（在转换前先保留缓存）
                 raw_iter = None
                 if isinstance(data, (list, tuple)):
                     raw_iter = data
@@ -384,6 +418,17 @@ class Series:
                     }
                     if len(tz_infos) == 1:
                         self._dt_tz = next(iter(tz_infos))
+                # 如果原始数据含 timedelta，则保留对象缓存
+                if raw_iter is not None and any(
+                    isinstance(v, timedelta) for v in raw_iter
+                ):
+                    self._td_values = [
+                        v
+                        for v in (
+                            raw_iter if isinstance(raw_iter, list) else list(raw_iter)
+                        )
+                        if isinstance(v, timedelta)
+                    ]
 
         # 推断 dtype
         if dtype is None:
@@ -402,6 +447,9 @@ class Series:
             elif nd in ("float32", "float64", "float"):
                 # 保留显式指定的 float 子类型（对齐 pandas 行为）
                 self._dtype_str = nd
+            elif nd.startswith("period["):
+                # 保留 period[freq] 格式（与 pandas 一致）
+                self._dtype_str = dtype
             else:
                 self._dtype_str = self._inner.dtype
         else:
@@ -413,13 +461,18 @@ class Series:
                     self._dtype_str = "str"
 
         # 若存在 datetime 缓存，dtype 应为 datetime64[us]（与 pandas 一致）
-        if self._dt_values:
+        # 但 period 类型优先使用 period[freq] dtype
+        if self._dt_values and self._period_freq is None:
             tz = getattr(self, "_dt_tz", None)
             if tz is not None:
                 tz_name = str(tz)
                 self._dtype_str = f"datetime64[us, {tz_name}]"
             else:
                 self._dtype_str = "datetime64[us]"
+
+        # 若存在 timedelta 缓存，dtype 应为 timedelta64[us]（与 pandas 一致）
+        if self._td_values and self._period_freq is None and not self._dt_values:
+            self._dtype_str = "timedelta64[us]"
 
         # RangeIndex 或自定义索引
         from .indexes import Index, RangeIndex, MultiIndex, DatetimeIndex
@@ -7196,6 +7249,79 @@ class DatetimeAccessor:
             格式化后的字符串 Series。
         """
         return self._apply_dt(lambda x: x.strftime(fmt) if x is not None else None)
+
+    # ---------- timedelta 相关 ----------
+
+    def _get_td_values(self) -> list:
+        """获取 timedelta 对象列表。"""
+        td_vals = getattr(self._s, "_td_values", None)
+        if td_vals is not None and len(td_vals) > 0:
+            return td_vals
+        return []
+
+    @property
+    def days(self) -> Series:
+        """返回 timedelta 的天数部分。"""
+        td_vals = self._get_td_values()
+        if td_vals:
+            results = [td.days if td is not None else None for td in td_vals]
+            return Series(results, index=self._s._index, name=self._s.name)
+        # 回退到 datetime 的 day
+        return self._apply_dt(lambda x: x.day)
+
+    @property
+    def seconds(self) -> Series:
+        """返回 timedelta 的秒数部分（不含天数）。"""
+        td_vals = self._get_td_values()
+        if td_vals:
+            results = [td.seconds if td is not None else None for td in td_vals]
+            return Series(results, index=self._s._index, name=self._s.name)
+        # 回退到 datetime 的 second
+        return self._apply_dt(lambda x: x.second)
+
+    @property
+    def components(self):
+        """返回 timedelta 的各组成部分 DataFrame。
+
+        包含列: days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds
+        """
+        from .dataframe import DataFrame
+
+        td_vals = self._get_td_values()
+        if not td_vals:
+            raise AttributeError("Can only use .dt.components with timedelta values")
+        data = {
+            "days": [],
+            "hours": [],
+            "minutes": [],
+            "seconds": [],
+            "milliseconds": [],
+            "microseconds": [],
+            "nanoseconds": [],
+        }
+        for td in td_vals:
+            if td is None:
+                for k in data:
+                    data[k].append(None)
+                continue
+            total_sec = td.total_seconds()
+            days = int(total_sec // 86400)
+            remainder = int(total_sec % 86400)
+            hours = remainder // 3600
+            remainder %= 3600
+            minutes = remainder // 60
+            seconds = remainder % 60
+            microseconds = td.microseconds
+            milliseconds = microseconds // 1000
+            microseconds %= 1000
+            data["days"].append(days)
+            data["hours"].append(hours)
+            data["minutes"].append(minutes)
+            data["seconds"].append(seconds)
+            data["milliseconds"].append(milliseconds)
+            data["microseconds"].append(microseconds)
+            data["nanoseconds"].append(0)
+        return DataFrame(data, index=self._s._index)
 
     # ---------- 时区相关 ----------
 
