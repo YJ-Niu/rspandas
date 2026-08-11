@@ -145,6 +145,17 @@ class Index:
             if isinstance(key, int):
                 return result
             return Index(result, name=self._name)
+        # bool Series: 布尔索引过滤（与 pandas 行为一致）
+        if isinstance(key, Series):
+            mask = key.values
+            return Index(
+                [v for v, m in zip(self._data, mask) if m], name=self._name
+            )
+        # bool list: 布尔索引过滤
+        if isinstance(key, list) and key and all(isinstance(x, bool) for x in key):
+            return Index(
+                [v for v, m in zip(self._data, key) if m], name=self._name
+            )
         if isinstance(key, (list, tuple)):
             return Index([self._data[i] for i in key], name=self._name)
         raise TypeError(f"Index key must be int/slice/list, not {type(key).__name__}")
