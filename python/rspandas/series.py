@@ -1155,82 +1155,127 @@ class Series:
             Series(rem, name=self.name, index=self._index, dtype=dtype),
         )
 
+    def _bitwise_series(self, result, force_int: bool = False) -> "_PySeries":
+        """根据位运算结果构造 Series，自动推断 dtype。
+
+        与 pandas 行为对齐：
+        - bool & bool -> bool
+        - int & int -> int64
+        - bool & int -> int64（Python 中 True & 1 = 1）
+        - 移位运算（<<, >>）结果恒为 int64
+
+        :param result: 位运算结果值列表
+        :param force_int: 移位运算时为 True，强制 dtype='int64'
+        """
+        if force_int:
+            dtype = "int64"
+        else:
+            non_null = [v for v in result if v is not None]
+            if non_null and all(isinstance(v, bool) for v in non_null):
+                dtype = "bool"
+            elif non_null and all(
+                isinstance(v, int) and not isinstance(v, bool) for v in non_null
+            ):
+                dtype = "int64"
+            else:
+                dtype = self._dtype_str
+        return Series(result, name=self.name, index=self._index, dtype=dtype)
+
     def __invert__(self):
-        """按位取反: ~self"""
+        """按位取反: ~self
+
+        - bool 类型: 逻辑取反 (True -> False)，dtype 保持 bool
+        - int 类型: 按位取反 (~v)，dtype 保持 int64
+        """
+        if self._dtype_str == "bool":
+            result = [None if v is None else not v for v in self.values]
+            return Series(result, name=self.name, index=self._index, dtype="bool")
         result = [None if v is None else ~int(v) for v in self.values]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result)
 
     def __and__(self, other):
-        """按位与: self & other"""
+        """按位与: self & other
+
+        保留操作数原始类型（bool/int），与 pandas 行为一致。
+        """
         if isinstance(other, Series):
             other_vals = other.values
             result = [
                 (
                     None
                     if (v is None or i >= len(other_vals) or other_vals[i] is None)
-                    else int(v) & int(other_vals[i])
+                    else v & other_vals[i]
                 )
                 for i, v in enumerate(self.values)
             ]
         else:
             result = [
-                None if (v is None or other is None) else int(v) & int(other)
+                None if (v is None or other is None) else v & other
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result)
 
     def __rand__(self, other):
         """反向按位与: other & self"""
         return self.__and__(other)
 
     def __or__(self, other):
-        """按位或: self | other"""
+        """按位或: self | other
+
+        保留操作数原始类型（bool/int），与 pandas 行为一致。
+        """
         if isinstance(other, Series):
             other_vals = other.values
             result = [
                 (
                     None
                     if (v is None or i >= len(other_vals) or other_vals[i] is None)
-                    else int(v) | int(other_vals[i])
+                    else v | other_vals[i]
                 )
                 for i, v in enumerate(self.values)
             ]
         else:
             result = [
-                None if (v is None or other is None) else int(v) | int(other)
+                None if (v is None or other is None) else v | other
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result)
 
     def __ror__(self, other):
         """反向按位或: other | self"""
         return self.__or__(other)
 
     def __xor__(self, other):
-        """按位异或: self ^ other"""
+        """按位异或: self ^ other
+
+        保留操作数原始类型（bool/int），与 pandas 行为一致。
+        """
         if isinstance(other, Series):
             other_vals = other.values
             result = [
                 (
                     None
                     if (v is None or i >= len(other_vals) or other_vals[i] is None)
-                    else int(v) ^ int(other_vals[i])
+                    else v ^ other_vals[i]
                 )
                 for i, v in enumerate(self.values)
             ]
         else:
             result = [
-                None if (v is None or other is None) else int(v) ^ int(other)
+                None if (v is None or other is None) else v ^ other
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result)
 
     def __rxor__(self, other):
         """反向按位异或: other ^ self"""
         return self.__xor__(other)
 
     def __lshift__(self, other):
-        """左移: self << other"""
+        """左移: self << other
+
+        移位运算结果恒为 int64（与 pandas 一致：bool << 1 -> int64）。
+        """
         if isinstance(other, Series):
             other_vals = other.values
             result = [
@@ -1246,7 +1291,7 @@ class Series:
                 None if (v is None or other is None) else int(v) << int(other)
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result, force_int=True)
 
     def __rlshift__(self, other):
         """反向左移: other << self"""
@@ -1265,10 +1310,13 @@ class Series:
                 None if (v is None or other is None) else int(other) << int(v)
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result, force_int=True)
 
     def __rshift__(self, other):
-        """右移: self >> other"""
+        """右移: self >> other
+
+        移位运算结果恒为 int64（与 pandas 一致）。
+        """
         if isinstance(other, Series):
             other_vals = other.values
             result = [
@@ -1284,7 +1332,7 @@ class Series:
                 None if (v is None or other is None) else int(v) >> int(other)
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result, force_int=True)
 
     def __rrshift__(self, other):
         """反向右移: other >> self"""
@@ -1303,7 +1351,7 @@ class Series:
                 None if (v is None or other is None) else int(other) >> int(v)
                 for v in self.values
             ]
-        return Series(result, name=self.name, index=self._index, dtype=self._dtype_str)
+        return self._bitwise_series(result, force_int=True)
 
     def __neg__(self) -> _PySeries:
         if self._dtype_str == "bool":
