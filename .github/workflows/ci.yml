@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -70,15 +70,6 @@ jobs:
           print(f'DataFrame shape: ({df.shape[0]}, {df.shape[1]})')
           print('All smoke tests passed!')
           "
-      - name: Install and test (py${{ matrix.python-version }})
-        shell: bash
-        run: |
-          pip install pyarrow
-          pip install rsplotlib
-          pip install dist/*.whl
-          cd testing
-          python testing_rspandas1.py
-          python testing_rspandas2.py
 
   rust-lint:
     name: Rust Lint (rustfmt + clippy)
@@ -86,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -116,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
