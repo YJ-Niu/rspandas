@@ -157,6 +157,140 @@ class Index:
             return self._data == other._data
         return False
 
+    # ---------- 算术运算 ----------
+
+    def _binary_op(self, other, op):
+        """对每个元素应用二元运算，返回新 Index。
+
+        :param other: 标量 / list / Index
+        :param op: 二元函数 (a, b) -> result
+        """
+        if isinstance(other, Index):
+            other_vals = other._data
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+        else:
+            other_vals = None
+        if other_vals is not None:
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self._data)},) ({len(other_vals)},)"
+                )
+            result = [op(a, b) for a, b in zip(self._data, other_vals)]
+        else:
+            result = [op(a, other) for a in self._data]
+        return Index(result, name=self._name)
+
+    def _binary_rop(self, other, op):
+        """反向二元运算（other op self）。"""
+        if isinstance(other, Index):
+            other_vals = other._data
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+        else:
+            other_vals = None
+        if other_vals is not None:
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self._data)},)"
+                )
+            result = [op(a, b) for a, b in zip(other_vals, self._data)]
+        else:
+            result = [op(other, a) for a in self._data]
+        return Index(result, name=self._name)
+
+    def __add__(self, other):
+        return self._binary_op(other, lambda a, b: a + b)
+
+    def __radd__(self, other):
+        return self._binary_rop(other, lambda a, b: a + b)
+
+    def __sub__(self, other):
+        return self._binary_op(other, lambda a, b: a - b)
+
+    def __rsub__(self, other):
+        return self._binary_rop(other, lambda a, b: a - b)
+
+    def __mul__(self, other):
+        return self._binary_op(other, lambda a, b: a * b)
+
+    def __rmul__(self, other):
+        return self._binary_rop(other, lambda a, b: a * b)
+
+    def __truediv__(self, other):
+        return self._binary_op(other, lambda a, b: a / b)
+
+    def __rtruediv__(self, other):
+        return self._binary_rop(other, lambda a, b: a / b)
+
+    def __floordiv__(self, other):
+        return self._binary_op(other, lambda a, b: a // b)
+
+    def __rfloordiv__(self, other):
+        return self._binary_rop(other, lambda a, b: a // b)
+
+    def __mod__(self, other):
+        return self._binary_op(other, lambda a, b: a % b)
+
+    def __rmod__(self, other):
+        return self._binary_rop(other, lambda a, b: a % b)
+
+    def __pow__(self, other):
+        return self._binary_op(other, lambda a, b: a**b)
+
+    def __rpow__(self, other):
+        return self._binary_rop(other, lambda a, b: a**b)
+
+    def __divmod__(self, other):
+        """返回 (商 Index, 余数 Index)，与 Python divmod 语义一致。"""
+        if isinstance(other, Index):
+            other_vals = other._data
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self._data)},) ({len(other_vals)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(self._data, other_vals)]
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(self._data)},) ({len(other_vals)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(self._data, other_vals)]
+        else:
+            pairs = [divmod(a, other) for a in self._data]
+        quot = [p[0] for p in pairs]
+        rem = [p[1] for p in pairs]
+        return Index(quot, name=self._name), Index(rem, name=self._name)
+
+    def __rdivmod__(self, other):
+        """反向 divmod：divmod(other, self)。"""
+        if isinstance(other, Index):
+            other_vals = other._data
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self._data)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(other_vals, self._data)]
+        elif isinstance(other, (list, tuple)):
+            other_vals = list(other)
+            if len(other_vals) != len(self._data):
+                raise ValueError(
+                    f"operands could not be broadcast together with shapes "
+                    f"({len(other_vals)},) ({len(self._data)},)"
+                )
+            pairs = [divmod(a, b) for a, b in zip(other_vals, self._data)]
+        else:
+            pairs = [divmod(other, a) for a in self._data]
+        quot = [p[0] for p in pairs]
+        rem = [p[1] for p in pairs]
+        return Index(quot, name=self._name), Index(rem, name=self._name)
+
     # ---------- 方法 ----------
 
     def tolist(self) -> list:
@@ -172,21 +306,25 @@ class Index:
         except ValueError:
             raise KeyError(key)
 
-    def append(self, other: "Index") -> "Index":
-        return Index(self._data + list(other._data), name=self._name)
+    def append(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
+        return Index(self._data + list(other_data), name=self._name)
 
-    def difference(self, other: "Index") -> "Index":
-        other_set = set(other._data)
+    def difference(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
+        other_set = set(other_data)
         return Index([v for v in self._data if v not in other_set])
 
-    def intersection(self, other: "Index") -> "Index":
-        other_set = set(other._data)
+    def intersection(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
+        other_set = set(other_data)
         # 使用 dict.fromkeys 保留首次出现顺序并去重
         return Index([v for v in dict.fromkeys(self._data) if v in other_set])
 
-    def union(self, other: "Index") -> "Index":
+    def union(self, other) -> "Index":
+        other_data = other._data if hasattr(other, "_data") else list(other)
         # 合并后利用 dict.fromkeys 保序去重（与 pandas union 语义一致）
-        merged = list(self._data) + list(other._data)
+        merged = list(self._data) + list(other_data)
         return Index(list(dict.fromkeys(merged)))
 
     def unique(self) -> "Index":
@@ -426,8 +564,10 @@ class Index:
 
     @property
     def array(self):
-        """返回底层值的列表（Arrow 数组接口的简化版本）。"""
-        return list(self._data)
+        """返回底层 rsnumpy ndarray（与 pandas Index.array 行为一致，返回 NumpyExtensionArray）。"""
+        import rsnumpy as rnp
+
+        return rnp.array(self._data)
 
 
 # ============================================================================
@@ -1401,7 +1541,7 @@ class DatetimeIndex(Index):
         indent = " " * 15  # 对齐 pandas 的缩进
         n = len(date_strs)
         for i in range(0, n, items_per_line):
-            chunk = date_strs[i : i + items_per_line]
+            chunk = date_strs[i : i + items_per_line]  # noqa
             joined = ", ".join(chunk)
             if i == 0:
                 line = "DatetimeIndex([" + joined + ","
@@ -1993,57 +2133,101 @@ def cut(
     -------
     Series
     """
+    import math
+
     values = list(x.values) if isinstance(x, Series) else list(x)
 
-    # 计算 bins
-    non_null = [v for v in values if v is not None]
+    # 过滤缺失值
+    def _is_missing(v) -> bool:
+        if v is None:
+            return True
+        try:
+            return v != v  # type: ignore[operator]
+        except TypeError:
+            return False
+
+    non_null = [v for v in values if not _is_missing(v)]
     if not non_null:
         return Series([None] * len(values), dtype="category")
 
+    # 计算 bins
     if isinstance(bins, int):
         min_val = min(non_null)
         max_val = max(non_null)
         if min_val == max_val:
-            # 只有一个唯一值
+            # 只有一个唯一值，构造一个包含它的区间
             bins = [min_val - 0.5, min_val + 0.5]
         else:
             bin_width = (max_val - min_val) / bins
             bins = [min_val + i * bin_width for i in range(bins + 1)]
+            # 修正浮点精度: 确保最后一个边界等于 max_val
+            bins[-1] = max_val
+        # 当 bins 为 int 时，自动包含最小值 (与 pandas 一致)
+        include_lowest = True
     else:
         bins = list(bins)
 
     n_bins = len(bins) - 1
 
-    # 生成标签（使用列表推导式替代显式 for 循环）
+    # 格式化边界值用于标签
+    def _fmt(v) -> str:
+        """格式化数值为字符串。"""
+        if v == float("inf"):
+            return "inf"
+        if v == float("-inf"):
+            return "-inf"
+        # 整数边界用整数格式
+        if isinstance(v, (int,)) or (isinstance(v, float) and v.is_integer()):
+            return str(int(v))
+        return repr(v)
+
+    # 生成标签
     if labels is None:
         if right:
-            labels = [f"({bins[i]}, {bins[i + 1]}]" for i in range(n_bins)]
+            labels = [f"({_fmt(bins[i])}, {_fmt(bins[i + 1])}]" for i in range(n_bins)]
+            if include_lowest:
+                labels[0] = f"[{_fmt(bins[0])}, {_fmt(bins[1])}]"
         else:
-            labels = [f"[{bins[i]}, {bins[i + 1]})" for i in range(n_bins)]
-        if include_lowest:
-            if right:
-                labels[0] = f"[{bins[0]}, {bins[1]}]"
-            else:
-                labels[-1] = f"[{bins[-2]}, {bins[-1]}]"
+            labels = [f"[{_fmt(bins[i])}, {_fmt(bins[i + 1])})" for i in range(n_bins)]
+            if include_lowest:
+                labels[-1] = f"[{_fmt(bins[-2])}, {_fmt(bins[-1])}]"
     else:
         labels = list(labels)
 
-    # 分配区间 - 使用辅助函数 + 列表推导式替代嵌套 for 循环
+    # 分配区间
     def _find_bin(v):
         """返回 v 所在区间的标签，未匹配则返回 None。"""
-        if v is None:
+        if _is_missing(v):
             return None
+        # 处理 inf 值
+        is_inf = math.isinf(v) if isinstance(v, float) else False
+
         for i in range(n_bins):
+            lo = bins[i]
+            hi = bins[i + 1]
             if right:
-                if i == 0 and include_lowest and bins[0] <= v <= bins[1]:
-                    return labels[i]
-                if bins[i] < v <= bins[i + 1]:
-                    return labels[i]
+                # 区间 (lo, hi]，第一个区间可能改为 [lo, hi]
+                if i == 0 and include_lowest:
+                    if lo <= v <= hi:
+                        return labels[i]
+                else:
+                    if lo < v <= hi:
+                        return labels[i]
             else:
-                if i == n_bins - 1 and include_lowest and bins[-2] <= v <= bins[-1]:
-                    return labels[i]
-                if bins[i] <= v < bins[i + 1]:
-                    return labels[i]
+                # 区间 [lo, hi)，最后一个区间可能改为 [lo, hi]
+                if i == n_bins - 1 and include_lowest:
+                    if lo <= v <= hi:
+                        return labels[i]
+                else:
+                    if lo <= v < hi:
+                        return labels[i]
+
+        # 浮点精度兜底: 最大值/最小值可能因精度问题未匹配
+        if not is_inf:
+            if v <= bins[0]:
+                return labels[0]
+            if v >= bins[-1]:
+                return labels[-1]
         return None
 
     result = [_find_bin(v) for v in values]
@@ -2063,7 +2247,7 @@ def qcut(
     x : list or Series
         输入数据。
     q : int or list
-        分位数数量或分位点列表。
+        分位数数量或分位点列表 (0-1)。
     labels : list, optional
         区间标签。
 
@@ -2073,7 +2257,16 @@ def qcut(
     """
     values = list(x.values) if isinstance(x, Series) else list(x)
 
-    non_null = sorted([v for v in values if v is not None])
+    # 过滤缺失值
+    def _is_missing(v) -> bool:
+        if v is None:
+            return True
+        try:
+            return v != v  # type: ignore[operator]
+        except TypeError:
+            return False
+
+    non_null = sorted([v for v in values if not _is_missing(v)])
     if not non_null:
         return Series([None] * len(values), dtype="category")
 
@@ -2082,7 +2275,7 @@ def qcut(
     if isinstance(q, int):
         n_bins = q
 
-        # 计算分位点（使用辅助函数 + 列表推导式替代显式 for 循环）
+        # 计算分位点
         def _quantile_at(i):
             pos = i * (n - 1) / n_bins
             lo = int(pos)
@@ -2092,10 +2285,26 @@ def qcut(
 
         quantiles = [_quantile_at(i) for i in range(n_bins + 1)]
     else:
-        quantiles = sorted(q)
+        # q 是分位数列表 (如 [0, 0.25, 0.5, 0.75, 1])
+        # 需要计算每个分位数对应的实际值
+        q_list = sorted(q)
+
+        def _quantile_at(p):
+            """计算分位数 p 对应的实际值 (线性插值法)。"""
+            if p <= 0:
+                return non_null[0]
+            if p >= 1:
+                return non_null[-1]
+            pos = p * (n - 1)
+            lo = int(pos)
+            hi = min(lo + 1, n - 1)
+            frac = pos - lo
+            return non_null[lo] + frac * (non_null[hi] - non_null[lo])
+
+        quantiles = [_quantile_at(p) for p in q_list]
         n_bins = len(quantiles) - 1
 
-    # 使用 cut 进行分箱
+    # 使用 cut 进行分箱，包含最低值
     return cut(values, bins=quantiles, right=True, labels=labels, include_lowest=True)
 
 

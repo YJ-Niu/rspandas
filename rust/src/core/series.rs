@@ -335,7 +335,12 @@ impl Series {
     }
     pub fn sum_f64(&self) -> Option<f64> {
         if let ColumnData::Float(v) = &self.data {
-            Some(v.par_iter().filter_map(|x| *x).sum())
+            Some(
+                v.par_iter()
+                    .filter_map(|x| *x)
+                    .filter(|x| !x.is_nan())
+                    .sum(),
+            )
         } else {
             None
         }
@@ -349,21 +354,29 @@ impl Series {
     }
 
     pub fn mean(&self) -> Option<f64> {
-        let cnt = self.count();
+        // 过滤 None 和 NaN 后计算均值 (NaN 语义上等同缺失值)
+        let (sum, cnt) = match &self.data {
+            ColumnData::Int(v) => {
+                let filtered: Vec<i64> = v.par_iter().filter_map(|x| *x).collect();
+                let cnt = filtered.len();
+                let s: i64 = filtered.into_par_iter().sum();
+                (s as f64, cnt)
+            }
+            ColumnData::Float(v) => {
+                let filtered: Vec<f64> = v
+                    .par_iter()
+                    .filter_map(|x| x.filter(|v| !v.is_nan()))
+                    .collect();
+                let cnt = filtered.len();
+                let s: f64 = filtered.into_par_iter().sum();
+                (s, cnt)
+            }
+            _ => return None,
+        };
         if cnt == 0 {
             return None;
         }
-        match &self.data {
-            ColumnData::Int(v) => {
-                let s: i64 = v.par_iter().filter_map(|x| *x).sum();
-                Some(s as f64 / cnt as f64)
-            }
-            ColumnData::Float(v) => {
-                let s: f64 = v.par_iter().filter_map(|x| *x).sum();
-                Some(s / cnt as f64)
-            }
-            _ => None,
-        }
+        Some(sum / cnt as f64)
     }
 
     pub fn min_i64(&self) -> Option<i64> {
@@ -375,9 +388,10 @@ impl Series {
     }
     pub fn min_f64(&self) -> Option<f64> {
         if let ColumnData::Float(v) = &self.data {
+            // 过滤 None 和 NaN (NaN 语义上等同缺失值)
             v.par_iter()
-                .filter_map(|x| *x)
-                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .filter_map(|x| x.filter(|v| !v.is_nan()))
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         } else {
             None
         }
@@ -398,9 +412,10 @@ impl Series {
     }
     pub fn max_f64(&self) -> Option<f64> {
         if let ColumnData::Float(v) = &self.data {
+            // 过滤 None 和 NaN (NaN 语义上等同缺失值)
             v.par_iter()
-                .filter_map(|x| *x)
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .filter_map(|x| x.filter(|v| !v.is_nan()))
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         } else {
             None
         }
@@ -418,35 +433,47 @@ impl Series {
     }
     pub fn var(&self) -> Option<f64> {
         let m = self.mean()?;
-        let cnt = self.count();
+        // 使用过滤后的非 NaN 值计算方差 (与 mean 保持一致)
+        let (sum_sq, cnt) = match &self.data {
+            ColumnData::Int(v) => {
+                let filtered: Vec<i64> = v.par_iter().filter_map(|x| *x).collect();
+                let cnt = filtered.len();
+                let s: f64 = filtered
+                    .into_par_iter()
+                    .map(|x| (x as f64 - m).powi(2))
+                    .sum();
+                (s, cnt)
+            }
+            ColumnData::Float(v) => {
+                let filtered: Vec<f64> = v
+                    .par_iter()
+                    .filter_map(|x| x.filter(|v| !v.is_nan()))
+                    .collect();
+                let cnt = filtered.len();
+                let s: f64 = filtered.into_par_iter().map(|x| (x - m).powi(2)).sum();
+                (s, cnt)
+            }
+            _ => return None,
+        };
         if cnt == 0 {
             return None;
         }
-        let s = match &self.data {
-            ColumnData::Int(v) => v
-                .par_iter()
-                .filter_map(|x| *x)
-                .map(|x| (x as f64 - m).powi(2))
-                .sum::<f64>(),
-            ColumnData::Float(v) => v
-                .par_iter()
-                .filter_map(|x| *x)
-                .map(|x| (x - m).powi(2))
-                .sum::<f64>(),
-            _ => return None,
-        };
-        Some(s / cnt as f64)
+        Some(sum_sq / cnt as f64)
     }
     pub fn median(&self) -> Option<f64> {
+        // 过滤 None 和 NaN 后计算中位数
         let mut vs: Vec<f64> = match &self.data {
             ColumnData::Int(v) => v.par_iter().filter_map(|x| *x).map(|x| x as f64).collect(),
-            ColumnData::Float(v) => v.par_iter().filter_map(|x| *x).collect(),
+            ColumnData::Float(v) => v
+                .par_iter()
+                .filter_map(|x| x.filter(|v| !v.is_nan()))
+                .collect(),
             _ => return None,
         };
         if vs.is_empty() {
             return None;
         }
-        vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        vs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = vs.len();
         if n % 2 == 1 {
             Some(vs[n / 2])
@@ -1014,16 +1041,19 @@ impl Series {
     /// 计算分位数（线性插值法）
     /// q: 0.0-1.0 之间的分位数
     pub fn quantile(&self, q: f64) -> Option<f64> {
-        // 收集非 None 的 f64 值
+        // 收集非 None 且非 NaN 的 f64 值
         let mut vs: Vec<f64> = match &self.data {
             ColumnData::Int(v) => v.par_iter().filter_map(|x| *x).map(|x| x as f64).collect(),
-            ColumnData::Float(v) => v.par_iter().filter_map(|x| *x).collect(),
+            ColumnData::Float(v) => v
+                .par_iter()
+                .filter_map(|x| x.filter(|v| !v.is_nan()))
+                .collect(),
             _ => return None,
         };
         if vs.is_empty() {
             return None;
         }
-        vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        vs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = vs.len();
         if n == 1 {
             return Some(vs[0]);
@@ -2173,9 +2203,17 @@ impl PySeries {
                     } else if let Ok(i) = item.cast::<PyInt>() {
                         v.push(Some(i.extract::<i64>()?.to_string()));
                     } else if let Ok(f) = item.cast::<PyFloat>() {
-                        v.push(Some(f.extract::<f64>()?.to_string()));
+                        let fv = f.extract::<f64>()?;
+                        if fv.is_nan() {
+                            // NaN 在 object dtype 中存储为 None, 便于缺失值检测
+                            v.push(None);
+                        } else {
+                            v.push(Some(fv.to_string()));
+                        }
                     } else {
-                        return Err(pyo3::exceptions::PyTypeError::new_err("unsupported type"));
+                        // 其他类型 (如 list/dict) 使用 str() 转为字符串
+                        let s = item.str()?;
+                        v.push(Some(s.extract::<String>()?));
                     }
                 }
                 Series::new_string(name, v)
@@ -2355,9 +2393,17 @@ impl PySeries {
                     } else if let Ok(i) = item.cast::<PyInt>() {
                         v.push(Some(i.extract::<i64>()?.to_string()));
                     } else if let Ok(f) = item.cast::<PyFloat>() {
-                        v.push(Some(f.extract::<f64>()?.to_string()));
+                        let fv = f.extract::<f64>()?;
+                        if fv.is_nan() {
+                            // NaN 在 object dtype 中存储为 None, 便于缺失值检测
+                            v.push(None);
+                        } else {
+                            v.push(Some(fv.to_string()));
+                        }
                     } else {
-                        return Err(pyo3::exceptions::PyTypeError::new_err("unsupported type"));
+                        // 其他类型 (如 list/dict) 使用 str() 转为字符串
+                        let s = item.str()?;
+                        v.push(Some(s.extract::<String>()?));
                     }
                 }
                 Series::new_string(name, v)
@@ -2441,6 +2487,101 @@ impl PySeries {
     #[getter]
     fn values<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
         self.inner.data.to_py_list(py)
+    }
+
+    /// 设置指定位置的值 (用于 Python 端 __setitem__)
+    fn set_value(&mut self, idx: usize, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        // None 值: 各类型统一设为 None
+        if value.is_none() {
+            match &mut self.inner.data {
+                ColumnData::Float(v) => {
+                    if idx < v.len() {
+                        v[idx] = None;
+                    }
+                }
+                ColumnData::Int(v) => {
+                    if idx < v.len() {
+                        v[idx] = None;
+                    }
+                }
+                ColumnData::Bool(v) => {
+                    if idx < v.len() {
+                        v[idx] = None;
+                    }
+                }
+                ColumnData::String(v) => {
+                    if idx < v.len() {
+                        v[idx] = None;
+                    }
+                }
+                ColumnData::Categorical(c) => {
+                    if idx < c.codes.len() {
+                        c.codes[idx] = None;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        // 数值/字符串值: 按 data 类型提取并设置
+        match &mut self.inner.data {
+            ColumnData::Float(v) => {
+                if idx >= v.len() {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(
+                        "index out of range",
+                    ));
+                }
+                let f: f64 = value.extract()?;
+                v[idx] = Some(f);
+            }
+            ColumnData::Int(v) => {
+                if idx >= v.len() {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(
+                        "index out of range",
+                    ));
+                }
+                // nan -> None; 否则 as i64
+                if let Ok(f) = value.extract::<f64>() {
+                    if f.is_nan() {
+                        v[idx] = None;
+                    } else {
+                        v[idx] = Some(f as i64);
+                    }
+                }
+            }
+            ColumnData::Bool(v) => {
+                if idx >= v.len() {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(
+                        "index out of range",
+                    ));
+                }
+                if let Ok(b) = value.extract::<bool>() {
+                    v[idx] = Some(b);
+                } else if let Ok(f) = value.extract::<f64>() {
+                    v[idx] = Some(f != 0.0);
+                }
+            }
+            ColumnData::String(v) => {
+                if idx >= v.len() {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(
+                        "index out of range",
+                    ));
+                }
+                if let Ok(s) = value.extract::<String>() {
+                    v[idx] = Some(s);
+                }
+            }
+            ColumnData::Categorical(c) => {
+                if idx >= c.codes.len() {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(
+                        "index out of range",
+                    ));
+                }
+                if let Ok(f) = value.extract::<f64>() {
+                    c.codes[idx] = if f.is_nan() { None } else { Some(f as i32) };
+                }
+            }
+        }
+        Ok(())
     }
 
     // ---------- 切片 / 过滤 ----------

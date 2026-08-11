@@ -276,7 +276,16 @@ impl ColumnData {
     }
     pub fn fillna_f64(&self, v: f64) -> ColumnData {
         if let ColumnData::Float(col) = self {
-            ColumnData::Float(col.par_iter().map(|x| Some(x.unwrap_or(v))).collect())
+            // 同时填充 None 和 NaN（与 pandas fillna 行为一致）
+            ColumnData::Float(
+                col.par_iter()
+                    .map(|x| match x {
+                        None => Some(v),
+                        Some(val) if val.is_nan() => Some(v),
+                        Some(val) => Some(*val),
+                    })
+                    .collect(),
+            )
         } else {
             self.clone()
         }

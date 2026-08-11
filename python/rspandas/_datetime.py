@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from .series import Series
-from datetime import date, datetime, time, timedelta
-from typing import Optional, Union
-
 import calendar
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Optional, Union
+
+from .series import Series
 
 # ---------------------------------------------------------------------------
 # 频率 -> timedelta 映射
@@ -65,11 +65,18 @@ def _parse_iso(s: str) -> datetime:
         "%d/%m/%Y %H:%M:%S",
         "%d/%m/%Y %H:%M",
         "%d/%m/%Y",
+        "%Y%m%d %H:%M:%S.%f",
+        "%Y%m%d %H:%M:%S",
+        "%Y%m%d %H:%M",
+        "%Y%m%dT%H:%M:%S.%f",
+        "%Y%m%dT%H:%M:%S",
+        "%Y%m%dT%H%M%S",
         "%Y%m%d%H%M%S",
         "%Y%m%d%H%M%S.%f",
         "%Y%m%d",
-        "%H:%M:%S",
-        "%H:%M",
+        "%Y-%m",
+        "%Y/%m",
+        "%Y",
     ]
     last_err: Optional[Exception] = None
     for fmt in fmts:
@@ -82,11 +89,24 @@ def _parse_iso(s: str) -> datetime:
 
 
 def _to_iso(v) -> Optional[str]:
-    """将 datetime/date/None 转换为 ISO 字符串。"""
+    """将 datetime/date/None 转换为 ISO 字符串。
+
+    与 pandas 一致：
+    - 日期与时间之间使用空格分隔（而非 ISO 默认的 'T'）。
+    - naive datetime 当时间部分全为 0 时，只显示日期部分。
+    - aware datetime 始终显示完整时间（含时区偏移）。
+    """
     if v is None:
         return None
     if isinstance(v, datetime):
-        return v.isoformat()
+        # naive datetime 且时间为 00:00:00 -> 只显示日期
+        if v.tzinfo is None and v.hour == 0 and v.minute == 0 and v.second == 0 and v.microsecond == 0:
+            return v.strftime("%Y-%m-%d")
+        # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+        s = v.isoformat()
+        if "T" in s:
+            s = s.replace("T", " ", 1)
+        return s
     if isinstance(v, date):
         return datetime(v.year, v.month, v.day).isoformat()
     return None
@@ -117,6 +137,7 @@ class DatetimeSeries:
         name: Optional[str] = None,
         index: Optional[list] = None,
         freq: Optional[str] = None,
+        tz: Any = None,
     ):
         # 内部存储: ISO 字符串列表
         iso_values = [_to_iso(v) for v in values]
@@ -125,10 +146,21 @@ class DatetimeSeries:
         self.name: Optional[str] = name
         self._index: Optional[list] = index
         self._freq: Optional[str] = freq
+        self._tz = tz
 
     @property
     def freq(self) -> Optional[str]:
         return self._freq
+
+    @property
+    def tz(self):
+        """返回 DatetimeSeries 绑定的时区对象。None 表示 naive 时间。"""
+        if self._tz is not None:
+            return self._tz
+        vals = self.values
+        if vals and isinstance(vals[0], datetime) and vals[0].tzinfo is not None:
+            return vals[0].tzinfo
+        return None
 
     @property
     def values(self) -> list:
@@ -141,6 +173,17 @@ class DatetimeSeries:
     @property
     def dtype(self) -> str:
         return "datetime64[ns]"
+
+    @property
+    def array(self):
+        """返回底层 rsnumpy ndarray（与 pandas Index.array 行为一致）。
+
+        由于 rsnumpy 底层仅支持 f64，此处返回 ISO 字符串数组，
+        调用方如需 datetime 对象应使用 .values 属性。
+        """
+        import rsnumpy as rnp
+
+        return rnp.array(self._inner.values)
 
     @property
     def shape(self) -> tuple:
@@ -185,7 +228,7 @@ class DatetimeSeries:
         indent = " " * 15  # 对齐 pandas 的缩进
         n = len(date_strs)
         for i in range(0, n, items_per_line):
-            chunk = date_strs[i : i + items_per_line]
+            chunk = date_strs[i : i + items_per_line]  # noqa
             joined = ", ".join(chunk)
             if i == 0:
                 line = "DatetimeIndex([" + joined + ","
@@ -233,6 +276,8 @@ class DatetimeSeries:
             self.values[:n],
             name=self.name,
             index=self._index[:n] if self._index else None,
+            freq=self._freq,
+            tz=self._tz,
         )
 
     def tail(self, n: int = 5) -> "DatetimeSeries":
@@ -240,6 +285,62 @@ class DatetimeSeries:
             self.values[-n:] if n > 0 else [],
             name=self.name,
             index=self._index[-n:] if self._index else None,
+            tz=self._tz,
+        )
+
+    def to_numpy(self, dtype=None, copy: bool = True, na_value: Any = None):
+        """转换为 rsnumpy array（与 pandas DatetimeIndex.to_numpy 行为对齐）。
+
+        - `dtype=object` 或 `dtype='object'`: 返回 datetime 对象数组 (object dtype)
+        - `dtype=datetime64[ns]` / `dtype='datetime64[ns]'`: 返回 int64 纳秒纪元数组
+        - 默认（dtype=None）: 同 'datetime64[ns]' 语义，返回纳秒纪元 f64/int64 数组
+        """
+        import rsnumpy as rnp
+
+        vals = self.values
+        # 处理 na_value
+        if na_value is not None:
+            vals = [na_value if v is None else v for v in vals]
+        if dtype is None:
+            dtype_str = "datetime64[ns]"
+        elif isinstance(dtype, str):
+            dtype_str = dtype.lower().replace(" ", "")
+        else:
+            dtype_str = str(dtype).lower()
+        if dtype_str in ("object", "o"):
+            # rsnumpy 不直接支持对象数组，退回 list 包装后 rnp.array(object dtype)
+            return rnp.array(list(vals))
+        # datetime64[ns] (或 datetime64[us]/[ms] 简化为 ns)
+        if dtype_str.startswith("datetime64"):
+            # 转换为纳秒纪元 (int)
+            epoch = datetime(1970, 1, 1, tzinfo=vals[0].tzinfo if vals and isinstance(vals[0], datetime) and vals[0].tzinfo is not None else None)
+            nano_vals: list = []
+            for v in vals:
+                if v is None:
+                    nano_vals.append(float("nan"))
+                elif isinstance(v, datetime):
+                    # 如果 aware 且要求转换结果带 UTC 偏移，这里保持原样做差
+                    delta = v - epoch
+                    ns = (
+                        delta.days * 86_400_000_000_000
+                        + delta.seconds * 1_000_000_000
+                        + delta.microseconds * 1000
+                    )
+                    nano_vals.append(ns)
+                else:
+                    nano_vals.append(float("nan"))
+            return rnp.array(nano_vals)
+        # 其他 dtype 直接走 rnp.array
+        return rnp.array(list(vals), dtype=dtype)
+
+    def copy(self) -> "DatetimeSeries":
+        """返回自身副本。"""
+        return DatetimeSeries(
+            list(self.values),
+            name=self.name,
+            index=list(self._index) if self._index else None,
+            freq=self._freq,
+            tz=self._tz,
         )
 
     @property
@@ -647,11 +748,99 @@ def to_datetime(
     return DatetimeSeries(out, name=None)
 
 
+def _normalize_tz(tz: Any) -> Any:
+    """解析时区字符串或对象，返回时区对象（若无则返回 None）。
+
+    优先级:
+    1) datetime.timezone / zoneinfo.ZoneInfo / pytz 等 tzinfo 对象
+    2) 字符串名称：通过 zoneinfo (Python 3.9+) 或 pytz 查找，最后回退到 datetime.timezone 的 UTC/固定偏移
+    """
+    if tz is None or tz is False:
+        return None
+    # 已经是 tzinfo
+    if hasattr(tz, "utcoffset"):
+        return tz
+    if isinstance(tz, str):
+        name = tz
+        # 1) zoneinfo
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(name)
+        except Exception:
+            pass
+        # 2) pytz
+        try:
+            import pytz
+
+            return pytz.timezone(name)
+        except Exception:
+            pass
+        # 3) 常见别名 -> UTC 偏移
+        aliases = {
+            "UTC": 0,
+            "GMT": 0,
+            "CET": 60,  # UTC+1
+            "CEST": 120,
+            "EET": 120,
+            "EEST": 180,
+            "JST": 540,
+            "CST": 480,  # 中国标准时间
+            "EST": -300,
+            "EDT": -240,
+            "PST": -480,
+            "PDT": -420,
+            "MST": -420,
+            "MDT": -360,
+        }
+        if name.upper() in aliases:
+            mins = aliases[name.upper()]
+            return timezone(timedelta(minutes=mins), name=name)
+        # 4) 形如 "UTC+3" / "GMT-5" 等固定偏移
+        if name.upper().startswith(("UTC", "GMT")):
+            # 简单实现：手动解析
+            tail = name[3:]
+            if not tail:
+                return timezone.utc
+            sign = 1
+            if tail.startswith("+"):
+                tail = tail[1:]
+            elif tail.startswith("-"):
+                sign = -1
+                tail = tail[1:]
+            if ":" in tail:
+                hh, mm = tail.split(":")
+                mins = sign * (int(hh) * 60 + int(mm))
+            else:
+                mins = sign * (int(tail) * 60)
+            return timezone(timedelta(minutes=mins), name=name)
+        raise ValueError(f"unknown timezone: {tz!r}")
+    raise TypeError(f"tz must be str or tzinfo, got {type(tz).__name__}")
+
+
+def _localize(dt: datetime, tz: Any) -> datetime:
+    """把 naive datetime 绑定为带 tz 的 datetime；aware 则进行转换。"""
+    if tz is None:
+        return dt
+    if dt.tzinfo is None:
+        # pytz 推荐使用 localize
+        if hasattr(tz, "localize"):
+            return tz.localize(dt)
+        return dt.replace(tzinfo=tz)
+    # aware -> 转换
+    return dt.astimezone(tz)
+
+
 def date_range(
     start: Union[str, datetime],
     end: Optional[Union[str, datetime]] = None,
     periods: Optional[int] = None,
     freq: str = "D",
+    tz: Any = None,
+    normalize: bool = False,
+    name: Optional[str] = None,
+    inclusive: str = "both",
+    unit: Optional[str] = None,
 ) -> DatetimeSeries:
     """生成日期范围。
 
@@ -659,8 +848,15 @@ def date_range(
     :param end: 结束日期 (str 或 datetime, 与 periods 二选一)
     :param periods: 周期数 (与 end 二选一)
     :param freq: 频率 ('D'日, 'W'周, 'M'月, 'Y'年, 'H'时)
+    :param tz: 时区 (str 或 tzinfo, 如 'CET' / 'Asia/Shanghai' / UTC)
+    :param normalize: 是否把 start/end 归一到午夜 (默认 False)
+    :param name: 返回的 DatetimeSeries 的 name
+    :param inclusive: 区间包含性 ('both'/'left'/'right'/'neither'), 默认 'both'
+    :param unit: str (保留参数, 目前忽略, 与 pandas 签名对齐)
     :return: DatetimeSeries
     """
+    tzobj = _normalize_tz(tz)
+
     # 解析 start
     if isinstance(start, str):
         start_dt = _parse_iso(start)
@@ -683,6 +879,16 @@ def date_range(
         else:
             raise TypeError(f"end must be str or datetime, got {type(end).__name__}")
 
+    if normalize:
+        start_dt = datetime(start_dt.year, start_dt.month, start_dt.day)
+        if end_dt is not None:
+            end_dt = datetime(end_dt.year, end_dt.month, end_dt.day)
+
+    # 应用时区 (naive -> localize; aware -> convert)
+    start_dt = _localize(start_dt, tzobj)
+    if end_dt is not None:
+        end_dt = _localize(end_dt, tzobj)
+
     step = _freq_to_timedelta(freq)
 
     if periods is not None:
@@ -697,7 +903,20 @@ def date_range(
         n = int((end_dt - start_dt) / step) + 1
 
     out = [start_dt + step * i for i in range(n)]
-    return DatetimeSeries(out, name=None, freq=freq)
+
+    # inclusive 处理
+    if inclusive == "neither":
+        out = out[1:-1] if len(out) >= 2 else []
+    elif inclusive == "left":
+        out = out[:-1] if out else out
+    elif inclusive == "right":
+        out = out[1:] if out else out
+    elif inclusive != "both":
+        raise ValueError(
+            f"inclusive must be one of 'both', 'left', 'right', 'neither', got {inclusive!r}"
+        )
+
+    return DatetimeSeries(out, name=name, freq=freq, tz=tzobj)
 
 
 def to_timedelta(arg, unit=None):
@@ -725,10 +944,90 @@ def to_timedelta(arg, unit=None):
         else:
             raise ValueError(f"unsupported unit: {unit}")
     if isinstance(arg, str):
-        return timedelta(seconds=float(arg))
+        return _parse_timedelta_str(arg)
     if isinstance(arg, (list, tuple)):
         return [to_timedelta(x, unit) for x in arg]
     raise TypeError(f"cannot convert {type(arg).__name__} to timedelta")
+
+
+def _parse_timedelta_str(s: str) -> timedelta:
+    """解析 timedelta 字符串。
+
+    支持的格式（与 pandas 兼容）：
+    - "1 day 00:00:05" / "1 days 00:00:05"
+    - "1 day" / "2 days" / "3 hours" / "5 minutes" / "10 seconds"
+    - "00:00:05" (HH:MM:SS)
+    - "1 days 00:00:00.000005" (带微秒)
+    - "1D" / "2H" / "3min" / "4s" (缩写)
+    """
+    import re
+
+    s = s.strip()
+
+    # 格式 1: "N day(s) [HH:MM:SS[.ffffff]]" 或 "[N day(s)] HH:MM:SS"
+    # 先提取 "N day(s)" 部分
+    day_match = re.match(r"^(\d+)\s+days?\s*(.*)$", s, re.IGNORECASE)
+    days = 0
+    rest = s
+    if day_match:
+        days = int(day_match.group(1))
+        rest = day_match.group(2).strip()
+    elif s.lower().endswith(("day", "days")):
+        m = re.match(r"^(\d+)\s+days?$", s, re.IGNORECASE)
+        if m:
+            return timedelta(days=int(m.group(1)))
+
+    # 如果剩余部分是 HH:MM:SS 格式
+    if rest:
+        time_match = re.match(
+            r"^(\d+):(\d+):(\d+)(?:\.(\d+))?$", rest
+        )
+        if time_match:
+            h = int(time_match.group(1))
+            m = int(time_match.group(2))
+            sec = int(time_match.group(3))
+            us = 0
+            if time_match.group(4):
+                frac = time_match.group(4)
+                # 补齐到 6 位微秒
+                frac = (frac + "000000")[:6]
+                us = int(frac)
+            return timedelta(days=days, hours=h, minutes=m, seconds=sec, microseconds=us)
+        # 如果只有 days 部分
+        if days > 0:
+            return timedelta(days=days)
+
+    # 格式 2: 单位缩写 "1D" / "2H" / "3min" / "4s" / "5ms" / "6us"
+    unit_match = re.match(
+        r"^(\d+(?:\.\d+)?)\s*(ns|us|µs|ms|s|min|minutes|h|hour|hours|D|day|days|H|M|S)\b",
+        s,
+        re.IGNORECASE,
+    )
+    if unit_match:
+        val = float(unit_match.group(1))
+        u = unit_match.group(2).lower()
+        if u in ("d", "day", "days"):
+            return timedelta(days=val)
+        elif u in ("h", "hour", "hours"):
+            return timedelta(hours=val)
+        elif u in ("min", "minutes", "m"):
+            return timedelta(minutes=val)
+        elif u in ("s",):
+            return timedelta(seconds=val)
+        elif u in ("ms",):
+            return timedelta(milliseconds=val)
+        elif u in ("us", "µs"):
+            return timedelta(microseconds=val)
+        elif u in ("ns",):
+            return timedelta(microseconds=val / 1000)
+
+    # 格式 3: 纯数字字符串（默认秒）
+    try:
+        return timedelta(seconds=float(s))
+    except ValueError:
+        pass
+
+    raise ValueError(f"could not convert string to timedelta: {s!r}")
 
 
 def timedelta_range(start=None, end=None, periods=None, freq="D"):
@@ -751,19 +1050,48 @@ def timedelta_range(start=None, end=None, periods=None, freq="D"):
             end = to_timedelta(end)
         n = int((end - start) / step) + 1
     out = [start + step * i for i in range(n)]
-    return Series(out, name=None)
+    # 返回带 timedelta 缓存的 Series
+    s = Series(out, name=None)
+    s._td_values = list(out)
+    s._dtype_str = "timedelta64[us]"
+    return s
 
 
-def period_range(start=None, periods=None, freq="M"):
-    """生成周期范围。"""
+def period_range(start=None, end=None, periods=None, freq="D", name=None):
+    """生成周期范围。
+
+    与 pandas 一致，默认 freq='D'（当 start 是日期字符串时）。
+    返回 PeriodIndex，dtype 显示为 period[freq]。
+
+    :param start: 起始日期 (str/datetime/date)
+    :param end: 结束日期 (与 periods 二选一)
+    :param periods: 周期数 (与 end 二选一)
+    :param freq: 频率 ('D'/'M'/'Q'/'Y'/'H' 等)
+    :param name: 索引名称
+    """
+    from .indexes import PeriodIndex
+
     if start is None:
         start = datetime.now()
     elif isinstance(start, str):
         start = _parse_iso(start)
-    elif isinstance(start, date):
+    elif isinstance(start, date) and not isinstance(start, datetime):
         start = datetime(start.year, start.month, start.day)
-    if periods is None:
+
+    if periods is None and end is None:
         periods = 12
+
+    # 如果指定了 end，计算 periods
+    if periods is None and end is not None:
+        if isinstance(end, str):
+            end_dt = _parse_iso(end)
+        elif isinstance(end, date) and not isinstance(end, datetime):
+            end_dt = datetime(end.year, end.month, end.day)
+        else:
+            end_dt = end
+        step = _freq_to_timedelta(freq)
+        periods = int((end_dt - start) / step) + 1
+
     out = []
     for i in range(periods):
         if freq == "M":
@@ -783,7 +1111,8 @@ def period_range(start=None, periods=None, freq="M"):
         else:
             step = _freq_to_timedelta(freq)
             out.append(start + step * i)
-    return DatetimeSeries(out, name=None)
+
+    return PeriodIndex(out, freq=freq, name=name)
 
 
 def bdate_range(start=None, end=None, periods=None):

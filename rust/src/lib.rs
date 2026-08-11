@@ -29,5 +29,14 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::core::arrow_ipc_io::write_feather,
         m
     )?)?;
+    // Arrow IPC bytes 桥接 —— 用于 to_arrow()/from_arrow()，替代 Python 层 list 中转
+    m.add_function(wrap_pyfunction!(
+        crate::core::arrow_ipc_io::to_arrow_ipc_bytes,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::core::arrow_ipc_io::from_arrow_ipc_bytes,
+        m
+    )?)?;
     Ok(())
 }

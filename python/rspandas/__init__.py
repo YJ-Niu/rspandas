@@ -63,7 +63,7 @@ from typing import Any, Dict
 
 _options: Dict[str, Any] = {
     "display.max_rows": 60,
-    "display.max_columns": 0,
+    "display.max_columns": 8,
     "display.width": 80,
     "display.precision": 6,
     "display.max_colwidth": 50,
@@ -86,6 +86,8 @@ _options: Dict[str, Any] = {
     "display.latex.repr": False,
     "mode.chained_assignment": "warn",
     "mode.use_inf_as_na": False,
+    "compute.use_bottleneck": True,
+    "compute.use_numexpr": True,
 }
 
 # 默认选项的副本（用于 reset_option）
@@ -311,15 +313,22 @@ def concat(
 
 
 def isnull(obj):
-    """检测缺失值 (None)。"""
+    """检测缺失值 (None 或 NaN)。"""
     if isinstance(obj, _Series):
         return obj.isnull()
     elif isinstance(obj, DataFrame):
         return obj.isnull()
     elif isinstance(obj, list):
-        return [v is None for v in obj]
+        return [v is None or (isinstance(v, float) and v != v) for v in obj]
+    elif hasattr(obj, "tolist") and hasattr(obj, "dtype"):
+        # rsnumpy.ndarray: 逐元素检测 NaN
+        import rsnumpy as _rnp
+
+        vals = obj.tolist() if hasattr(obj, "tolist") else list(obj)
+        mask = [v is None or (isinstance(v, float) and v != v) for v in vals]
+        return _rnp.array(mask)
     else:
-        return obj is None
+        return obj is None or (isinstance(obj, float) and obj != obj)
 
 
 def notnull(obj):
@@ -329,9 +338,16 @@ def notnull(obj):
     elif isinstance(obj, DataFrame):
         return obj.notnull()
     elif isinstance(obj, list):
-        return [v is not None for v in obj]
+        return [v is not None and not (isinstance(v, float) and v != v) for v in obj]
+    elif hasattr(obj, "tolist") and hasattr(obj, "dtype"):
+        # rsnumpy.ndarray: 逐元素检测非缺失
+        import rsnumpy as _rnp
+
+        vals = obj.tolist() if hasattr(obj, "tolist") else list(obj)
+        mask = [v is not None and not (isinstance(v, float) and v != v) for v in vals]
+        return _rnp.array(mask)
     else:
-        return obj is not None
+        return obj is not None and not (isinstance(obj, float) and obj != obj)
 
 
 # isna / notna 别名
@@ -361,7 +377,7 @@ def value_counts(
     raise TypeError("value_counts requires Series or list")
 
 
-__version__ = "2.0.9"
+__version__ = "2.1.0"
 __all__ = [
     "Series",
     "DataFrame",
@@ -457,7 +473,7 @@ __all__ = [
 
 
 # ============================================================================
-# rsnumpy 函数包装 - 让 np.exp(Series) 返回 Series 而非 ndarray
+# rsnumpy 函数包装 - 让 rnp.exp(Series) 返回 Series 而非 ndarray
 # ============================================================================
 
 
@@ -764,29 +780,89 @@ def _wrap_rsnumpy_functions():
         if hasattr(_rnp, fname):
             setattr(_rnp, fname, _apply_binary_ufunc(fname))
 
-    # 包装 asarray 使其对 Series/DataFrame 返回真正的 numpy ndarray（显示格式对齐 pandas）
+    # 包装 asarray 使其对 Series/DataFrame 返回 rsnumpy ndarray（显示格式对齐 pandas）
     original_asarray = _rnp.asarray if hasattr(_rnp, "asarray") else None
     if original_asarray is not None:
 
         def _wrap_asarray(a, *args, **kwargs):
             if isinstance(a, _Series):
-                # 返回真正的 numpy 数组以获得正确的显示格式
-                import numpy as _np
-
-                return _np.array(list(a.values), *args, **kwargs)
+                # 返回 rsnumpy ndarray 以获得正确的显示格式
+                # 将 None 替换为 NaN (rsnumpy 不支持 None)
+                vals = list(a.values)
+                vals = [float("nan") if v is None else v for v in vals]
+                return _rnp.array(vals, *args, **kwargs)
             if isinstance(a, _DataFrame):
-                import numpy as _np
-
-                # 将 DataFrame 转换为 numpy 二维数组
+                # 将 DataFrame 转换为 rsnumpy 二维数组
                 cols = list(a._columns)
                 data = [
-                    [a._inner.get_column(c).values[i] for c in cols]
+                    [
+                        float("nan") if a._inner.get_column(c).values[i] is None
+                        else a._inner.get_column(c).values[i]
+                        for c in cols
+                    ]
                     for i in range(a._nrows)
                 ]
-                return _np.array(data, *args, **kwargs)
+                return _rnp.array(data, *args, **kwargs)
             return original_asarray(a, *args, **kwargs)
 
         _rnp.asarray = _wrap_asarray
+
+    # 包装聚合函数 (mean/sum/std/var/min/max/median/prod)
+    # 使 Series 输入时默认排除 NA (与 pandas 行为一致):
+    #   np.mean(series)            -> 排除 NA (委托给 series.mean(skipna=True))
+    #   np.mean(series.to_numpy()) -> 不排除 NA (走 rsnumpy 原生路径)
+    _reduction_map = {
+        "mean": "mean",
+        "sum": "sum",
+        "std": "std",
+        "var": "var",
+        "min": "min",
+        "max": "max",
+        "amin": "min",
+        "amax": "max",
+        "median": "median",
+        "prod": "prod",
+        "product": "prod",
+    }
+    for fname, method_name in _reduction_map.items():
+        if not hasattr(_rnp, fname):
+            continue
+        _original = getattr(_rnp, fname)
+
+        def _make_reduction(_fn, _mn, _orig):
+            def wrapper(a, *args, **kwargs):
+                if isinstance(a, _Series):
+                    method = getattr(a, _mn)
+                    if _fn in ("std", "var"):
+                        # pandas 默认 ddof=1, numpy 默认 ddof=0
+                        # np.std(series) 采用 pandas 语义 (ddof=1)
+                        ddof = kwargs.get("ddof", None)
+                        if ddof is None and len(args) > 3:
+                            ddof = args[3]
+                        if ddof is None:
+                            ddof = 1
+                        return method(skipna=True, ddof=ddof)
+                    return method()
+                if isinstance(a, _DataFrame):
+                    from .series import Series as _SSeries
+
+                    target_cols = [
+                        c
+                        for c in a._columns
+                        if a._inner.get_column(c).dtype in ("int64", "float64")
+                    ]
+                    return _SSeries(
+                        {
+                            c: wrapper(a._get_column_as_series(c), *args, **kwargs)
+                            for c in target_cols
+                        }
+                    )
+                return _orig(a, *args, **kwargs)
+
+            wrapper.__name__ = _fn
+            return wrapper
+
+        setattr(_rnp, fname, _make_reduction(fname, method_name, _original))
 
 
 # 在模块加载时执行包装
