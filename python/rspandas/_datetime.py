@@ -100,7 +100,13 @@ def _to_iso(v) -> Optional[str]:
         return None
     if isinstance(v, datetime):
         # naive datetime 且时间为 00:00:00 -> 只显示日期
-        if v.tzinfo is None and v.hour == 0 and v.minute == 0 and v.second == 0 and v.microsecond == 0:
+        if (
+            v.tzinfo is None
+            and v.hour == 0
+            and v.minute == 0
+            and v.second == 0
+            and v.microsecond == 0
+        ):
             return v.strftime("%Y-%m-%d")
         # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
         s = v.isoformat()
@@ -313,7 +319,18 @@ class DatetimeSeries:
         # datetime64[ns] (或 datetime64[us]/[ms] 简化为 ns)
         if dtype_str.startswith("datetime64"):
             # 转换为纳秒纪元 (int)
-            epoch = datetime(1970, 1, 1, tzinfo=vals[0].tzinfo if vals and isinstance(vals[0], datetime) and vals[0].tzinfo is not None else None)
+            epoch = datetime(
+                1970,
+                1,
+                1,
+                tzinfo=(
+                    vals[0].tzinfo
+                    if vals
+                    and isinstance(vals[0], datetime)
+                    and vals[0].tzinfo is not None
+                    else None
+                ),
+            )
             nano_vals: list = []
             for v in vals:
                 if v is None:
@@ -979,9 +996,7 @@ def _parse_timedelta_str(s: str) -> timedelta:
 
     # 如果剩余部分是 HH:MM:SS 格式
     if rest:
-        time_match = re.match(
-            r"^(\d+):(\d+):(\d+)(?:\.(\d+))?$", rest
-        )
+        time_match = re.match(r"^(\d+):(\d+):(\d+)(?:\.(\d+))?$", rest)
         if time_match:
             h = int(time_match.group(1))
             m = int(time_match.group(2))
@@ -992,7 +1007,9 @@ def _parse_timedelta_str(s: str) -> timedelta:
                 # 补齐到 6 位微秒
                 frac = (frac + "000000")[:6]
                 us = int(frac)
-            return timedelta(days=days, hours=h, minutes=m, seconds=sec, microseconds=us)
+            return timedelta(
+                days=days, hours=h, minutes=m, seconds=sec, microseconds=us
+            )
         # 如果只有 days 部分
         if days > 0:
             return timedelta(days=days)

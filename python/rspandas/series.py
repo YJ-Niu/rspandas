@@ -1210,8 +1210,7 @@ class Series:
             ]
         else:
             result = [
-                None if (v is None or other is None) else v & other
-                for v in self.values
+                None if (v is None or other is None) else v & other for v in self.values
             ]
         return self._bitwise_series(result)
 
@@ -1236,8 +1235,7 @@ class Series:
             ]
         else:
             result = [
-                None if (v is None or other is None) else v | other
-                for v in self.values
+                None if (v is None or other is None) else v | other for v in self.values
             ]
         return self._bitwise_series(result)
 
@@ -1262,8 +1260,7 @@ class Series:
             ]
         else:
             result = [
-                None if (v is None or other is None) else v ^ other
-                for v in self.values
+                None if (v is None or other is None) else v ^ other for v in self.values
             ]
         return self._bitwise_series(result)
 
@@ -1886,72 +1883,70 @@ class Series:
 
     def sort_values(
         self,
+        axis: int = 0,
         ascending: bool = True,
         inplace: bool = False,
         kind: str = "quicksort",
         na_position: str = "last",
+        ignore_index: bool = False,
+        key=None,
     ) -> _PySeries:
         """按值排序。
 
+        :param axis: 轴方向（Series 仅支持 0）
         :param ascending: 是否升序 (默认 True)
         :param inplace: 是否原地修改 (默认 False)
         :param kind: 排序算法 ('quicksort'/'mergesort'/'heapsort'/'stable')
         :param na_position: None 值的位置 ('first' 或 'last', 默认 'last')
+        :param ignore_index: 是否忽略索引并从 0 开始重新生成
+        :param key: 应用于待排序值的排序键函数（如 ``lambda x: x.str.lower()``）
         """
-        # 尝试调用 Rust 层加速（仅在默认 RangeIndex 时，因为 Rust 层不处理索引同步）
-        if _is_range_index(self._index):
-            try:
-                new_inner = self._inner.sort_values(ascending=ascending)
-                new_values = list(new_inner.values)
-                # 处理 na_position：Rust 层 ascending=True 时 None 放最后，
-                # ascending=False 时 None 放最前，需按 na_position 调整
-                none_count = sum(1 for v in new_values if v is None)
-                if none_count > 0:
-                    rust_none_first = not ascending
-                    want_none_first = na_position == "first"
-                    if rust_none_first != want_none_first:
-                        non_none_vals = [v for v in new_values if v is not None]
-                        if want_none_first:
-                            new_values = [None] * none_count + non_none_vals
-                        else:
-                            new_values = non_none_vals + [None] * none_count
-                new_index = list(range(len(new_values)))
-                if inplace:
-                    self._inner = _PySeries(
-                        new_values, self.name, dtype=self._dtype_str
-                    )
-                    self._index = new_index
-                    return self
-                return Series(
-                    new_values,
-                    name=self.name,
-                    dtype=self._dtype_str,
-                    index=new_index,
-                )
-            except Exception:
-                pass
-        # 回退到原 Python 实现（自定义索引或 Rust 调用失败时）
-        pairs = [(i, v) for i, v in enumerate(self.values)]
+        if axis != 0:
+            raise ValueError(f"axis must be 0 for Series, got {axis}")
+
+        n = len(self.values)
+
+        # 使用 Python 实现（保留原始索引标签，对齐 pandas 行为；
+        # Rust 层 sort_values 会重排索引，无法保留原始索引标签，故不使用）
+        values = list(self.values)
+
+        # 应用 key 函数（若有）
+        sort_vals = values
+        if key is not None:
+            tmp = Series(values, name=self.name, index=self._index)
+            transformed = key(tmp)
+            if hasattr(transformed, "values"):
+                sort_vals = list(transformed.values)
+            elif hasattr(transformed, "tolist"):
+                sort_vals = list(transformed.tolist())
+            else:
+                sort_vals = list(transformed)
+            if len(sort_vals) != n:
+                raise ValueError("key function must return an index of the same length")
+
         # 分离 None 和非 None
-        non_none = [(i, v) for i, v in pairs if v is not None]
-        none_items = [(i, v) for i, v in pairs if v is None]
+        non_none = [i for i in range(n) if sort_vals[i] is not None]
+        none_items = [i for i in range(n) if sort_vals[i] is None]
 
         try:
-            non_none.sort(key=lambda x: x[1], reverse=not ascending)
+            non_none.sort(key=lambda i: sort_vals[i], reverse=not ascending)
         except TypeError:
             raise TypeError("cannot sort mixed types")
 
         # 根据 na_position 决定 None 的位置
         if na_position == "first":
-            sorted_pairs = none_items + non_none
+            order = none_items + non_none
         else:  # 'last'
-            sorted_pairs = non_none + none_items
+            order = non_none + none_items
 
-        new_values = [v for _, v in sorted_pairs]
+        new_values = [values[i] for i in order]
         if self._index is not None:
-            new_index = [self._index[i] for i, _ in sorted_pairs]
+            new_index = [self._index[i] for i in order]
         else:
             new_index = None
+        if ignore_index:
+            new_index = list(range(n))
+
         if inplace:
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
@@ -1987,10 +1982,7 @@ class Series:
         """
         if isinstance(arg, dict):
             if na_action == "ignore":
-                out = [
-                    arg.get(v, v) if not _is_missing(v) else v
-                    for v in self.values
-                ]
+                out = [arg.get(v, v) if not _is_missing(v) else v for v in self.values]
             else:
                 out = [arg.get(v, None) for v in self.values]
         elif isinstance(arg, Series):
@@ -1998,8 +1990,7 @@ class Series:
             mapping = dict(zip(arg.index, arg.values))
             if na_action == "ignore":
                 out = [
-                    mapping.get(v, v) if not _is_missing(v) else v
-                    for v in self.values
+                    mapping.get(v, v) if not _is_missing(v) else v for v in self.values
                 ]
             else:
                 out = [mapping.get(v, float("nan")) for v in self.values]
@@ -2545,13 +2536,29 @@ class Series:
         from datetime import timedelta
 
         unit_map = {
-            "d": "days", "day": "days", "days": "days",
-            "h": "hours", "hour": "hours", "hours": "hours", "hr": "hours",
-            "m": "minutes", "minute": "minutes", "minutes": "minutes", "min": "minutes",
-            "s": "seconds", "second": "seconds", "seconds": "seconds",
-            "ms": "milliseconds", "millisecond": "milliseconds", "milliseconds": "milliseconds",
-            "us": "microseconds", "microsecond": "microseconds", "microseconds": "microseconds",
-            "w": "weeks", "week": "weeks", "weeks": "weeks",
+            "d": "days",
+            "day": "days",
+            "days": "days",
+            "h": "hours",
+            "hour": "hours",
+            "hours": "hours",
+            "hr": "hours",
+            "m": "minutes",
+            "minute": "minutes",
+            "minutes": "minutes",
+            "min": "minutes",
+            "s": "seconds",
+            "second": "seconds",
+            "seconds": "seconds",
+            "ms": "milliseconds",
+            "millisecond": "milliseconds",
+            "milliseconds": "milliseconds",
+            "us": "microseconds",
+            "microsecond": "microseconds",
+            "microseconds": "microseconds",
+            "w": "weeks",
+            "week": "weeks",
+            "weeks": "weeks",
         }
         if unit not in unit_map:
             raise ValueError(f"Unknown tolerance unit: {unit!r}")
@@ -2879,16 +2886,12 @@ class Series:
                 raise ValueError(f"Unknown function: {func}")
             if isinstance(result, Series):
                 return result
-            return Series(
-                [result] * len(self), name=self.name, index=self._index
-            )
+            return Series([result] * len(self), name=self.name, index=self._index)
         elif callable(func):
             result = func(self, *args, **kwargs)
             if isinstance(result, Series):
                 return result
-            return Series(
-                [result] * len(self), name=self.name, index=self._index
-            )
+            return Series([result] * len(self), name=self.name, index=self._index)
         raise TypeError("func must be callable, string, or list")
 
     def agg(self, func, axis: int = 0, *args, **kwargs) -> Any:
@@ -2915,9 +2918,7 @@ class Series:
                     if hasattr(self, agg_func):
                         results.append(getattr(self, agg_func)())
                     else:
-                        raise ValueError(
-                            f"Unknown aggregation function: {agg_func}"
-                        )
+                        raise ValueError(f"Unknown aggregation function: {agg_func}")
                 elif callable(agg_func):
                     results.append(agg_func(self))
                 else:
@@ -3015,17 +3016,13 @@ class Series:
         :return: (aligned_self, aligned_other) 两个重新索引后的 Series
         """
         if not isinstance(other, Series):
-            raise TypeError(
-                f"align requires Series input, got {type(other).__name__}"
-            )
+            raise TypeError(f"align requires Series input, got {type(other).__name__}")
 
         self_index = (
             list(self._index) if self._index is not None else list(range(len(self)))
         )
         other_index = (
-            list(other._index)
-            if other._index is not None
-            else list(range(len(other)))
+            list(other._index) if other._index is not None else list(range(len(other)))
         )
 
         # 根据 join 计算新索引
@@ -3429,23 +3426,33 @@ class Series:
                 list(stats.values()), index=list(stats.keys()), dtype="object"
             )
 
-        # 数值型: 在 Python 层直接计算，确保 ddof=1 (pandas 默认) 和 NaN 过滤
+        # 数值型：调用 Rust 层 batch_agg 一次性得到 count/mean/std/min/max
         if percentiles is None:
             percentiles = [0.25, 0.5, 0.75]
         else:
             percentiles = list(percentiles)
-        # 中位数 (50%) 始终包含
         if 0.5 not in percentiles:
             percentiles = list(percentiles) + [0.5]
-        # 校验分位数范围
         for p in percentiles:
             if not (0.0 <= p <= 1.0):
-                raise ValueError(
-                    f"percentiles 应在 [0, 1] 范围内，得到 {p}"
-                )
+                raise ValueError(f"percentiles 应在 [0, 1] 范围内，得到 {p}")
         percentiles = sorted(set(percentiles))
 
-        # 提取纯数值 (排除 None/NaN/bool)
+        # Rust 批量聚合: count, mean, std, min, max
+        aggs = ["count", "mean", "std", "min", "max"]
+        try:
+            agg_result = list(self._inner.batch_agg(aggs))
+            count_val = agg_result[0] if len(agg_result) > 0 else None
+            mean_val = agg_result[1] if len(agg_result) > 1 else None
+            std_val = agg_result[2] if len(agg_result) > 2 else None
+            min_val = agg_result[3] if len(agg_result) > 3 else None
+            max_val = agg_result[4] if len(agg_result) > 4 else None
+        except Exception:
+            agg_result = None
+            count_val = mean_val = std_val = min_val = max_val = None
+
+        # 分位数仍然用 Python 层计算（Rust quantile 要多次调用排序，
+        # 这里 Python 一次 sort 可复用）
         vals = [
             float(v)
             for v in non_null
@@ -3454,7 +3461,6 @@ class Series:
         n = len(vals)
 
         if n == 0:
-            # 全部为缺失值时返回 NaN 填充的统计
             stat_names = (
                 ["count", "mean", "std", "min"]
                 + [f"{int(p * 100)}%" for p in percentiles]
@@ -3465,15 +3471,23 @@ class Series:
                 index=stat_names,
             )
 
-        # 计算统计值
-        mean_val = sum(vals) / n
-        # pandas describe 默认 ddof=1
-        if n > 1:
-            std_val = (sum((v - mean_val) ** 2 for v in vals) / (n - 1)) ** 0.5
-        else:
-            std_val = float("nan")
+        # 若 Rust 聚合失败则回退 Python 计算
+        if count_val is None:
+            count_val = float(n)
+        if mean_val is None:
+            mean_val = sum(vals) / n
+        if std_val is None:
+            if n > 1:
+                m = mean_val
+                std_val = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5
+            else:
+                std_val = float("nan")
 
         sorted_vals = sorted(vals)
+        if min_val is None:
+            min_val = sorted_vals[0]
+        if max_val is None:
+            max_val = sorted_vals[-1]
 
         def _quantile(q: float) -> float:
             """线性插值法计算分位数。"""
@@ -3486,13 +3500,13 @@ class Series:
             return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
 
         stats = {
-            "count": float(n),
-            "mean": mean_val,
-            "std": std_val,
-            "min": sorted_vals[0],
+            "count": float(count_val),
+            "mean": float(mean_val),
+            "std": float(std_val),
+            "min": float(min_val),
         }
         stats.update({f"{int(p * 100)}%": _quantile(p) for p in percentiles})
-        stats["max"] = sorted_vals[-1]
+        stats["max"] = float(max_val)
 
         return Series(list(stats.values()), index=list(stats.keys()))
 
@@ -3644,39 +3658,29 @@ class Series:
         """
         if bins is not None:
             raise NotImplementedError("bins parameter is not supported yet")
+        if not dropna:
+            # dropna=False 保留 None：回退到 Python 实现
+            values_list = self.values
+            from collections import Counter
 
-        # 获取值并计数
-        values_list = self.values
+            counter = Counter(values_list)
+            items = list(counter.items())
+            if sort:
+                items.sort(key=lambda x: x[1], reverse=not ascending)
+            unique_values = [v for v, _ in items]
+            counts = [c for _, c in items]
+            if normalize:
+                total = sum(counts)
+                counts = [c / total for c in counts]
+            return Series(counts, index=unique_values, name=self.name)
 
-        # 处理 dropna
-        if dropna:
-            values_list = [v for v in values_list if v is not None]
-        else:
-            # None 作为一个独立值参与计数
-            pass
-
-        # 计数
-        from collections import Counter
-
-        counter = Counter(values_list)
-
-        # 构建 (值, 计数) 列表
-        items = list(counter.items())
-
-        # 排序
-        if sort:
-            items.sort(key=lambda x: x[1], reverse=not ascending)
-
-        # 提取值和计数
-        unique_values = [v for v, _ in items]
-        counts = [c for _, c in items]
-
-        # 归一化
+        # 默认路径 (dropna=True)：调用 Rust 层快速实现
+        vals, cnts = self._inner.value_counts(sort, ascending)
+        counts = list(cnts)
         if normalize:
             total = sum(counts)
             counts = [c / total for c in counts]
-
-        return Series(counts, index=unique_values, name=self.name)
+        return Series(counts, index=list(vals), name=self.name)
 
     # ---------- 统计方法 (v1.0.0) ----------
 
@@ -3696,99 +3700,23 @@ class Series:
         :param ascending: 是否升序排名 (默认 True)
         :param pct: 是否返回百分比排名 (默认 False)
         """
-        # 优先调用 Rust 层（支持 average/min/max/first，na_option=keep）
+        # 优先调用 Rust 层（现已支持 dense + na_option=keep/top/bottom）
         if (
-            method in ("average", "min", "max", "first")
-            and na_option == "keep"
+            method in ("average", "min", "max", "first", "dense")
+            and na_option in ("keep", "top", "bottom")
             and numeric_only is None
         ):
-            try:
-                ranks = self._inner.rank(method, ascending)
-                if pct:
-                    # pct=True: 除以最大排名
-                    valid_ranks = [r for r in ranks if r is not None]
-                    max_rank = max(valid_ranks) if valid_ranks else 1
+            ranks = self._inner.rank(method, ascending, na_option)
+            if pct:
+                # pct=True: 除以最大排名（非 None）
+                valid_ranks = [r for r in ranks if r is not None]
+                if valid_ranks:
+                    max_rank = max(valid_ranks)
                     ranks = [(r / max_rank) if r is not None else None for r in ranks]
-                return Series(ranks, name=self.name, index=self._index)
-            except Exception:
-                pass
-
-        # 回退到 Python 实现
-        values = self.values
-        n = len(values)
-
-        # 处理 na_option
-        if na_option not in ("keep", "top", "bottom"):
-            raise ValueError(f"Invalid na_option: {na_option}")
-
-        # 创建 (value, original_index) 对
-        if na_option == "keep":
-            indexed = [(v, i) for i, v in enumerate(values) if v is not None]
-        elif na_option == "top":
-            indexed = [(v, i) for i, v in enumerate(values)]
-        else:  # bottom
-            indexed = [(v, i) for i, v in enumerate(values)]
-
-        # 排序
-        indexed.sort(
-            key=lambda x: (x[0] is None, x[0]) if na_option == "keep" else x[0],
-            reverse=not ascending,
-        )
-
-        ranks = [None] * n
-        if not indexed:
             return Series(ranks, name=self.name, index=self._index)
 
-        if method == "first":
-            for rank, (_, idx) in enumerate(indexed, 1):
-                if values[idx] is not None or na_option != "keep":
-                    ranks[idx] = rank
-        elif method == "min":
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                start = i
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    i += 1
-                rank = start + 1
-                for j in range(start, i):
-                    ranks[indexed[j][1]] = rank
-        elif method == "max":
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                start = i
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    i += 1
-                rank = i
-                for j in range(start, i):
-                    ranks[indexed[j][1]] = rank
-        elif method == "dense":
-            dense_rank = 1
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    ranks[indexed[i][1]] = dense_rank
-                    i += 1
-                dense_rank += 1
-        else:  # average
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                start = i
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    i += 1
-                avg_rank = (start + 1 + i) / 2
-                for j in range(start, i):
-                    ranks[indexed[j][1]] = avg_rank
-
-        # 百分比排名
-        if pct:
-            max_rank = max(r for r in ranks if r is not None)
-            ranks = [r / max_rank if r is not None else None for r in ranks]
-
-        return Series(ranks, name=self.name, index=self._index)
+        # 未知 method 才回退到 Python
+        raise ValueError(f"Unsupported rank method: {method}")
 
     def quantile(self, q=0.5, interpolation: str = "linear") -> float:
         """计算分位数。
@@ -3840,6 +3768,34 @@ class Series:
             return values[lower] if frac < 0.5 else values[upper]
         else:
             raise ValueError(f"Invalid interpolation method: {interpolation}")
+
+    def searchsorted(self, value, side: str = "left", sorter=None) -> "rnp.ndarray":
+        """在已升序的 Series 中查找 value 的插入位置（二分查找）。
+
+        等价于 ``numpy.searchsorted`` / ``pandas.Series.searchsorted``。
+
+        :param value: 标量或 list/tuple/ndarray，要查找的目标值
+        :param side: ``"left"``（默认，bisect_left）或 ``"right"``（bisect_right）
+        :param sorter: 可选整数索引数组（长度与 self 相同），使 ``self[sorter]``
+                       为升序。当 self 本身无序时通过传入 ``np.argsort(self)``
+                       实现正确的 searchsorted。可为 list/tuple/ndarray。
+        :return: rsnumpy 一维 ndarray（dtype=int64），长度与 ``value`` 扁平化后相同。
+                 单个标量输入时仍返回长度为 1 的数组（与 pandas 行为一致）。
+        """
+        import rsnumpy as rnp
+
+        # 预处理 sorter：若传入 rsnumpy.ndarray 则 list(tuple) 化以适配 Rust 端
+        # sorter 也可能是 numpy-like，取 tolist/迭代即可。
+        if sorter is not None:
+            if hasattr(sorter, "tolist"):
+                _sorter = sorter.tolist()
+            else:
+                _sorter = list(sorter)
+        else:
+            _sorter = None
+        indices = list(self._inner.searchsorted(value, side, _sorter))
+        arr = rnp.ndarray(indices, _dtype="int64")
+        return arr
 
     def mode(self, dropna: bool = True) -> _PySeries:
         """返回众数。"""
@@ -6570,19 +6526,17 @@ class StringAccessor:
         )
 
     def lower(self) -> _PySeries:
-        # 检查是否有 NaN 值（Rust 层将 NaN 转为字符串 'NaN'，需在 Python 层处理）
+        # 优先调用 Rust 层（使用 rayon 并行 to_lowercase，避免 Python 层多次遍历）
+        try:
+            new_inner = self._s._inner.str_lower()
+            return Series(
+                new_inner, name=self._s.name, index=self._s._index, dtype="str"
+            )
+        except Exception:
+            pass
+        # 回退：Python 层实现（Rust 失败时使用）
         vals = self._s.values
-        # 先转换所有值为 str 或 None
         str_vals = [self._ensure_str(v) for v in vals]
-        has_nan = any(v is None for v in str_vals)
-        if not has_nan:
-            try:
-                new_inner = self._s._inner.str_lower()
-                return Series(
-                    new_inner, name=self._s.name, index=self._s._index, dtype="str"
-                )
-            except Exception:
-                pass
         return self._wrap([v.lower() if v is not None else None for v in str_vals])
 
     def title(self) -> _PySeries:
@@ -6696,12 +6650,9 @@ class StringAccessor:
         if expand:
             raise NotImplementedError("expand=True is not supported yet")
         result = [
-            str(v).split(pat, n) if v is not None else None
-            for v in self._s.values
+            str(v).split(pat, n) if v is not None else None for v in self._s.values
         ]
-        return Series(
-            result, name=self._s.name, index=self._s._index, dtype="object"
-        )
+        return Series(result, name=self._s.name, index=self._s._index, dtype="object")
 
     def slice(self, start=None, stop=None, step=None) -> _PySeries:
         s = slice(start, stop, step)
@@ -7399,9 +7350,7 @@ class DatetimeAccessor:
 
         tzobj = _normalize_tz(tz)
         dt_vals = self._get_dt_values()
-        localized = [
-            _localize(v, tzobj) if v is not None else None for v in dt_vals
-        ]
+        localized = [_localize(v, tzobj) if v is not None else None for v in dt_vals]
         # 使用新的 datetime 值创建 Series
         new_series = Series(
             localized,
@@ -7438,9 +7387,7 @@ class DatetimeAccessor:
                 # naive datetime: 先假设是 UTC，再转换
                 from datetime import timezone
 
-                converted.append(
-                    v.replace(tzinfo=timezone.utc).astimezone(tzobj)
-                )
+                converted.append(v.replace(tzinfo=timezone.utc).astimezone(tzobj))
             else:
                 converted.append(v.astimezone(tzobj))
         # 使用新的 datetime 值创建 Series

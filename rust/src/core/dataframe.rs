@@ -355,6 +355,151 @@ impl DataFrame {
         }
     }
 
+    // ---------- 列并行批量方法（Python 层变薄：一次性 R 调用） ----------
+
+    /// 所有列并行前向填充 (ffill)
+    pub fn par_ffill_all(&self) -> DataFrame {
+        let n_data: Vec<Series> = self.data.par_iter().map(|s| s.ffill()).collect();
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
+    }
+
+    /// 所有列并行后向填充 (bfill)
+    pub fn par_bfill_all(&self) -> DataFrame {
+        let n_data: Vec<Series> = self.data.par_iter().map(|s| s.bfill()).collect();
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
+    }
+
+    /// 所有列并行执行批量聚合（每个 Series 调用 batch_agg）
+    /// aggs: 聚合名列表如 ["count","sum","mean","std","min","max"]
+    /// 返回: 按列顺序，每列对应一个聚合结果 Vec<Option<f64>>（长度 = aggs.len()）
+    pub fn par_batch_agg(&self, aggs: &[String]) -> Vec<Vec<Option<f64>>> {
+        self.data.par_iter().map(|s| s.batch_agg(aggs)).collect()
+    }
+
+    /// 所有列并行计算 sum（跳过 None / NaN）
+    /// 返回按列顺序的结果: f64 列返回值，非数值列返回 None
+    pub fn par_sum_all(&self) -> Vec<Option<f64>> {
+        self.data
+            .par_iter()
+            .map(|s| match s.dtype() {
+                DType::Float64 => s.sum_f64(),
+                DType::Int64 => s.sum_i64().map(|v| v as f64),
+                DType::Bool => Some(s.sum_bool() as f64),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 所有列并行计算 mean（仅数值列）
+    pub fn par_mean_all(&self) -> Vec<Option<f64>> {
+        self.data.par_iter().map(|s| s.mean()).collect()
+    }
+
+    /// 所有列并行计算 std（ddof=1 默认）
+    pub fn par_std_all(&self, ddof: usize) -> Vec<Option<f64>> {
+        self.data
+            .par_iter()
+            .map(|s| {
+                let vs: Vec<f64> = s.as_f64_vec().into_iter().flatten().collect();
+                let n = vs.len();
+                if n <= ddof {
+                    return None;
+                }
+                let mean: f64 = vs.iter().sum::<f64>() / n as f64;
+                let var: f64 =
+                    vs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - ddof) as f64;
+                Some(var.sqrt())
+            })
+            .collect()
+    }
+
+    /// 所有列并行计算 min（仅数值列）
+    pub fn par_min_all(&self) -> Vec<Option<f64>> {
+        self.data
+            .par_iter()
+            .map(|s| match s.dtype() {
+                DType::Float64 => s.min_f64(),
+                DType::Int64 => s.min_i64().map(|v| v as f64),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 所有列并行计算 max（仅数值列）
+    pub fn par_max_all(&self) -> Vec<Option<f64>> {
+        self.data
+            .par_iter()
+            .map(|s| match s.dtype() {
+                DType::Float64 => s.max_f64(),
+                DType::Int64 => s.max_i64().map(|v| v as f64),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 所有列并行 count（非空值数量）
+    pub fn par_count_all(&self) -> Vec<usize> {
+        self.data.par_iter().map(|s| s.count()).collect()
+    }
+
+    /// 所有列并行 quantile（仅数值列）
+    pub fn par_quantile_all(&self, q: f64) -> Vec<Option<f64>> {
+        self.data.par_iter().map(|s| s.quantile(q)).collect()
+    }
+
+    /// 所有列并行 any（跳过 None / NaN）
+    pub fn par_any_all(&self) -> Vec<Option<bool>> {
+        self.data.par_iter().map(|s| s.any()).collect()
+    }
+
+    /// 所有列并行 all（跳过 None / NaN）
+    pub fn par_all_all(&self) -> Vec<Option<bool>> {
+        self.data.par_iter().map(|s| s.all()).collect()
+    }
+
+    /// 所有列并行 nunique（统计唯一值数量，自动跳过 None）
+    pub fn par_nunique_all(&self) -> Vec<usize> {
+        self.data.par_iter().map(|s| s.nunique()).collect()
+    }
+
+    /// 所有列并行 isnull：返回全新的 bool DataFrame（列名不变）
+    pub fn par_isnull_all(&self) -> DataFrame {
+        let n_data: Vec<Series> = self
+            .data
+            .par_iter()
+            .map(|s| {
+                let mask: Vec<Option<bool>> = s.isnull().into_iter().map(Some).collect();
+                Series::new_bool(s.name.clone(), mask)
+            })
+            .collect();
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
+    }
+
+    /// 所有列并行 notnull：返回全新的 bool DataFrame（列名不变）
+    pub fn par_notnull_all(&self) -> DataFrame {
+        let n_data: Vec<Series> = self
+            .data
+            .par_iter()
+            .map(|s| {
+                let mask: Vec<Option<bool>> = s.notnull().into_iter().map(Some).collect();
+                Series::new_bool(s.name.clone(), mask)
+            })
+            .collect();
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
+    }
+
     /// 基于键列的哈希连接
     /// left_on/right_on: 左右表的键列索引
     /// how: "inner"=内连接, "left"=左连接, "right"=右连接, "outer"=外连接
@@ -1139,6 +1284,165 @@ impl PyDataFrame {
     fn fillna_all_string(&self, py: Python<'_>, v: &str) -> Self {
         let v_owned = v.to_string();
         let inner = py.detach(|| self.inner.fillna_all_string(&v_owned));
+        PyDataFrame { inner }
+    }
+
+    // ---------- 列并行批量方法（Python for 循环 → Rust rayon 并行） ----------
+
+    /// 所有列并行 ffill（一次调用替代 Python 逐列 for 循环）
+    fn par_ffill_all(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.par_ffill_all());
+        PyDataFrame { inner }
+    }
+
+    /// 所有列并行 bfill
+    fn par_bfill_all(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.par_bfill_all());
+        PyDataFrame { inner }
+    }
+
+    /// 所有列并行 sum → list[float|None]（按列顺序）
+    fn par_sum_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_sum_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 mean
+    fn par_mean_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_mean_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 std（ddof 自由度）
+    fn par_std_all<'py>(&self, py: Python<'py>, ddof: usize) -> Bound<'py, PyList> {
+        let result = py.detach(move || self.inner.par_std_all(ddof));
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 min
+    fn par_min_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_min_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 max
+    fn par_max_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_max_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 count（非空值数）
+    fn par_count_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_count_all());
+        PyList::new(py, result).unwrap()
+    }
+
+    /// 所有列并行 quantile
+    fn par_quantile_all<'py>(&self, py: Python<'py>, q: f64) -> Bound<'py, PyList> {
+        let result = py.detach(move || self.inner.par_quantile_all(q));
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行批量聚合（返回每列的聚合结果二维列表，行=列，列=aggs顺序）
+    fn par_batch_agg<'py>(&self, py: Python<'py>, aggs: Vec<String>) -> Bound<'py, PyList> {
+        let result = py.detach(move || self.inner.par_batch_agg(&aggs));
+        let outer = PyList::empty(py);
+        for col_r in result {
+            let inner_list = PyList::empty(py);
+            for r in col_r {
+                match r {
+                    Some(v) => inner_list.append(v).unwrap(),
+                    None => inner_list.append(py.None()).unwrap(),
+                }
+            }
+            outer.append(inner_list).unwrap();
+        }
+        outer
+    }
+
+    /// 所有列并行 any → list[bool|None]（按列顺序）
+    fn par_any_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_any_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 all → list[bool|None]
+    fn par_all_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_all_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 nunique → list[int]（按列顺序）
+    fn par_nunique_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_nunique_all());
+        PyList::new(py, result).unwrap()
+    }
+
+    /// 所有列并行 isnull → 返回 bool DataFrame（每列变为 bool 类型）
+    fn par_isnull_all(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.par_isnull_all());
+        PyDataFrame { inner }
+    }
+
+    /// 所有列并行 notnull → 返回 bool DataFrame
+    fn par_notnull_all(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.par_notnull_all());
         PyDataFrame { inner }
     }
 

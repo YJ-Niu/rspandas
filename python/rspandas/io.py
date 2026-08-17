@@ -1133,7 +1133,6 @@ def to_html(df: DataFrame, path=None, index: bool = True, **kwargs) -> Optional[
 
 def read_clipboard(**kwargs) -> DataFrame:
     """从系统剪贴板读取 DataFrame。
-
     需安装 pyperclip：pip install pyperclip
     """
     try:

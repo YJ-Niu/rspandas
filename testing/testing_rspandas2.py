@@ -549,4 +549,59 @@ print_series(278, s)
 print_series(279, s.dt.days)
 print_series(280, s.dt.seconds)
 print_series(281, s.dt.components)
+s = pd.Series(
+    ["A", "B", "C", "Aaba", "Baca", np.nan, "CABA", "dog", "cat"], dtype="string"
+)
+print_series(282, s.str.lower())
+df = pd.DataFrame(
+    {
+        "one": pd.Series(np.random.randn(3), index=["a", "b", "c"]),
+        "two": pd.Series(np.random.randn(4), index=["a", "b", "c", "d"]),
+        "three": pd.Series(np.random.randn(3), index=["b", "c", "d"]),
+    }
+)
+unsorted_df = df.reindex(
+    index=["a", "d", "c", "b"], columns=["three", "two", "one"]
+)
+print_series(283, unsorted_df)
+print_series(284, unsorted_df.sort_index())
+print_series(285, unsorted_df.sort_index(ascending=False))
+print_series(286, unsorted_df.sort_index(axis=1))
+print_series(287, unsorted_df["three"].sort_index())
+s1 = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3], "c": [2, 3, 4]}).set_index(
+    list("ab")
+)
+print_series(288, s1)
+print_series(289, s1.sort_index(level="a"))
+print_series(290, s1.sort_index(level="a", key=lambda idx: idx.str.lower()))
+df1 = pd.DataFrame(
+    {"one": [2, 1, 1, 1], "two": [1, 3, 2, 4], "three": [5, 4, 3, 2]}
+)
+print_series(291, df1.sort_values(by="two"))
+print_series(292, df1[["one", "two", "three"]].sort_values(by=["one", "two"]))
+s[2] = np.nan
+print_series(293, s.sort_values())
+print_series(294, s.sort_values(na_position="first"))
+s1 = pd.Series(["B", "a", "C"])
+print_series(295, s1.sort_values())
+print_series(296, s1.sort_values(key=lambda x: x.str.lower()))
+df = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3]})
+print_series(297, df.sort_values(by="a"))
+print_series(298, df.sort_values(by="a", key=lambda col: col.str.lower()))
+idx = pd.MultiIndex.from_tuples(
+    [("a", 1), ("a", 2), ("a", 2), ("b", 2), ("b", 1), ("b", 1)]
+)
+idx.names = ["first", "second"]
+df_multi = pd.DataFrame({"A": np.arange(6, 0, -1)}, index=idx)
+print_series(299, df_multi)
+print_series(300, df_multi.sort_values(by=["second", "A"]))
+ser = pd.Series([1, 2, 3])
+print_series(301, ser.searchsorted([0, 3]))
+print_series(302, ser.searchsorted([0, 4]))
+print_series(303, ser.searchsorted([1, 3], side="right"))
+print_series(304, ser.searchsorted([1, 3], side="left"))
+ser = pd.Series([3, 1, 2])
+print_series(305, ser.searchsorted([0, 3], sorter=np.argsort(ser)))
+s = pd.Series(np.random.permutation(10))
+print_series(306, s)
 print("end_time - start_time:", end_time - start_time)

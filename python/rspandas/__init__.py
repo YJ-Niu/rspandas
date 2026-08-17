@@ -377,7 +377,7 @@ def value_counts(
     raise TypeError("value_counts requires Series or list")
 
 
-__version__ = "2.1.1"
+__version__ = "2.1.2"
 __all__ = [
     "Series",
     "DataFrame",
@@ -796,8 +796,11 @@ def _wrap_rsnumpy_functions():
                 cols = list(a._columns)
                 data = [
                     [
-                        float("nan") if a._inner.get_column(c).values[i] is None
-                        else a._inner.get_column(c).values[i]
+                        (
+                            float("nan")
+                            if a._inner.get_column(c).values[i] is None
+                            else a._inner.get_column(c).values[i]
+                        )
                         for c in cols
                     ]
                     for i in range(a._nrows)
