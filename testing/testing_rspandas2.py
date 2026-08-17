@@ -604,4 +604,34 @@ ser = pd.Series([3, 1, 2])
 print_series(305, ser.searchsorted([0, 3], sorter=np.argsort(ser)))
 s = pd.Series(np.random.permutation(10))
 print_series(306, s)
+print_series(307, s.sort_values())
+print_series(308, s.nsmallest(3))
+print_series(309, s.nlargest(3))
+df = pd.DataFrame(
+    {
+        "a": [-2, -1, 1, 10, 8, 11, -1],
+        "b": list("abdceff"),
+        "c": [1.0, 2.0, 4.0, 3.2, np.nan, 3.0, 4.0],
+    }
+)
+print_series(310, df.nlargest(3, "a"))
+print_series(311, df.nlargest(5, ["a", "c"]))
+print_series(312, df.nsmallest(3, "a"))
+print_series(313, df.nsmallest(5, ["a", "c"]))
+df1.columns = pd.MultiIndex.from_tuples(
+    [("a", "one"), ("a", "two"), ("b", "three")]
+)
+print_series(314, df1.sort_values(by=("a", "two")))
+dft = pd.DataFrame(
+    {
+        "A": np.random.rand(3),
+        "B": 1,
+        "C": "foo",
+        "D": pd.Timestamp("20010102"),
+        "E": pd.Series([1.0] * 3).astype("float32"),
+        "F": False,
+        "G": pd.Series([1] * 3, dtype="int8"),
+    }
+)
+print_series(315, dft)
 print("end_time - start_time:", end_time - start_time)

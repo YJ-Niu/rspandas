@@ -1105,6 +1105,78 @@ impl Series {
             .collect()
     }
 
+    /// 返回最小/最大 n 个元素在原 Series 中的位置（索引）。
+    ///
+    /// - `n`: 要返回的元素数量
+    /// - `keep`: 重复值保留方式（"first" / "last" / "all"）
+    /// - `largest`: true=nlargest（降序），false=nsmallest（升序）
+    ///
+    /// 行为与 pandas.Series.nsmallest/nlargest 一致：
+    /// - None 与 NaN 一律跳过（不返回）
+    /// - 使用稳定排序，``keep="first"`` 时保留原顺序中先出现者
+    /// - ``keep="all"`` 时返回所有等于第 n 个值的元素（可能多于 n）
+    pub fn arg_top_n(&self, n: usize, keep: &str, largest: bool) -> Vec<usize> {
+        let f64_vals = self.as_f64_vec();
+        // 收集 (原索引, 值)，跳过 None 与 NaN
+        let mut indexed: Vec<(usize, f64)> = f64_vals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.filter(|x| !x.is_nan()).map(|x| (i, x)))
+            .collect();
+        if indexed.is_empty() || n == 0 {
+            return Vec::new();
+        }
+        // 稳定排序：largest=降序，否则升序
+        indexed.sort_by(|a, b| {
+            let ord = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+            if largest { ord.reverse() } else { ord }
+        });
+
+        let total = indexed.len();
+        // 选取索引列表
+        let selected: Vec<usize> = match keep {
+            "last" => {
+                // 保持按值升/降序，但对相同值内的元素反转顺序
+                // （即相同值优先取最后出现的）
+                // 实现：按 (值, Reverse(原索引)) 排序
+                indexed.sort_by(|a, b| {
+                    let ord = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+                    if ord == std::cmp::Ordering::Equal {
+                        // 相同值时按原索引倒序
+                        b.0.cmp(&a.0)
+                    } else if largest {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
+                });
+                indexed.into_iter().take(n).map(|(i, _)| i).collect()
+            }
+            "all" => {
+                if total <= n {
+                    indexed.into_iter().map(|(i, _)| i).collect()
+                } else {
+                    // 阈值：第 n 个值
+                    let threshold = indexed[n - 1].1;
+                    indexed
+                        .into_iter()
+                        .take_while(|(_, v)| {
+                            if largest {
+                                *v >= threshold
+                            } else {
+                                *v <= threshold
+                            }
+                        })
+                        .map(|(i, _)| i)
+                        .collect()
+                }
+            }
+            // 默认 "first"
+            _ => indexed.into_iter().take(n).map(|(i, _)| i).collect(),
+        };
+        selected
+    }
+
     /// 计算分位数（线性插值法）
     /// q: 0.0-1.0 之间的分位数
     pub fn quantile(&self, q: f64) -> Option<f64> {
@@ -3256,6 +3328,21 @@ impl PySeries {
     fn sort_index(&self, py: Python<'_>, ascending: bool) -> Self {
         let inner = py.detach(|| self.inner.sort_index(ascending));
         PySeries { inner }
+    }
+
+    /// 返回 nlargest/nsmallest 对应的原始索引列表。
+    /// - n: 数量
+    /// - keep: "first" / "last" / "all"
+    /// - largest: true=nlargest，false=nsmallest
+    fn arg_top_n<'py>(
+        &self,
+        py: Python<'py>,
+        n: usize,
+        keep: &str,
+        largest: bool,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let idx: Vec<usize> = py.detach(|| self.inner.arg_top_n(n, keep, largest));
+        PyList::new(py, idx.iter().copied())
     }
 
     // ---------- 前向/后向填充 ----------

@@ -466,14 +466,14 @@ class DataFrame:
             raise ValueError(
                 f"new columns length {len(value)} != old {len(self._columns)}"
             )
+        # 将新列名转换为字符串用于 Rust 层（支持 MultiIndex 元组列名）
+        str_value = [str(c) if not isinstance(c, str) else c for c in value]
         # 更新 Rust 端 column 名称 - 通过重命名每个 series
         # MVP 简化: 用 values 重建
         old_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
         new_series = [
-            _PySeries(old_data[c], value[i]) for i, c in enumerate(self._columns)
+            _PySeries(old_data[c], str_value[i]) for i, c in enumerate(self._columns)
         ]
-        # 将新列名转换为字符串用于 Rust 层
-        str_value = [str(c) for c in value]
         self._inner = _PyDataFrame(str_value, new_series)
         self._columns = list(str_value)
         self._raw_columns = list(value)
@@ -620,12 +620,11 @@ class DataFrame:
     @property
     def values(self) -> list:
         """返回 list[dict]，每行一个 dict。"""
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         result = []
         for i in range(self._nrows):
-            row = {}
-            for c in self._columns:
-                ser = self._inner.get_column(c)
-                row[c] = ser.values[i]
+            row = {c: col_cache[c][i] for c in self._columns}
             result.append(row)
         return result
 
@@ -989,33 +988,33 @@ class DataFrame:
 
     def __neg__(self) -> "DataFrame":
         # 对 bool 列，取负相当于逻辑 NOT
+        # 批量预取列值，消除 M 次 PyO3 跨边界（内层列表推导式不再重复调用 get_column）
+        col_cache = self._cache_columns(self._columns)
         new_data = {}
         for c in self._columns:
-            col = self._inner.get_column(c)
-            if col.dtype == "bool":
-                new_data[c] = [
-                    not bool(v) if v is not None else None for v in col.values
-                ]
+            vals = col_cache[c]
+            if self._inner.get_column(c).dtype == "bool":
+                new_data[c] = [not bool(v) if v is not None else None for v in vals]
             else:
-                new_data[c] = [-v if v is not None else None for v in col.values]
+                new_data[c] = [-v if v is not None else None for v in vals]
         return DataFrame(new_data, index=self._index)
 
     def __invert__(self) -> "DataFrame":
+        # 批量预取列值，消除 M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         new_data = {}
         for c in self._columns:
             new_data[c] = [
-                (not bool(v)) if v is not None else None
-                for v in self._inner.get_column(c).values
+                (not bool(v)) if v is not None else None for v in col_cache[c]
             ]
         return DataFrame(new_data, index=self._index)
 
     def __abs__(self) -> "DataFrame":
+        # 批量预取列值，消除 M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         new_data = {}
         for c in self._columns:
-            new_data[c] = [
-                abs(v) if v is not None else None
-                for v in self._inner.get_column(c).values
-            ]
+            new_data[c] = [abs(v) if v is not None else None for v in col_cache[c]]
         return DataFrame(new_data, index=self._index)
 
     def _apply_arithmetic(
@@ -1468,10 +1467,9 @@ class DataFrame:
             else:
                 start, stop, step = key.indices(self._nrows)
                 idx = list(range(start, stop, step))
-            new_data = {
-                c: [self._inner.get_column(c).values[i] for i in idx]
-                for c in self._columns
-            }
+            # 批量预取列值，消除 M×len(idx) 次 PyO3 跨边界
+            col_cache = self._cache_columns(self._columns)
+            new_data = {c: [col_cache[c][i] for i in idx] for c in self._columns}
             new_index = [self._index[i] for i in idx]
             return DataFrame(new_data, index=new_index)
         raise TypeError(f"Cannot index DataFrame with {type(key).__name__}")
@@ -1494,6 +1492,16 @@ class DataFrame:
             new_data[c] = list(ser.filter([bool(x) for x in mask]).values)
         new_index = [self._index[i] for i in range(self._nrows) if mask[i]]
         return DataFrame(new_data, index=new_index)
+
+    def _cache_columns(self, columns: Optional[List[str]] = None) -> Dict[str, list]:
+        """批量预取列值，返回 {列名: list(values)}。
+
+        消除 N×M 次 PyO3 跨边界调用，改为 M 次（每列一次）。
+        所有循环内调用 ``self._inner.get_column(c).values[i]`` 的方法都应先调用本方法。
+        """
+        if columns is None:
+            columns = self._columns
+        return {c: list(self._inner.get_column(c).values) for c in columns}
 
     def _filter_with_dataframe_mask(self, mask_df: "DataFrame") -> "DataFrame":
         """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 None/NaN。"""
@@ -1704,11 +1712,12 @@ class DataFrame:
         :param ignore_index: 是否忽略索引并从 0 开始重新生成
         :param key: 排序键函数或 {列名: 函数} 字典（按列应用，如 ``lambda col: col.str.lower()``）
         """
-        if isinstance(by, str):
+        # by 可为 str、tuple（MultiIndex 列名）或 list
+        if isinstance(by, (str, tuple)):
             by = [by]
         n = self._nrows
 
-        # 每个 by 键可以是「列名」或（MultiIndex 的）「级别名」。
+        # 每个 by 键可以是「列名」「MultiIndex 元组列名」或（索引的）「级别名」。
         # 解析级别名 → 级别位置索引；None 表示来源是列。列名与级别名冲突时列优先。
         level_map: Dict[str, int] = {}
         if self._index_names:
@@ -1716,10 +1725,19 @@ class DataFrame:
                 if nm is not None and nm not in level_map and nm not in self._columns:
                     level_map[nm] = li
 
+        # 构建原始列名（可能为 tuple）→ Rust 层字符串列名 的映射，支持 MultiIndex 元组列名
+        raw_to_col: Dict[Any, str] = {}
+        if len(self._raw_columns) == len(self._columns):
+            for raw, col in zip(self._raw_columns, self._columns):
+                if raw != col:
+                    raw_to_col[raw] = col
+
         # 校验 by 键来源合法性
-        src_by: List[Tuple[str, object]] = []  # [(key, ('col' | 'lvl', srcinfo))]
+        src_by: List[Tuple[Any, object]] = []  # [(key, ('col' | 'lvl', srcinfo))]
         for c in by:
-            if c in self._columns:
+            if c in raw_to_col:
+                src_by.append((c, ("col", raw_to_col[c])))
+            elif c in self._columns:
                 src_by.append((c, ("col", c)))
             elif c in level_map:
                 src_by.append((c, ("lvl", level_map[c])))
@@ -1818,10 +1836,9 @@ class DataFrame:
         except TypeError:
             raise TypeError("cannot sort mixed types")
 
-        new_data = {
-            c: [self._inner.get_column(c).values[i] for i in order]
-            for c in self._columns
-        }
+        # 批量预取列值后按 order 重排（消除 N×M 次 PyO3 跨边界）
+        col_cache = self._cache_columns(self._columns)
+        new_data = {c: [col_cache[c][i] for i in order] for c in self._columns}
         new_index = list(range(n)) if ignore_index else [self._index[i] for i in order]
 
         if inplace:
@@ -1945,13 +1962,20 @@ class DataFrame:
         # 验证 (validate 参数)
         if validate is not None:
             # 简化实现：仅做基本检查
+            # 批量预取键列以消除 N×K 次 PyO3 跨边界调用
+            left_keys_cache = {
+                k: list(self._inner.get_column(k).values) for k in left_keys
+            }
+            right_keys_cache = {
+                k: list(other._inner.get_column(k).values) for k in right_keys
+            }
             left_counts: Dict[tuple, int] = {}
             right_counts: Dict[tuple, int] = {}
             for i in range(self._nrows):
-                key = tuple(self._inner.get_column(k).values[i] for k in left_keys)
+                key = tuple(left_keys_cache[k][i] for k in left_keys)
                 left_counts[key] = left_counts.get(key, 0) + 1
             for i in range(other._nrows):
-                key = tuple(other._inner.get_column(k).values[i] for k in right_keys)
+                key = tuple(right_keys_cache[k][i] for k in right_keys)
                 right_counts[key] = right_counts.get(key, 0) + 1
 
             if validate in ("one_to_one", "1:1"):
@@ -1970,17 +1994,20 @@ class DataFrame:
             # many_to_many / m:m 无需验证
 
         # 构建左侧和右侧的键值对
+        # 批量预取列值，消除 N×(K+C) 次 PyO3 跨边界调用
+        left_cache = self._cache_columns(self._columns)
+        right_cache = other._cache_columns(other._columns)
         left = [
             (
-                tuple(self._inner.get_column(k).values[i] for k in left_keys),
-                {c: self._inner.get_column(c).values[i] for c in self._columns},
+                tuple(left_cache[k][i] for k in left_keys),
+                {c: left_cache[c][i] for c in self._columns},
             )
             for i in range(self._nrows)
         ]
         right = [
             (
-                tuple(other._inner.get_column(k).values[i] for k in right_keys),
-                {c: other._inner.get_column(c).values[i] for c in other._columns},
+                tuple(right_cache[k][i] for k in right_keys),
+                {c: right_cache[c][i] for c in other._columns},
             )
             for i in range(other._nrows)
         ]
@@ -2182,18 +2209,16 @@ class DataFrame:
                     return any(v is not None for v in row_values)
                 raise ValueError(f"invalid how: {how}")
 
-            # 使用列表推导式替代显式 for 循环（保持原行为：空表时不校验 how）
+            # 批量预取列值，消除 N×M 次 PyO3 跨边界
+            col_cache = self._cache_columns(cols_to_check)
             keep_mask = [
-                _keep_row([self._inner.get_column(c).values[i] for c in cols_to_check])
-                for i in range(n)
+                _keep_row([col_cache[c][i] for c in cols_to_check]) for i in range(n)
             ]
 
+            # 同样预取所有列用于重建
+            full_cache = self._cache_columns(self._columns)
             new_data = {
-                c: [
-                    self._inner.get_column(c).values[i]
-                    for i in range(n)
-                    if keep_mask[i]
-                ]
+                c: [full_cache[c][i] for i in range(n) if keep_mask[i]]
                 for c in self._columns
             }
             new_index = [self._index[i] for i in range(n) if keep_mask[i]]
@@ -2264,15 +2289,13 @@ class DataFrame:
                 raise ValueError(f"Unsupported method: {method}")
 
         if isinstance(value, dict):
-            # 按列填充 - 使用字典推导式替代显式 for 循环
+            # 按列填充 - 批量预取列值，消除 M 次 PyO3 跨边界
+            col_cache = self._cache_columns(self._columns)
             new_data: Dict[str, list] = {
                 c: (
-                    list(self._inner.get_column(c).values)
+                    col_cache[c]
                     if value.get(c) is None
-                    else [
-                        value.get(c) if v is None else v
-                        for v in self._inner.get_column(c).values
-                    ]
+                    else [value.get(c) if v is None else v for v in col_cache[c]]
                 )
                 for c in self._columns
             }
@@ -2479,9 +2502,11 @@ class DataFrame:
                     return values
             return Series(values, name=c, index=self._index)
 
-        # 获取行数据
+        # 获取行数据（批量预取列值，消除 N×M 次 PyO3 跨边界）
+        col_cache_for_rows = self._cache_columns(self._columns)
+
         def _get_row_data(i):
-            values = [self._inner.get_column(c).values[i] for c in self._columns]
+            values = [col_cache_for_rows[c][i] for c in self._columns]
             if raw:
                 try:
                     import rsnumpy as rnp
@@ -2735,72 +2760,117 @@ class DataFrame:
         return self.notna()
 
     def nlargest(self, n: int = 5, columns=None, keep: str = "first") -> "DataFrame":
-        """返回最大的 N 行。
+        """返回按 columns 排序后最大的 N 行。
+
+        等价于 ``pandas.DataFrame.nlargest``。单列时调用 Rust 层 ``arg_top_n``
+        以获得 O(n log n) 性能；多列时回退到 Python 稳定排序。
 
         :param n: 返回的行数
         :param columns: 用于排序的列 (str 或 list[str])
-        :param keep: 重复值的保留方式
+        :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
-        if columns is None:
-            columns = self._columns[0] if self._columns else []
-        if isinstance(columns, str):
-            columns = [columns]
-
-        # 按指定列排序 - 使用列表推导式替代显式 for 循环
-        missing = [c for c in columns if c not in self._columns]
-        if missing:
-            raise KeyError(f"column not found: {missing[0]}")
-        sort_keys = [
-            [self._inner.get_column(c).values[i] for i in range(self._nrows)]
-            for c in columns
-        ]
-
-        def key_func(i):
-            return tuple(
-                (1 if sort_keys[j][i] is None else 0, sort_keys[j][i])
-                for j in range(len(columns))
-            )
-
-        order = sorted(range(self._nrows), key=key_func, reverse=True)[:n]
-        new_data = {
-            c: [self._inner.get_column(c).values[i] for i in order]
-            for c in self._columns
-        }
-        return DataFrame(new_data)
+        return self._top_n(n, columns, keep, largest=True)
 
     def nsmallest(self, n: int = 5, columns=None, keep: str = "first") -> "DataFrame":
-        """返回最小的 N 行。
+        """返回按 columns 排序后最小的 N 行。
+
+        等价于 ``pandas.DataFrame.nsmallest``。单列时调用 Rust 层 ``arg_top_n``
+        以获得 O(n log n) 性能；多列时回退到 Python 稳定排序。
 
         :param n: 返回的行数
         :param columns: 用于排序的列 (str 或 list[str])
-        :param keep: 重复值的保留方式
+        :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
+        return self._top_n(n, columns, keep, largest=False)
+
+    def _top_n(self, n: int, columns, keep: str, largest: bool) -> "DataFrame":
+        """nlargest/nsmallest 共用实现。"""
         if columns is None:
             columns = self._columns[0] if self._columns else []
         if isinstance(columns, str):
             columns = [columns]
 
-        # 使用列表推导式替代显式 for 循环
         missing = [c for c in columns if c not in self._columns]
         if missing:
             raise KeyError(f"column not found: {missing[0]}")
-        sort_keys = [
-            [self._inner.get_column(c).values[i] for i in range(self._nrows)]
-            for c in columns
-        ]
 
-        def key_func(i):
-            return tuple(
-                (1 if sort_keys[j][i] is None else 0, sort_keys[j][i])
-                for j in range(len(columns))
+        if n < 0:
+            raise ValueError("n must be non-negative")
+
+        # 单列：直接走 Rust 层 arg_top_n（None/NaN 一律跳过，与 pandas 一致）
+        if len(columns) == 1:
+            col = columns[0]
+            idx_list = list(self._inner.get_column(col).arg_top_n(n, keep, largest))
+            col_cache = self._cache_columns(self._columns)
+            new_data = {c: [col_cache[c][i] for i in idx_list] for c in self._columns}
+            new_index = [self._index[i] for i in idx_list] if self._index else None
+            return DataFrame(new_data, index=new_index)
+
+        # 多列：Python 稳定排序。从最后一列向前依次稳定排序，
+        # 保证前面的列优先级更高。None 始终排最后（pandas 默认 na_position='last'）。
+        col_cache = self._cache_columns(columns)
+        order = list(range(self._nrows))
+
+        # 从最后一列向前稳定排序
+        for c in reversed(columns):
+            vals = col_cache[c]
+            # None 排最后：构造 key = (is_none, value_or_default)
+            # - is_none=0 (有值) 排前；is_none=1 (None) 排后
+            # - value_or_default：有值时取实际值，None 时取 0（不影响，因为先按 is_none 比较）
+            order.sort(
+                key=lambda i, c=c, vals=vals: (
+                    1 if vals[i] is None else 0,
+                    vals[i] if vals[i] is not None else 0,
+                ),
+                reverse=largest,
             )
 
-        order = sorted(range(self._nrows), key=key_func)[:n]
-        new_data = {
-            c: [self._inner.get_column(c).values[i] for i in order]
-            for c in self._columns
-        }
-        return DataFrame(new_data)
+        # reverse=largest 同时反转了 (is_none, value)；
+        # 但我们希望 None 始终排最后（不论升降序），所以反转后再把 None 移到末尾。
+        none_idx = [i for i in order if any(col_cache[c][i] is None for c in columns)]
+        non_none_idx = [i for i in order if i not in set(none_idx)]
+        order = non_none_idx + none_idx
+
+        # keep 处理
+        if keep == "last":
+            # 保持按值升/降序，但对相同 key 内的元素反转顺序
+            # （即相同 key 优先取最后出现的）
+            # 实现：分块反转——遍历 order，将相同 key 的连续段反转
+            if order:
+                reversed_order: list = []
+                i = 0
+                while i < len(order):
+                    j = i
+                    cur_key = tuple(col_cache[c][order[i]] for c in columns)
+                    while (
+                        j < len(order)
+                        and tuple(col_cache[c][order[j]] for c in columns) == cur_key
+                    ):
+                        j += 1
+                    # 反转 [i, j) 段
+                    reversed_order.extend(order[i:j][::-1])
+                    i = j
+                order = reversed_order[:n]
+            else:
+                order = order[:n]
+        elif keep == "all":
+            if len(order) > n:
+                # 阈值：第 n 个值的 key
+                threshold_idx = order[n - 1]
+                threshold_key = tuple(col_cache[c][threshold_idx] for c in columns)
+                order = [
+                    i
+                    for i in order
+                    if tuple(col_cache[c][i] for c in columns) == threshold_key
+                ]
+            # 否则保留全部
+        else:
+            order = order[:n]
+
+        all_cache = self._cache_columns(self._columns)
+        new_data = {c: [all_cache[c][i] for i in order] for c in self._columns}
+        new_index = [self._index[i] for i in order] if self._index else None
+        return DataFrame(new_data, index=new_index)
 
     def corr(self, method: str = "pearson", min_periods: int = 1) -> "DataFrame":
         """计算列之间的相关系数矩阵。
@@ -3421,24 +3491,15 @@ class DataFrame:
         except Exception:
             pass
 
-        # 回退到 Python 实现：使用列表推导式替代显式 for 循环
+        # 回退到 Python 实现：批量预取列值消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         mask = [
-            bool(
-                eval(
-                    expr,
-                    {},
-                    {c: self._inner.get_column(c).values[i] for c in self._columns},
-                )
-            )
+            bool(eval(expr, {}, {c: col_cache[c][i] for c in self._columns}))
             for i in range(self._nrows)
         ]
 
         new_data = {
-            c: [
-                self._inner.get_column(c).values[i]
-                for i in range(self._nrows)
-                if mask[i]
-            ]
+            c: [col_cache[c][i] for i in range(self._nrows) if mask[i]]
             for c in self._columns
         }
         new_index = [self._index[i] for i in range(self._nrows) if mask[i]]
@@ -3735,10 +3796,9 @@ class DataFrame:
         :param dtype: 目标 dtype
         """
         cols = list(self._columns)
-        data = [
-            [self._inner.get_column(c).values[i] for c in cols]
-            for i in range(self._nrows)
-        ]
+        # 批量预取列值消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(cols)
+        data = [[col_cache[c][i] for c in cols] for i in range(self._nrows)]
         return rnp.array(data, dtype=dtype) if dtype else rnp.array(data)
 
     @classmethod
@@ -4995,10 +5055,12 @@ class DataFrame:
                     return False
 
             result = []
+            # 批量预取列值（消除 N×M 次 PyO3 跨边界，改为 M 次）
+            col_cache = self._cache_columns(target_cols)
             for i in range(self._nrows):
                 vals = []
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if _is_missing(v):
                         if not skipna:
                             result.append(None)
@@ -5041,13 +5103,14 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求均值（保留原实现）
+            # 按行求均值（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
                 vals = []
                 has_missing = False
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if v is None or (isinstance(v, float) and v != v):
                         has_missing = True
                     elif isinstance(v, (int, float)):
@@ -5080,13 +5143,14 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求最小值（保留原实现）
+            # 按行求最小值（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
                 vals = []
                 has_missing = False
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if v is None or (isinstance(v, float) and v != v):
                         has_missing = True
                     elif isinstance(v, (int, float)):
@@ -5119,13 +5183,14 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求最大值（保留原实现）
+            # 按行求最大值（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
                 vals = []
                 has_missing = False
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if v is None or (isinstance(v, float) and v != v):
                         has_missing = True
                     elif isinstance(v, (int, float)):
@@ -5145,12 +5210,13 @@ class DataFrame:
     def count(self, axis: int = 0) -> "Series":
         """按列计数 (非空值)：调用 Rust 列并行实现。"""
         if axis in (1, "columns"):
-            # 按行计数（逐行遍历，提升有限，保留原有风格）
+            # 按行计数（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(self._columns)
             vals = []
             for i in range(self._nrows):
                 c = 0
                 for col in self._columns:
-                    v = self._inner.get_column(col).values[i]
+                    v = col_cache[col][i]
                     if v is not None and not (isinstance(v, float) and v != v):
                         c += 1
                 vals.append(c)
@@ -5187,7 +5253,9 @@ class DataFrame:
                 return False
 
         if axis == 1 or axis == "columns":
-            # 按行求标准差（保留原实现）
+            # 按行求标准差（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
+
             def _std_vals(vals):
                 non_null = [v for v in vals if not _is_missing(v)]
                 if not skipna and len(non_null) < len(vals):
@@ -5200,7 +5268,7 @@ class DataFrame:
 
             result = []
             for i in range(self._nrows):
-                vals = [self._inner.get_column(c).values[i] for c in target_cols]
+                vals = [col_cache[c][i] for c in target_cols]
                 result.append(_std_vals(vals))
             return Series(result, index=self._index)
         # 按列求标准差：一次性调用 Rust 列并行
@@ -5246,10 +5314,11 @@ class DataFrame:
             return sum((v - m) ** 2 for v in non_null) / (len(non_null) - ddof)
 
         if axis == 1 or axis == "columns":
-            # 按行求方差
+            # 按行求方差（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
-                vals = [self._inner.get_column(c).values[i] for c in target_cols]
+                vals = [col_cache[c][i] for c in target_cols]
                 result.append(_var_vals(vals))
             return Series(result, index=self._index)
         # 按列求方差
@@ -5284,15 +5353,12 @@ class DataFrame:
             for c, v in zip(self._columns, all_vals):
                 result_dict[c] = v
             return Series(result_dict)
-        # axis=1 逐行：用已有 Python 实现（按行开销大但使用频率较低）
+        # axis=1 逐行：批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         return Series(
             {
                 i: any(
-                    v
-                    for v in (
-                        self._inner.get_column(c).values[i] for c in self._columns
-                    )
-                    if v is not None
+                    v for v in (col_cache[c][i] for c in self._columns) if v is not None
                 )
                 for i in range(self._nrows)
             }
@@ -5306,15 +5372,12 @@ class DataFrame:
             for c, v in zip(self._columns, all_vals):
                 result_dict[c] = v
             return Series(result_dict)
-        # axis=1 逐行
+        # axis=1 逐行：批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         return Series(
             {
                 i: all(
-                    v
-                    for v in (
-                        self._inner.get_column(c).values[i] for c in self._columns
-                    )
-                    if v is not None
+                    v for v in (col_cache[c][i] for c in self._columns) if v is not None
                 )
                 for i in range(self._nrows)
             }
@@ -6588,6 +6651,8 @@ class DataFrame:
         from datetime import datetime
 
         n = self._nrows
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         # 使用字典推导式替代显式 for 循环：每行变成一列
         # 列名使用原始索引值（datetime 去除 00:00:00）
 
@@ -6606,9 +6671,7 @@ class DataFrame:
             return str(v)
 
         new_data: Dict[str, list] = {
-            _fmt_idx(self._index[i]): [
-                self._inner.get_column(c).values[i] for c in self._columns
-            ]
+            _fmt_idx(self._index[i]): [col_cache[c][i] for c in self._columns]
             for i in range(n)
         }
         result = DataFrame(new_data)
@@ -6627,10 +6690,9 @@ class DataFrame:
             if isinstance(indices, int):
                 indices = [indices]
             self._validate_indices(indices)
-            new_data = {
-                c: [self._inner.get_column(c).values[i] for i in indices]
-                for c in self._columns
-            }
+            # 批量预取列值，消除 M×len(indices) 次 PyO3 跨边界
+            col_cache = self._cache_columns(self._columns)
+            new_data = {c: [col_cache[c][i] for i in indices] for c in self._columns}
             return DataFrame(new_data)
         else:
             if isinstance(indices, int):
@@ -8166,7 +8228,8 @@ class DataFrame:
 
         :param index: 是否包含索引
         """
-        # 使用列表推导式替代显式 for 循环
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         return [
             {
                 **(
@@ -8180,7 +8243,7 @@ class DataFrame:
                     if index
                     else {}
                 ),
-                **{c: self._inner.get_column(c).values[i] for c in self._columns},
+                **{c: col_cache[c][i] for c in self._columns},
             }
             for i in range(self._nrows)
         ]
@@ -8191,6 +8254,8 @@ class DataFrame:
         :param index: 是否显示索引
         :param header: 是否显示列名
         """
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         lines = []
         if header:
             cols = [""] + list(self._columns) if index else list(self._columns)
@@ -8202,7 +8267,7 @@ class DataFrame:
                     str(self._index[i] if self._index and i < len(self._index) else i)
                 )
             for c in self._columns:
-                v = self._inner.get_column(c).values[i]
+                v = col_cache[c][i]
                 row.append(str(v) if v is not None else "NaN")
             lines.append("  ".join(row))
         return "\n".join(lines)

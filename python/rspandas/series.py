@@ -2346,34 +2346,22 @@ class Series:
     def nlargest(self, n: int = 5, keep: str = "first") -> _PySeries:
         """返回最大的 N 个元素。
 
+        等价于 ``pandas.Series.nlargest``，使用 Rust 稳定排序实现，
+        None/NaN 一律跳过。
+
         :param n: 返回的元素数量
         :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
+        if n < 0:
+            raise ValueError("n must be non-negative")
+        # 调用 Rust 层 arg_top_n 获取原始索引
+        idx_list = list(self._inner.arg_top_n(n, keep, True))
         values = self.values
-        indexed = [(i, v) for i, v in enumerate(values) if v is not None]
-        indexed.sort(key=lambda x: x[1], reverse=True)
-
-        if keep == "first":
-            top = indexed[:n]
-        elif keep == "last":
-            # 反转后取前 n，再反转回来
-            indexed.reverse()
-            top = indexed[:n]
-        elif keep == "all":
-            if len(indexed) <= n:
-                top = indexed
-            else:
-                threshold = indexed[n - 1][1]
-                top = [(i, v) for i, v in indexed if v >= threshold]
+        result_values = [values[i] for i in idx_list]
+        if self._index:
+            result_index = [self._index[i] for i in idx_list]
         else:
-            raise ValueError(f"invalid keep: {keep}")
-
-        if not self._index:
-            result_values = [v for _, v in top]
-            result_index = [i for i, _ in top]
-        else:
-            result_values = [v for _, v in top]
-            result_index = [self._index[i] for i, _ in top]
+            result_index = list(idx_list)
         return Series(
             result_values, name=self.name, dtype=self._dtype_str, index=result_index
         )
@@ -2381,33 +2369,21 @@ class Series:
     def nsmallest(self, n: int = 5, keep: str = "first") -> _PySeries:
         """返回最小的 N 个元素。
 
+        等价于 ``pandas.Series.nsmallest``，使用 Rust 稳定排序实现，
+        None/NaN 一律跳过。
+
         :param n: 返回的元素数量
         :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
+        if n < 0:
+            raise ValueError("n must be non-negative")
+        idx_list = list(self._inner.arg_top_n(n, keep, False))
         values = self.values
-        indexed = [(i, v) for i, v in enumerate(values) if v is not None]
-        indexed.sort(key=lambda x: x[1])
-
-        if keep == "first":
-            top = indexed[:n]
-        elif keep == "last":
-            indexed.reverse()
-            top = indexed[:n]
-        elif keep == "all":
-            if len(indexed) <= n:
-                top = indexed
-            else:
-                threshold = indexed[n - 1][1]
-                top = [(i, v) for i, v in indexed if v <= threshold]
+        result_values = [values[i] for i in idx_list]
+        if self._index:
+            result_index = [self._index[i] for i in idx_list]
         else:
-            raise ValueError(f"invalid keep: {keep}")
-
-        if not self._index:
-            result_values = [v for _, v in top]
-            result_index = [i for i, _ in top]
-        else:
-            result_values = [v for _, v in top]
-            result_index = [self._index[i] for i, _ in top]
+            result_index = list(idx_list)
         return Series(
             result_values, name=self.name, dtype=self._dtype_str, index=result_index
         )
