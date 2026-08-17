@@ -572,5 +572,13 @@ s1 = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3], "c": [2, 3, 4]}).set_in
     list("ab")
 )
 print_series(288, s1)
+print_series(289, s1.sort_index(level="a"))
+print_series(290, s1.sort_index(level="a", key=lambda idx: idx.str.lower()))
+df1 = pd.DataFrame(
+    {"one": [2, 1, 1, 1], "two": [1, 3, 2, 4], "three": [5, 4, 3, 2]}
+)
+print_series(291, df1.sort_values(by="two"))
+print_series(292, df1[["one", "two", "three"]].sort_values(by=["one", "two"]))
+
 print("end_time - start_time:", end_time - start_time)
 
