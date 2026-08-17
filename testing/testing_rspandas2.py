@@ -594,5 +594,8 @@ idx = pd.MultiIndex.from_tuples(
 idx.names = ["first", "second"]
 df_multi = pd.DataFrame({"A": np.arange(6, 0, -1)}, index=idx)
 print_series(299, df_multi)
-print("end_time - start_time:", end_time - start_time)
+print_series(300, df_multi.sort_values(by=["second", "A"]))
+ser = pd.Series([1, 2, 3])
+print_series(301, ser.searchsorted([0, 3]))
 
+print("end_time - start_time:", end_time - start_time)

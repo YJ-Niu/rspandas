@@ -483,18 +483,35 @@ impl Series {
     }
 
     pub fn any(&self) -> Option<bool> {
-        if let ColumnData::Bool(v) = &self.data {
-            Some(v.par_iter().any(|x| matches!(x, Some(true))))
-        } else {
-            None
-        }
+        let r: bool = match &self.data {
+            ColumnData::Bool(v) => v.par_iter().filter_map(|x| *x).any(|x| x),
+            ColumnData::Int(v) => v.par_iter().filter_map(|x| *x).any(|x| x != 0),
+            ColumnData::Float(v) => v.par_iter().filter_map(|x| *x).any(|x| x != 0.0),
+            ColumnData::String(v) => v
+                .par_iter()
+                .filter_map(|x| x.clone())
+                .any(|s| !s.is_empty()),
+            ColumnData::Categorical(c) => c.codes.par_iter().any(|x| x.is_some()),
+        };
+        Some(r)
     }
     pub fn all(&self) -> Option<bool> {
-        if let ColumnData::Bool(v) = &self.data {
-            Some(v.par_iter().all(|x| matches!(x, Some(true))))
-        } else {
-            None
-        }
+        // 空列：all 返回 True（与 pandas 一致）
+        // 有缺失值：skipna=True（默认）跳过 None；全为 None 则返回 True
+        let r: bool = match &self.data {
+            ColumnData::Bool(v) => v.par_iter().filter_map(|x| *x).all(|x| x),
+            ColumnData::Int(v) => v.par_iter().filter_map(|x| *x).all(|x| x != 0),
+            ColumnData::Float(v) => v.par_iter().filter_map(|x| *x).all(|x| x != 0.0),
+            ColumnData::String(v) => v
+                .par_iter()
+                .filter_map(|x| x.clone())
+                .all(|s| !s.is_empty()),
+            ColumnData::Categorical(c) => {
+                // 分类列：所有非 None 视为 True
+                c.codes.par_iter().all(|x| x.is_some())
+            }
+        };
+        Some(r)
     }
 
     // ---------- 缺失值 ----------
@@ -1297,85 +1314,118 @@ impl Series {
         (values, counts)
     }
 
-    /// 滑动窗口求和
+    /// 滑动窗口求和（使用 O(n) 前缀和 + 缺失值计数，优于朴素 O(nw) 滑动求和）
     pub fn rolling_sum(&self, window: usize, min_periods: Option<usize>) -> Vec<Option<f64>> {
         let n = self.len();
         let min_per = min_periods.unwrap_or(window);
         let values = self.as_f64_vec();
-        let mut result: Vec<Option<f64>> = vec![None; n];
 
-        for (i, result_slot) in result.iter_mut().enumerate() {
-            if i + 1 < min_per {
-                continue;
-            }
-            let start = (i + 1).saturating_sub(window);
-            let end = i + 1;
-            let mut sum = 0.0;
-            let mut count = 0;
-            for v in values[start..end].iter().copied().flatten() {
-                sum += v;
-                count += 1;
-            }
-            if count >= min_per {
-                *result_slot = Some(sum);
+        // prefix_sum[i] = sum(values[0..i])（仅对 Some(v) 累加，None 视为 0）
+        // prefix_cnt[i] = 0..i 中非空个数
+        let mut prefix_sum: Vec<f64> = vec![0.0; n + 1];
+        let mut prefix_cnt: Vec<usize> = vec![0; n + 1];
+        for (i, item) in values.iter().enumerate() {
+            prefix_sum[i + 1] = prefix_sum[i];
+            prefix_cnt[i + 1] = prefix_cnt[i];
+            if let Some(v) = item {
+                prefix_sum[i + 1] += *v;
+                prefix_cnt[i + 1] += 1;
             }
         }
+
+        let result: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                if i + 1 < min_per {
+                    return None;
+                }
+                let start = (i + 1).saturating_sub(window);
+                let end = i + 1;
+                let cnt = prefix_cnt[end] - prefix_cnt[start];
+                if cnt >= min_per {
+                    Some(prefix_sum[end] - prefix_sum[start])
+                } else {
+                    None
+                }
+            })
+            .collect();
         result
     }
 
-    /// 滑动窗口均值
+    /// 滑动窗口均值（O(n) 前缀和，替代 O(nw) 朴素版）
     pub fn rolling_mean(&self, window: usize, min_periods: Option<usize>) -> Vec<Option<f64>> {
         let n = self.len();
         let min_per = min_periods.unwrap_or(window);
         let values = self.as_f64_vec();
-        let mut result: Vec<Option<f64>> = vec![None; n];
 
-        for (i, result_slot) in result.iter_mut().enumerate() {
-            if i + 1 < min_per {
-                continue;
-            }
-            let start = (i + 1).saturating_sub(window);
-            let end = i + 1;
-            let mut sum = 0.0;
-            let mut count = 0;
-            for v in values[start..end].iter().copied().flatten() {
-                sum += v;
-                count += 1;
-            }
-            if count >= min_per {
-                *result_slot = Some(sum / count as f64);
+        let mut prefix_sum: Vec<f64> = vec![0.0; n + 1];
+        let mut prefix_cnt: Vec<usize> = vec![0; n + 1];
+        for (i, item) in values.iter().enumerate() {
+            prefix_sum[i + 1] = prefix_sum[i];
+            prefix_cnt[i + 1] = prefix_cnt[i];
+            if let Some(v) = item {
+                prefix_sum[i + 1] += *v;
+                prefix_cnt[i + 1] += 1;
             }
         }
+
+        let result: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                if i + 1 < min_per {
+                    return None;
+                }
+                let start = (i + 1).saturating_sub(window);
+                let end = i + 1;
+                let cnt = prefix_cnt[end] - prefix_cnt[start];
+                if cnt >= min_per && cnt > 0 {
+                    Some((prefix_sum[end] - prefix_sum[start]) / cnt as f64)
+                } else {
+                    None
+                }
+            })
+            .collect();
         result
     }
 
-    /// 滑动窗口标准差
+    /// 滑动窗口标准差（O(n) 前缀和 sum/sum_sq 版本）
     pub fn rolling_std(&self, window: usize, min_periods: Option<usize>) -> Vec<Option<f64>> {
         let n = self.len();
         let min_per = min_periods.unwrap_or(window);
         let values = self.as_f64_vec();
-        let mut result: Vec<Option<f64>> = vec![None; n];
 
-        for (i, result_slot) in result.iter_mut().enumerate() {
-            if i + 1 < min_per {
-                continue;
-            }
-            let start = (i + 1).saturating_sub(window);
-            let end = i + 1;
-            let mut sum = 0.0;
-            let mut sum_sq = 0.0;
-            let mut count = 0;
-            for v in values[start..end].iter().copied().flatten() {
-                sum += v;
-                sum_sq += v * v;
-                count += 1;
-            }
-            if count >= min_per && count > 0 {
-                let mean = sum / count as f64;
-                let var = (sum_sq / count as f64) - mean * mean;
-                *result_slot = Some(var.max(0.0).sqrt());
+        let mut prefix_sum: Vec<f64> = vec![0.0; n + 1];
+        let mut prefix_sum_sq: Vec<f64> = vec![0.0; n + 1];
+        let mut prefix_cnt: Vec<usize> = vec![0; n + 1];
+        for (i, item) in values.iter().enumerate() {
+            prefix_sum[i + 1] = prefix_sum[i];
+            prefix_sum_sq[i + 1] = prefix_sum_sq[i];
+            prefix_cnt[i + 1] = prefix_cnt[i];
+            if let Some(v) = item {
+                prefix_sum[i + 1] += *v;
+                prefix_sum_sq[i + 1] += v * v;
+                prefix_cnt[i + 1] += 1;
             }
         }
+
+        let result: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                if i + 1 < min_per {
+                    return None;
+                }
+                let start = (i + 1).saturating_sub(window);
+                let end = i + 1;
+                let cnt = prefix_cnt[end] - prefix_cnt[start];
+                if cnt >= min_per && cnt > 1 {
+                    let s = prefix_sum[end] - prefix_sum[start];
+                    let s2 = prefix_sum_sq[end] - prefix_sum_sq[start];
+                    let mean = s / cnt as f64;
+                    // 总体方差 = s2/n - mean^2；样本方差需 /(n-1)（与 pandas ddof=1 一致）
+                    let var = (s2 - s * mean) / (cnt - 1) as f64;
+                    Some(var.max(0.0).sqrt())
+                } else {
+                    None
+                }
+            })
+            .collect();
         result
     }
 
@@ -2241,18 +2291,24 @@ impl Series {
                     }
                 }
                 "std" => {
+                    // 默认 ddof=1（与 pandas 一致）
                     if cnt < 2 {
                         None
                     } else {
-                        let v = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / cnt as f64;
+                        let v = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                            / (cnt - 1) as f64;
                         Some(v.sqrt())
                     }
                 }
                 "var" => {
+                    // 默认 ddof=1（与 pandas 一致）
                     if cnt < 2 {
                         None
                     } else {
-                        Some(values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / cnt as f64)
+                        Some(
+                            values.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                                / (cnt - 1) as f64,
+                        )
                     }
                 }
                 "prod" => Some(values.iter().product()),

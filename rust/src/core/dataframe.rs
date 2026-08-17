@@ -453,6 +453,53 @@ impl DataFrame {
         self.data.par_iter().map(|s| s.quantile(q)).collect()
     }
 
+    /// 所有列并行 any（跳过 None / NaN）
+    pub fn par_any_all(&self) -> Vec<Option<bool>> {
+        self.data.par_iter().map(|s| s.any()).collect()
+    }
+
+    /// 所有列并行 all（跳过 None / NaN）
+    pub fn par_all_all(&self) -> Vec<Option<bool>> {
+        self.data.par_iter().map(|s| s.all()).collect()
+    }
+
+    /// 所有列并行 nunique（统计唯一值数量，自动跳过 None）
+    pub fn par_nunique_all(&self) -> Vec<usize> {
+        self.data.par_iter().map(|s| s.nunique()).collect()
+    }
+
+    /// 所有列并行 isnull：返回全新的 bool DataFrame（列名不变）
+    pub fn par_isnull_all(&self) -> DataFrame {
+        let n_data: Vec<Series> = self
+            .data
+            .par_iter()
+            .map(|s| {
+                let mask: Vec<Option<bool>> = s.isnull().into_iter().map(Some).collect();
+                Series::new_bool(s.name.clone(), mask)
+            })
+            .collect();
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
+    }
+
+    /// 所有列并行 notnull：返回全新的 bool DataFrame（列名不变）
+    pub fn par_notnull_all(&self) -> DataFrame {
+        let n_data: Vec<Series> = self
+            .data
+            .par_iter()
+            .map(|s| {
+                let mask: Vec<Option<bool>> = s.notnull().into_iter().map(Some).collect();
+                Series::new_bool(s.name.clone(), mask)
+            })
+            .collect();
+        DataFrame {
+            columns: self.columns.clone(),
+            data: n_data,
+        }
+    }
+
     /// 基于键列的哈希连接
     /// left_on/right_on: 左右表的键列索引
     /// how: "inner"=内连接, "left"=左连接, "right"=右连接, "outer"=外连接
@@ -1353,6 +1400,50 @@ impl PyDataFrame {
             outer.append(inner_list).unwrap();
         }
         outer
+    }
+
+    /// 所有列并行 any → list[bool|None]（按列顺序）
+    fn par_any_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_any_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 all → list[bool|None]
+    fn par_all_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_all_all());
+        let list = PyList::empty(py);
+        for r in result {
+            match r {
+                Some(v) => list.append(v).unwrap(),
+                None => list.append(py.None()).unwrap(),
+            }
+        }
+        list
+    }
+
+    /// 所有列并行 nunique → list[int]（按列顺序）
+    fn par_nunique_all<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let result = py.detach(|| self.inner.par_nunique_all());
+        PyList::new(py, result).unwrap()
+    }
+
+    /// 所有列并行 isnull → 返回 bool DataFrame（每列变为 bool 类型）
+    fn par_isnull_all(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.par_isnull_all());
+        PyDataFrame { inner }
+    }
+
+    /// 所有列并行 notnull → 返回 bool DataFrame
+    fn par_notnull_all(&self, py: Python<'_>) -> Self {
+        let inner = py.detach(|| self.inner.par_notnull_all());
+        PyDataFrame { inner }
     }
 
     // ---------- 显示辅助 ----------

@@ -94,13 +94,11 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
     if isinstance(data, dict):
         result = {}
         # 检查是否有 Series 带自定义 index
-        has_series = False
         has_series_with_index = False
         series_indices = set()
         has_dict_values = False
         for k, v in data.items():
             if isinstance(v, Series):
-                has_series = True
                 if v._index is not None:
                     has_series_with_index = True
                     series_indices.add(tuple(v._index))
@@ -1708,10 +1706,41 @@ class DataFrame:
         """
         if isinstance(by, str):
             by = [by]
-        for c in by:
-            if c not in self._columns:
-                raise KeyError(f"column not found: {c}")
         n = self._nrows
+
+        # 每个 by 键可以是「列名」或（MultiIndex 的）「级别名」。
+        # 解析级别名 → 级别位置索引；None 表示来源是列。列名与级别名冲突时列优先。
+        level_map: Dict[str, int] = {}
+        if self._index_names:
+            for li, nm in enumerate(self._index_names):
+                if nm is not None and nm not in level_map and nm not in self._columns:
+                    level_map[nm] = li
+
+        # 校验 by 键来源合法性
+        src_by: List[Tuple[str, object]] = []  # [(key, ('col' | 'lvl', srcinfo))]
+        for c in by:
+            if c in self._columns:
+                src_by.append((c, ("col", c)))
+            elif c in level_map:
+                src_by.append((c, ("lvl", level_map[c])))
+            else:
+                raise KeyError(f"column/level not found: {c}")
+
+        def _get_key_vals(src: object) -> List[object]:
+            """根据来源返回长度为 n 的值列表。"""
+            kind, info = src
+            if kind == "col":
+                return list(self._inner.get_column(info).values)
+            # kind == 'lvl'：从 MultiIndex tuple 中取对应级别
+            li: int = info
+            vals: List[object] = [None] * n
+            for i in range(n):
+                idxv = self._index[i]
+                if isinstance(idxv, tuple) and li < len(idxv):
+                    vals[i] = idxv[li]
+                else:
+                    vals[i] = idxv if li == 0 else None
+            return vals
 
         # 规范化 ascending / na_position（支持逐列列表）
         if isinstance(ascending, (list, tuple)):
@@ -1737,13 +1766,13 @@ class DataFrame:
         else:
             key_map = key
 
-        # 计算每列的 keyed 排序值
-        keyed_cols = {}
-        for c in by:
-            col_vals = list(self._inner.get_column(c).values)
+        # 计算每个 by 键的 keyed 排序值（支持列或级别）
+        keyed_cols: Dict[str, List[object]] = {}
+        for c, src in src_by:
+            raw_vals = _get_key_vals(src)
             k = key_map.get(c)
             if k is not None:
-                tmp = Series(col_vals, index=list(range(n)))
+                tmp = Series(raw_vals, index=list(range(n)))
                 transformed = k(tmp)
                 if hasattr(transformed, "values"):
                     tvals = list(transformed.values)
@@ -1757,7 +1786,7 @@ class DataFrame:
                     )
                 keyed_cols[c] = tvals
             else:
-                keyed_cols[c] = col_vals
+                keyed_cols[c] = raw_vals
 
         # 逐行构造排序键（多列时按 by 顺序比较）
         sort_keys = [tuple(keyed_cols[c][i] for c in by) for i in range(n)]
@@ -2682,19 +2711,20 @@ class DataFrame:
 
     def isna(self) -> "DataFrame":
         """返回布尔 DataFrame，True 表示该位置是 None。"""
-        # 使用字典推导式替代显式 for 循环
-        new_data: Dict[str, list] = {
-            c: [v is None for v in self[c].values] for c in self._columns
-        }
-        return DataFrame(new_data, index=self._index if self._index else None)
+        # 调用 Rust 列并行 isna（避免 Python 逐列逐元素列表推导）
+        inner_df = self._inner.par_isnull_all()
+        out: DataFrame = object.__new__(DataFrame)
+        out.__dict__.update(self.__dict__)
+        out._inner = inner_df
+        return out
 
     def notna(self) -> "DataFrame":
         """返回布尔 DataFrame，True 表示该位置不是 None。"""
-        # 使用字典推导式替代显式 for 循环
-        new_data: Dict[str, list] = {
-            c: [v is not None for v in self[c].values] for c in self._columns
-        }
-        return DataFrame(new_data, index=self._index if self._index else None)
+        inner_df = self._inner.par_notnull_all()
+        out: DataFrame = object.__new__(DataFrame)
+        out.__dict__.update(self.__dict__)
+        out._inner = inner_df
+        return out
 
     def isnull(self) -> "DataFrame":
         """isna 的别名。"""
@@ -3689,8 +3719,9 @@ class DataFrame:
 
     def nunique(self) -> "Series":
         """每列不同值数量。"""
-        # 使用字典推导式替代显式 for 循环
-        out = {c: self[c].nunique() for c in self._columns}
+        # 调用 Rust 列并行 nunique（消除 Python 逐列循环）
+        all_vals = list(self._inner.par_nunique_all())
+        out = dict(zip(self._columns, all_vals))
         return Series(out, name=None, index=list(self._columns))
 
     @property
@@ -5246,13 +5277,48 @@ class DataFrame:
 
     def any(self, axis: int = 0, skipna: bool = True) -> "Series":
         """按列判断是否有真值。"""
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: self._get_column_as_series(c).any() for c in self._columns})
+        if axis in (0, "index"):
+            # 调用 Rust 列并行 any（消除 Python 逐列循环）
+            all_vals = list(self._inner.par_any_all())
+            result_dict: Dict[str, object] = {}
+            for c, v in zip(self._columns, all_vals):
+                result_dict[c] = v
+            return Series(result_dict)
+        # axis=1 逐行：用已有 Python 实现（按行开销大但使用频率较低）
+        return Series(
+            {
+                i: any(
+                    v
+                    for v in (
+                        self._inner.get_column(c).values[i] for c in self._columns
+                    )
+                    if v is not None
+                )
+                for i in range(self._nrows)
+            }
+        )
 
     def all(self, axis: int = 0, skipna: bool = True) -> "Series":
         """按列判断是否全为真值。"""
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: self._get_column_as_series(c).all() for c in self._columns})
+        if axis in (0, "index"):
+            all_vals = list(self._inner.par_all_all())
+            result_dict: Dict[str, object] = {}
+            for c, v in zip(self._columns, all_vals):
+                result_dict[c] = v
+            return Series(result_dict)
+        # axis=1 逐行
+        return Series(
+            {
+                i: all(
+                    v
+                    for v in (
+                        self._inner.get_column(c).values[i] for c in self._columns
+                    )
+                    if v is not None
+                )
+                for i in range(self._nrows)
+            }
+        )
 
     # ---------- 显示 ----------
 

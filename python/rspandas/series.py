@@ -3426,21 +3426,33 @@ class Series:
                 list(stats.values()), index=list(stats.keys()), dtype="object"
             )
 
-        # 数值型: 在 Python 层直接计算，确保 ddof=1 (pandas 默认) 和 NaN 过滤
+        # 数值型：调用 Rust 层 batch_agg 一次性得到 count/mean/std/min/max
         if percentiles is None:
             percentiles = [0.25, 0.5, 0.75]
         else:
             percentiles = list(percentiles)
-        # 中位数 (50%) 始终包含
         if 0.5 not in percentiles:
             percentiles = list(percentiles) + [0.5]
-        # 校验分位数范围
         for p in percentiles:
             if not (0.0 <= p <= 1.0):
                 raise ValueError(f"percentiles 应在 [0, 1] 范围内，得到 {p}")
         percentiles = sorted(set(percentiles))
 
-        # 提取纯数值 (排除 None/NaN/bool)
+        # Rust 批量聚合: count, mean, std, min, max
+        aggs = ["count", "mean", "std", "min", "max"]
+        try:
+            agg_result = list(self._inner.batch_agg(aggs))
+            count_val = agg_result[0] if len(agg_result) > 0 else None
+            mean_val = agg_result[1] if len(agg_result) > 1 else None
+            std_val = agg_result[2] if len(agg_result) > 2 else None
+            min_val = agg_result[3] if len(agg_result) > 3 else None
+            max_val = agg_result[4] if len(agg_result) > 4 else None
+        except Exception:
+            agg_result = None
+            count_val = mean_val = std_val = min_val = max_val = None
+
+        # 分位数仍然用 Python 层计算（Rust quantile 要多次调用排序，
+        # 这里 Python 一次 sort 可复用）
         vals = [
             float(v)
             for v in non_null
@@ -3449,7 +3461,6 @@ class Series:
         n = len(vals)
 
         if n == 0:
-            # 全部为缺失值时返回 NaN 填充的统计
             stat_names = (
                 ["count", "mean", "std", "min"]
                 + [f"{int(p * 100)}%" for p in percentiles]
@@ -3460,15 +3471,23 @@ class Series:
                 index=stat_names,
             )
 
-        # 计算统计值
-        mean_val = sum(vals) / n
-        # pandas describe 默认 ddof=1
-        if n > 1:
-            std_val = (sum((v - mean_val) ** 2 for v in vals) / (n - 1)) ** 0.5
-        else:
-            std_val = float("nan")
+        # 若 Rust 聚合失败则回退 Python 计算
+        if count_val is None:
+            count_val = float(n)
+        if mean_val is None:
+            mean_val = sum(vals) / n
+        if std_val is None:
+            if n > 1:
+                m = mean_val
+                std_val = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5
+            else:
+                std_val = float("nan")
 
         sorted_vals = sorted(vals)
+        if min_val is None:
+            min_val = sorted_vals[0]
+        if max_val is None:
+            max_val = sorted_vals[-1]
 
         def _quantile(q: float) -> float:
             """线性插值法计算分位数。"""
@@ -3481,13 +3500,13 @@ class Series:
             return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
 
         stats = {
-            "count": float(n),
-            "mean": mean_val,
-            "std": std_val,
-            "min": sorted_vals[0],
+            "count": float(count_val),
+            "mean": float(mean_val),
+            "std": float(std_val),
+            "min": float(min_val),
         }
         stats.update({f"{int(p * 100)}%": _quantile(p) for p in percentiles})
-        stats["max"] = sorted_vals[-1]
+        stats["max"] = float(max_val)
 
         return Series(list(stats.values()), index=list(stats.keys()))
 
@@ -6479,19 +6498,17 @@ class StringAccessor:
         )
 
     def lower(self) -> _PySeries:
-        # 检查是否有 NaN 值（Rust 层将 NaN 转为字符串 'NaN'，需在 Python 层处理）
+        # 优先调用 Rust 层（使用 rayon 并行 to_lowercase，避免 Python 层多次遍历）
+        try:
+            new_inner = self._s._inner.str_lower()
+            return Series(
+                new_inner, name=self._s.name, index=self._s._index, dtype="str"
+            )
+        except Exception:
+            pass
+        # 回退：Python 层实现（Rust 失败时使用）
         vals = self._s.values
-        # 先转换所有值为 str 或 None
         str_vals = [self._ensure_str(v) for v in vals]
-        has_nan = any(v is None for v in str_vals)
-        if not has_nan:
-            try:
-                new_inner = self._s._inner.str_lower()
-                return Series(
-                    new_inner, name=self._s.name, index=self._s._index, dtype="str"
-                )
-            except Exception:
-                pass
         return self._wrap([v.lower() if v is not None else None for v in str_vals])
 
     def title(self) -> _PySeries:
