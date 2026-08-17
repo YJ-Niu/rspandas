@@ -549,4 +549,28 @@ print_series(278, s)
 print_series(279, s.dt.days)
 print_series(280, s.dt.seconds)
 print_series(281, s.dt.components)
+s = pd.Series(
+    ["A", "B", "C", "Aaba", "Baca", np.nan, "CABA", "dog", "cat"], dtype="string"
+)
+print_series(282, s.str.lower())
+df = pd.DataFrame(
+    {
+        "one": pd.Series(np.random.randn(3), index=["a", "b", "c"]),
+        "two": pd.Series(np.random.randn(4), index=["a", "b", "c", "d"]),
+        "three": pd.Series(np.random.randn(3), index=["b", "c", "d"]),
+    }
+)
+unsorted_df = df.reindex(
+    index=["a", "d", "c", "b"], columns=["three", "two", "one"]
+)
+print_series(283, unsorted_df)
+print_series(284, unsorted_df.sort_index())
+print_series(285, unsorted_df.sort_index(ascending=False))
+print_series(286, unsorted_df.sort_index(axis=1))
+print_series(287, unsorted_df["three"].sort_index())
+s1 = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3], "c": [2, 3, 4]}).set_index(
+    list("ab")
+)
+print_series(288, s1)
 print("end_time - start_time:", end_time - start_time)
+
