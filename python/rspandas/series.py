@@ -1210,8 +1210,7 @@ class Series:
             ]
         else:
             result = [
-                None if (v is None or other is None) else v & other
-                for v in self.values
+                None if (v is None or other is None) else v & other for v in self.values
             ]
         return self._bitwise_series(result)
 
@@ -1236,8 +1235,7 @@ class Series:
             ]
         else:
             result = [
-                None if (v is None or other is None) else v | other
-                for v in self.values
+                None if (v is None or other is None) else v | other for v in self.values
             ]
         return self._bitwise_series(result)
 
@@ -1262,8 +1260,7 @@ class Series:
             ]
         else:
             result = [
-                None if (v is None or other is None) else v ^ other
-                for v in self.values
+                None if (v is None or other is None) else v ^ other for v in self.values
             ]
         return self._bitwise_series(result)
 
@@ -1886,72 +1883,70 @@ class Series:
 
     def sort_values(
         self,
+        axis: int = 0,
         ascending: bool = True,
         inplace: bool = False,
         kind: str = "quicksort",
         na_position: str = "last",
+        ignore_index: bool = False,
+        key=None,
     ) -> _PySeries:
         """按值排序。
 
+        :param axis: 轴方向（Series 仅支持 0）
         :param ascending: 是否升序 (默认 True)
         :param inplace: 是否原地修改 (默认 False)
         :param kind: 排序算法 ('quicksort'/'mergesort'/'heapsort'/'stable')
         :param na_position: None 值的位置 ('first' 或 'last', 默认 'last')
+        :param ignore_index: 是否忽略索引并从 0 开始重新生成
+        :param key: 应用于待排序值的排序键函数（如 ``lambda x: x.str.lower()``）
         """
-        # 尝试调用 Rust 层加速（仅在默认 RangeIndex 时，因为 Rust 层不处理索引同步）
-        if _is_range_index(self._index):
-            try:
-                new_inner = self._inner.sort_values(ascending=ascending)
-                new_values = list(new_inner.values)
-                # 处理 na_position：Rust 层 ascending=True 时 None 放最后，
-                # ascending=False 时 None 放最前，需按 na_position 调整
-                none_count = sum(1 for v in new_values if v is None)
-                if none_count > 0:
-                    rust_none_first = not ascending
-                    want_none_first = na_position == "first"
-                    if rust_none_first != want_none_first:
-                        non_none_vals = [v for v in new_values if v is not None]
-                        if want_none_first:
-                            new_values = [None] * none_count + non_none_vals
-                        else:
-                            new_values = non_none_vals + [None] * none_count
-                new_index = list(range(len(new_values)))
-                if inplace:
-                    self._inner = _PySeries(
-                        new_values, self.name, dtype=self._dtype_str
-                    )
-                    self._index = new_index
-                    return self
-                return Series(
-                    new_values,
-                    name=self.name,
-                    dtype=self._dtype_str,
-                    index=new_index,
-                )
-            except Exception:
-                pass
-        # 回退到原 Python 实现（自定义索引或 Rust 调用失败时）
-        pairs = [(i, v) for i, v in enumerate(self.values)]
+        if axis != 0:
+            raise ValueError(f"axis must be 0 for Series, got {axis}")
+
+        n = len(self.values)
+
+        # 使用 Python 实现（保留原始索引标签，对齐 pandas 行为；
+        # Rust 层 sort_values 会重排索引，无法保留原始索引标签，故不使用）
+        values = list(self.values)
+
+        # 应用 key 函数（若有）
+        sort_vals = values
+        if key is not None:
+            tmp = Series(values, name=self.name, index=self._index)
+            transformed = key(tmp)
+            if hasattr(transformed, "values"):
+                sort_vals = list(transformed.values)
+            elif hasattr(transformed, "tolist"):
+                sort_vals = list(transformed.tolist())
+            else:
+                sort_vals = list(transformed)
+            if len(sort_vals) != n:
+                raise ValueError("key function must return an index of the same length")
+
         # 分离 None 和非 None
-        non_none = [(i, v) for i, v in pairs if v is not None]
-        none_items = [(i, v) for i, v in pairs if v is None]
+        non_none = [i for i in range(n) if sort_vals[i] is not None]
+        none_items = [i for i in range(n) if sort_vals[i] is None]
 
         try:
-            non_none.sort(key=lambda x: x[1], reverse=not ascending)
+            non_none.sort(key=lambda i: sort_vals[i], reverse=not ascending)
         except TypeError:
             raise TypeError("cannot sort mixed types")
 
         # 根据 na_position 决定 None 的位置
         if na_position == "first":
-            sorted_pairs = none_items + non_none
+            order = none_items + non_none
         else:  # 'last'
-            sorted_pairs = non_none + none_items
+            order = non_none + none_items
 
-        new_values = [v for _, v in sorted_pairs]
+        new_values = [values[i] for i in order]
         if self._index is not None:
-            new_index = [self._index[i] for i, _ in sorted_pairs]
+            new_index = [self._index[i] for i in order]
         else:
             new_index = None
+        if ignore_index:
+            new_index = list(range(n))
+
         if inplace:
             self._inner = _PySeries(new_values, self.name)
             self._index = new_index
@@ -1987,10 +1982,7 @@ class Series:
         """
         if isinstance(arg, dict):
             if na_action == "ignore":
-                out = [
-                    arg.get(v, v) if not _is_missing(v) else v
-                    for v in self.values
-                ]
+                out = [arg.get(v, v) if not _is_missing(v) else v for v in self.values]
             else:
                 out = [arg.get(v, None) for v in self.values]
         elif isinstance(arg, Series):
@@ -1998,8 +1990,7 @@ class Series:
             mapping = dict(zip(arg.index, arg.values))
             if na_action == "ignore":
                 out = [
-                    mapping.get(v, v) if not _is_missing(v) else v
-                    for v in self.values
+                    mapping.get(v, v) if not _is_missing(v) else v for v in self.values
                 ]
             else:
                 out = [mapping.get(v, float("nan")) for v in self.values]
@@ -2545,13 +2536,29 @@ class Series:
         from datetime import timedelta
 
         unit_map = {
-            "d": "days", "day": "days", "days": "days",
-            "h": "hours", "hour": "hours", "hours": "hours", "hr": "hours",
-            "m": "minutes", "minute": "minutes", "minutes": "minutes", "min": "minutes",
-            "s": "seconds", "second": "seconds", "seconds": "seconds",
-            "ms": "milliseconds", "millisecond": "milliseconds", "milliseconds": "milliseconds",
-            "us": "microseconds", "microsecond": "microseconds", "microseconds": "microseconds",
-            "w": "weeks", "week": "weeks", "weeks": "weeks",
+            "d": "days",
+            "day": "days",
+            "days": "days",
+            "h": "hours",
+            "hour": "hours",
+            "hours": "hours",
+            "hr": "hours",
+            "m": "minutes",
+            "minute": "minutes",
+            "minutes": "minutes",
+            "min": "minutes",
+            "s": "seconds",
+            "second": "seconds",
+            "seconds": "seconds",
+            "ms": "milliseconds",
+            "millisecond": "milliseconds",
+            "milliseconds": "milliseconds",
+            "us": "microseconds",
+            "microsecond": "microseconds",
+            "microseconds": "microseconds",
+            "w": "weeks",
+            "week": "weeks",
+            "weeks": "weeks",
         }
         if unit not in unit_map:
             raise ValueError(f"Unknown tolerance unit: {unit!r}")
@@ -2879,16 +2886,12 @@ class Series:
                 raise ValueError(f"Unknown function: {func}")
             if isinstance(result, Series):
                 return result
-            return Series(
-                [result] * len(self), name=self.name, index=self._index
-            )
+            return Series([result] * len(self), name=self.name, index=self._index)
         elif callable(func):
             result = func(self, *args, **kwargs)
             if isinstance(result, Series):
                 return result
-            return Series(
-                [result] * len(self), name=self.name, index=self._index
-            )
+            return Series([result] * len(self), name=self.name, index=self._index)
         raise TypeError("func must be callable, string, or list")
 
     def agg(self, func, axis: int = 0, *args, **kwargs) -> Any:
@@ -2915,9 +2918,7 @@ class Series:
                     if hasattr(self, agg_func):
                         results.append(getattr(self, agg_func)())
                     else:
-                        raise ValueError(
-                            f"Unknown aggregation function: {agg_func}"
-                        )
+                        raise ValueError(f"Unknown aggregation function: {agg_func}")
                 elif callable(agg_func):
                     results.append(agg_func(self))
                 else:
@@ -3015,17 +3016,13 @@ class Series:
         :return: (aligned_self, aligned_other) 两个重新索引后的 Series
         """
         if not isinstance(other, Series):
-            raise TypeError(
-                f"align requires Series input, got {type(other).__name__}"
-            )
+            raise TypeError(f"align requires Series input, got {type(other).__name__}")
 
         self_index = (
             list(self._index) if self._index is not None else list(range(len(self)))
         )
         other_index = (
-            list(other._index)
-            if other._index is not None
-            else list(range(len(other)))
+            list(other._index) if other._index is not None else list(range(len(other)))
         )
 
         # 根据 join 计算新索引
@@ -3440,9 +3437,7 @@ class Series:
         # 校验分位数范围
         for p in percentiles:
             if not (0.0 <= p <= 1.0):
-                raise ValueError(
-                    f"percentiles 应在 [0, 1] 范围内，得到 {p}"
-                )
+                raise ValueError(f"percentiles 应在 [0, 1] 范围内，得到 {p}")
         percentiles = sorted(set(percentiles))
 
         # 提取纯数值 (排除 None/NaN/bool)
@@ -6696,12 +6691,9 @@ class StringAccessor:
         if expand:
             raise NotImplementedError("expand=True is not supported yet")
         result = [
-            str(v).split(pat, n) if v is not None else None
-            for v in self._s.values
+            str(v).split(pat, n) if v is not None else None for v in self._s.values
         ]
-        return Series(
-            result, name=self._s.name, index=self._s._index, dtype="object"
-        )
+        return Series(result, name=self._s.name, index=self._s._index, dtype="object")
 
     def slice(self, start=None, stop=None, step=None) -> _PySeries:
         s = slice(start, stop, step)
@@ -7399,9 +7391,7 @@ class DatetimeAccessor:
 
         tzobj = _normalize_tz(tz)
         dt_vals = self._get_dt_values()
-        localized = [
-            _localize(v, tzobj) if v is not None else None for v in dt_vals
-        ]
+        localized = [_localize(v, tzobj) if v is not None else None for v in dt_vals]
         # 使用新的 datetime 值创建 Series
         new_series = Series(
             localized,
@@ -7438,9 +7428,7 @@ class DatetimeAccessor:
                 # naive datetime: 先假设是 UTC，再转换
                 from datetime import timezone
 
-                converted.append(
-                    v.replace(tzinfo=timezone.utc).astimezone(tzobj)
-                )
+                converted.append(v.replace(tzinfo=timezone.utc).astimezone(tzobj))
             else:
                 converted.append(v.astimezone(tzobj))
         # 使用新的 datetime 值创建 Series

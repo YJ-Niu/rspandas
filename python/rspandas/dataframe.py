@@ -1688,87 +1688,123 @@ class DataFrame:
         self,
         by,
         axis: int = 0,
-        ascending: bool = True,
+        ascending=True,
         inplace: bool = False,
         kind: str = "quicksort",
         na_position: str = "last",
+        ignore_index: bool = False,
+        key=None,
     ) -> "DataFrame":
         """按 by 列排序。
 
         :param by: 排序列名（str 或 list[str]）
         :param axis: 轴方向（仅支持 0）
-        :param ascending: 是否升序
+        :param ascending: 是否升序（可为 bool 或与 by 等长的 bool 列表）
         :param inplace: 是否原地修改
-        :param kind: 排序算法（'quicksort'/'mergesort'/'heapsort'）
-        :param na_position: NaN 位置（'first'/'last'）
+        :param kind: 排序算法
+        :param na_position: NaN 位置（'first'/'last'，可为与 by 等长的列表）
+        :param ignore_index: 是否忽略索引并从 0 开始重新生成
+        :param key: 排序键函数或 {列名: 函数} 字典（按列应用，如 ``lambda col: col.str.lower()``）
         """
         if isinstance(by, str):
             by = [by]
         for c in by:
             if c not in self._columns:
                 raise KeyError(f"column not found: {c}")
-
-        # 尝试调用 Rust 层加速
-        # 限制条件：
-        # 1. 索引为默认 RangeIndex（Rust 层不处理索引同步）
-        # 2. na_position 与 Rust 行为一致（ascending=True 对应 'last'，
-        #    ascending=False 对应 'first'）
-        # 3. Rust 层仅使用 by 的第一列排序，多列排序需保留 Python 实现
-        rust_na_match = (ascending and na_position == "last") or (
-            not ascending and na_position == "first"
-        )
-        is_default_idx = list(self._index) == list(range(self._nrows))
-        if rust_na_match and is_default_idx:
-            try:
-                by_indices = [self._columns.index(c) for c in by]
-                new_inner = self._inner.sort_values(by=by_indices, ascending=ascending)
-                new_nrows = new_inner.nrows
-                if inplace:
-                    self._inner = new_inner
-                    self._nrows = new_nrows
-                    self._index = list(range(new_nrows))
-                    return self
-                new_df = DataFrame._from_inner(new_inner)
-                return new_df
-            except Exception:
-                pass
-
-        # 回退到原 Python 实现（自定义索引、多列排序、na_position 不匹配或 Rust 失败时）
         n = self._nrows
 
-        # 取出 by 列用于排序
-        sort_keys = [
-            [self._inner.get_column(c).values[i] for c in by] for i in range(n)
-        ]
+        # 规范化 ascending / na_position（支持逐列列表）
+        if isinstance(ascending, (list, tuple)):
+            if len(ascending) != len(by):
+                raise ValueError(
+                    f"Length of ascending ({len(ascending)}) != length of by ({len(by)})"
+                )
+            asc_list = list(ascending)
+        else:
+            asc_list = [ascending] * len(by)
+        if isinstance(na_position, (list, tuple)):
+            if len(na_position) != len(by):
+                raise ValueError(
+                    f"Length of na_position ({len(na_position)}) != length of by ({len(by)})"
+                )
+            na_list = list(na_position)
+        else:
+            na_list = [na_position] * len(by)
 
-        # 根据 na_position 分离 None 行和非 None 行 - 使用列表推导式
-        none_indices = [i for i in range(n) if any(v is None for v in sort_keys[i])]
-        non_none_indices = [
-            i for i in range(n) if all(v is not None for v in sort_keys[i])
-        ]
+        # key 可为 callable 或 {列名: callable} 字典
+        if key is None or callable(key):
+            key_map = {c: key for c in by}
+        else:
+            key_map = key
+
+        # 计算每列的 keyed 排序值
+        keyed_cols = {}
+        for c in by:
+            col_vals = list(self._inner.get_column(c).values)
+            k = key_map.get(c)
+            if k is not None:
+                tmp = Series(col_vals, index=list(range(n)))
+                transformed = k(tmp)
+                if hasattr(transformed, "values"):
+                    tvals = list(transformed.values)
+                elif hasattr(transformed, "tolist"):
+                    tvals = list(transformed.tolist())
+                else:
+                    tvals = list(transformed)
+                if len(tvals) != n:
+                    raise ValueError(
+                        "key function must return an index of the same length"
+                    )
+                keyed_cols[c] = tvals
+            else:
+                keyed_cols[c] = col_vals
+
+        # 逐行构造排序键（多列时按 by 顺序比较）
+        sort_keys = [tuple(keyed_cols[c][i] for c in by) for i in range(n)]
+
+        # 使用 Python 实现（保留原始索引标签，并支持多列、key、
+        # 逐列 ascending/na_position、ignore_index；Rust 层会重排索引，故不使用）
+        from functools import cmp_to_key
+
+        def _row_cmp(i1: int, i2: int) -> int:
+            for j in range(len(by)):
+                v1 = sort_keys[i1][j]
+                v2 = sort_keys[i2][j]
+                a = asc_list[j]
+                np_ = na_list[j]
+                if v1 is None and v2 is None:
+                    continue
+                if v1 is None:
+                    return -1 if np_ == "first" else 1
+                if v2 is None:
+                    return 1 if np_ == "first" else -1
+                if v1 < v2:
+                    return -1 if a else 1
+                if v1 > v2:
+                    return 1 if a else -1
+            return 0
 
         try:
-            non_none_indices.sort(key=lambda i: sort_keys[i], reverse=not ascending)
+            order = sorted(range(n), key=cmp_to_key(_row_cmp))
         except TypeError:
             raise TypeError("cannot sort mixed types")
-
-        if na_position == "first":
-            order = none_indices + non_none_indices
-        else:  # "last"
-            order = non_none_indices + none_indices
 
         new_data = {
             c: [self._inner.get_column(c).values[i] for i in order]
             for c in self._columns
         }
-        new_index = [self._index[i] for i in order]
+        new_index = list(range(n)) if ignore_index else [self._index[i] for i in order]
 
         if inplace:
             self._reload(new_data)
             self._index = new_index
+            if ignore_index:
+                self._index_names = None
             return self
 
-        return DataFrame(new_data, index=new_index)
+        if ignore_index:
+            return DataFrame(new_data, index=new_index)
+        return self._make_sorted_df(new_data, new_index)
 
     def filter_rows(self, mask: list) -> "DataFrame":
         if len(mask) != self._nrows:
@@ -5420,11 +5456,18 @@ class DataFrame:
             for ls in level_strs:
                 while len(ls) < max_levels:
                     ls.append("")
-            # 每列宽度
+            # 每列宽度 = max(该层级值的最大宽度, 该层级名称的长度)
             level_widths = []
             for lvl in range(max_levels):
-                lw = max(len(ls[lvl]) for ls in level_strs)
-                level_widths.append(lw)
+                val_w = max(len(ls[lvl]) for ls in level_strs)
+                name_w = 0
+                if (
+                    self._index_names is not None
+                    and lvl < len(self._index_names)
+                    and self._index_names[lvl] is not None
+                ):
+                    name_w = len(str(self._index_names[lvl]))
+                level_widths.append(max(val_w, name_w))
             idx_width = sum(level_widths) + (max_levels - 1)  # 1 空格间距
         else:
             idx_strs = [_fmt_val(self._index[i]) for i in shown_rows]
@@ -5594,20 +5637,22 @@ class DataFrame:
             if is_multiindex:
                 idx = self._index[i]
                 if isinstance(idx, tuple):
-                    # MultiIndex 行: 只显示变化的级别
+                    # MultiIndex 行: 从左到右找第一个不同的级别，
+                    # 从该级别（含）往后全部显示，前面的级别留空。
+                    # 注意：最后一个级别（最右）永不留空，保证索引始终有锚点。
                     idx_levels = [str(v) for v in idx]
-                    if prev_idx_levels is not None:
-                        # 找到第一个不同的级别
-                        first_diff = 0
-                        for lvl in range(len(idx_levels)):
-                            if (
-                                lvl >= len(prev_idx_levels)
-                                or idx_levels[lvl] != prev_idx_levels[lvl]
-                            ):
+                    n_levels = len(idx_levels)
+                    if prev_idx_levels is not None and len(prev_idx_levels) == n_levels:
+                        # 找到第一个不同的级别（不超过 n_levels - 1，保证最后一级必显示）
+                        first_diff = n_levels  # 默认全部相同，显示最后一级
+                        for lvl in range(n_levels):
+                            if idx_levels[lvl] != prev_idx_levels[lvl]:
                                 first_diff = lvl
                                 break
-                            first_diff = lvl + 1
-                        # 构建显示: 前面的级别留空
+                        # first_diff 最多到 n_levels - 1，最后一级强制显示
+                        if first_diff >= n_levels:
+                            first_diff = n_levels - 1
+                        # 构建显示: first_diff 之前留空，之后（含）全部显示
                         display_levels = [""] * first_diff + idx_levels[first_diff:]
                     else:
                         display_levels = idx_levels

@@ -579,6 +579,20 @@ df1 = pd.DataFrame(
 )
 print_series(291, df1.sort_values(by="two"))
 print_series(292, df1[["one", "two", "three"]].sort_values(by=["one", "two"]))
-
+s[2] = np.nan
+print_series(293, s.sort_values())
+print_series(294, s.sort_values(na_position="first"))
+s1 = pd.Series(["B", "a", "C"])
+print_series(295, s1.sort_values())
+print_series(296, s1.sort_values(key=lambda x: x.str.lower()))
+df = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3]})
+print_series(297, df.sort_values(by="a"))
+print_series(298, df.sort_values(by="a", key=lambda col: col.str.lower()))
+idx = pd.MultiIndex.from_tuples(
+    [("a", 1), ("a", 2), ("a", 2), ("b", 2), ("b", 1), ("b", 1)]
+)
+idx.names = ["first", "second"]
+df_multi = pd.DataFrame({"A": np.arange(6, 0, -1)}, index=idx)
+print_series(299, df_multi)
 print("end_time - start_time:", end_time - start_time)
 
