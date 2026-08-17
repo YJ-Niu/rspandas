@@ -3639,39 +3639,29 @@ class Series:
         """
         if bins is not None:
             raise NotImplementedError("bins parameter is not supported yet")
+        if not dropna:
+            # dropna=False 保留 None：回退到 Python 实现
+            values_list = self.values
+            from collections import Counter
 
-        # 获取值并计数
-        values_list = self.values
+            counter = Counter(values_list)
+            items = list(counter.items())
+            if sort:
+                items.sort(key=lambda x: x[1], reverse=not ascending)
+            unique_values = [v for v, _ in items]
+            counts = [c for _, c in items]
+            if normalize:
+                total = sum(counts)
+                counts = [c / total for c in counts]
+            return Series(counts, index=unique_values, name=self.name)
 
-        # 处理 dropna
-        if dropna:
-            values_list = [v for v in values_list if v is not None]
-        else:
-            # None 作为一个独立值参与计数
-            pass
-
-        # 计数
-        from collections import Counter
-
-        counter = Counter(values_list)
-
-        # 构建 (值, 计数) 列表
-        items = list(counter.items())
-
-        # 排序
-        if sort:
-            items.sort(key=lambda x: x[1], reverse=not ascending)
-
-        # 提取值和计数
-        unique_values = [v for v, _ in items]
-        counts = [c for _, c in items]
-
-        # 归一化
+        # 默认路径 (dropna=True)：调用 Rust 层快速实现
+        vals, cnts = self._inner.value_counts(sort, ascending)
+        counts = list(cnts)
         if normalize:
             total = sum(counts)
             counts = [c / total for c in counts]
-
-        return Series(counts, index=unique_values, name=self.name)
+        return Series(counts, index=list(vals), name=self.name)
 
     # ---------- 统计方法 (v1.0.0) ----------
 
@@ -3691,99 +3681,23 @@ class Series:
         :param ascending: 是否升序排名 (默认 True)
         :param pct: 是否返回百分比排名 (默认 False)
         """
-        # 优先调用 Rust 层（支持 average/min/max/first，na_option=keep）
+        # 优先调用 Rust 层（现已支持 dense + na_option=keep/top/bottom）
         if (
-            method in ("average", "min", "max", "first")
-            and na_option == "keep"
+            method in ("average", "min", "max", "first", "dense")
+            and na_option in ("keep", "top", "bottom")
             and numeric_only is None
         ):
-            try:
-                ranks = self._inner.rank(method, ascending)
-                if pct:
-                    # pct=True: 除以最大排名
-                    valid_ranks = [r for r in ranks if r is not None]
-                    max_rank = max(valid_ranks) if valid_ranks else 1
+            ranks = self._inner.rank(method, ascending, na_option)
+            if pct:
+                # pct=True: 除以最大排名（非 None）
+                valid_ranks = [r for r in ranks if r is not None]
+                if valid_ranks:
+                    max_rank = max(valid_ranks)
                     ranks = [(r / max_rank) if r is not None else None for r in ranks]
-                return Series(ranks, name=self.name, index=self._index)
-            except Exception:
-                pass
-
-        # 回退到 Python 实现
-        values = self.values
-        n = len(values)
-
-        # 处理 na_option
-        if na_option not in ("keep", "top", "bottom"):
-            raise ValueError(f"Invalid na_option: {na_option}")
-
-        # 创建 (value, original_index) 对
-        if na_option == "keep":
-            indexed = [(v, i) for i, v in enumerate(values) if v is not None]
-        elif na_option == "top":
-            indexed = [(v, i) for i, v in enumerate(values)]
-        else:  # bottom
-            indexed = [(v, i) for i, v in enumerate(values)]
-
-        # 排序
-        indexed.sort(
-            key=lambda x: (x[0] is None, x[0]) if na_option == "keep" else x[0],
-            reverse=not ascending,
-        )
-
-        ranks = [None] * n
-        if not indexed:
             return Series(ranks, name=self.name, index=self._index)
 
-        if method == "first":
-            for rank, (_, idx) in enumerate(indexed, 1):
-                if values[idx] is not None or na_option != "keep":
-                    ranks[idx] = rank
-        elif method == "min":
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                start = i
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    i += 1
-                rank = start + 1
-                for j in range(start, i):
-                    ranks[indexed[j][1]] = rank
-        elif method == "max":
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                start = i
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    i += 1
-                rank = i
-                for j in range(start, i):
-                    ranks[indexed[j][1]] = rank
-        elif method == "dense":
-            dense_rank = 1
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    ranks[indexed[i][1]] = dense_rank
-                    i += 1
-                dense_rank += 1
-        else:  # average
-            i = 0
-            while i < len(indexed):
-                current_val = indexed[i][0]
-                start = i
-                while i < len(indexed) and indexed[i][0] == current_val:
-                    i += 1
-                avg_rank = (start + 1 + i) / 2
-                for j in range(start, i):
-                    ranks[indexed[j][1]] = avg_rank
-
-        # 百分比排名
-        if pct:
-            max_rank = max(r for r in ranks if r is not None)
-            ranks = [r / max_rank if r is not None else None for r in ranks]
-
-        return Series(ranks, name=self.name, index=self._index)
+        # 未知 method 才回退到 Python
+        raise ValueError(f"Unsupported rank method: {method}")
 
     def quantile(self, q=0.5, interpolation: str = "linear") -> float:
         """计算分位数。

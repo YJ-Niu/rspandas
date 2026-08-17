@@ -4944,15 +4944,6 @@ class DataFrame:
         :param numeric_only: 是否仅计算数值列
         :param min_count: 最少非空值数
         """
-
-        def _is_missing(v) -> bool:
-            if v is None:
-                return True
-            try:
-                return v != v  # type: ignore[operator]
-            except TypeError:
-                return False
-
         # 确定要计算的列
         target_cols = [
             c
@@ -4963,7 +4954,15 @@ class DataFrame:
         ]
 
         if axis == 1 or axis == "columns":
-            # 按行求和
+            # 按行求和（提升有限，保留原实现）
+            def _is_missing(v) -> bool:
+                if v is None:
+                    return True
+                try:
+                    return v != v  # type: ignore[operator]
+                except TypeError:
+                    return False
+
             result = []
             for i in range(self._nrows):
                 vals = []
@@ -4981,12 +4980,19 @@ class DataFrame:
                     else:
                         result.append(sum(vals) if vals else None)
             return Series(result, index=self._index)
-        # 按列求和 (默认)
-        data = {}
+        # 按列求和 (默认)：一次性调用 Rust 列并行方法
+        all_vals = list(self._inner.par_sum_all())
+        col_to_val = dict(zip(self._columns, all_vals))
+        result_dict = {}
         for c in target_cols:
-            col = self._get_column_as_series(c)
-            data[c] = col.sum(skipna=skipna, min_count=min_count)
-        return Series(data)
+            v = col_to_val.get(c)
+            if skipna is False or min_count > 0:
+                # 回退逐列以检查 min_count / skipna=False 细节
+                col = self._get_column_as_series(c)
+                result_dict[c] = col.sum(skipna=skipna, min_count=min_count)
+            else:
+                result_dict[c] = v
+        return Series(result_dict)
 
     def mean(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列或按行求均值。
@@ -5004,7 +5010,7 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求均值
+            # 按行求均值（保留原实现）
             result = []
             for i in range(self._nrows):
                 vals = []
@@ -5022,10 +5028,10 @@ class DataFrame:
                 else:
                     result.append(None)
             return Series(result, index=self._index)
-        # 按列求均值
-        return Series(
-            {c: self._get_column_as_series(c).mean(skipna=skipna) for c in target_cols}
-        )
+        # 按列求均值：一次性调用 Rust 列并行
+        all_vals = list(self._inner.par_mean_all())
+        col_to_val = dict(zip(self._columns, all_vals))
+        return Series({c: col_to_val.get(c) for c in target_cols})
 
     def min(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列或按行求最小值。
@@ -5043,7 +5049,7 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求最小值
+            # 按行求最小值（保留原实现）
             result = []
             for i in range(self._nrows):
                 vals = []
@@ -5061,10 +5067,10 @@ class DataFrame:
                 else:
                     result.append(None)
             return Series(result, index=self._index)
-        # 按列求最小值
-        return Series(
-            {c: self._get_column_as_series(c).min(skipna=skipna) for c in target_cols}
-        )
+        # 按列：Rust 列并行
+        all_vals = list(self._inner.par_min_all())
+        col_to_val = dict(zip(self._columns, all_vals))
+        return Series({c: col_to_val.get(c) for c in target_cols})
 
     def max(self, axis=None, skipna=True, level=None, numeric_only=None) -> "Series":
         """按列或按行求最大值。
@@ -5082,7 +5088,7 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求最大值
+            # 按行求最大值（保留原实现）
             result = []
             for i in range(self._nrows):
                 vals = []
@@ -5100,15 +5106,27 @@ class DataFrame:
                 else:
                     result.append(None)
             return Series(result, index=self._index)
-        # 按列求最大值
-        return Series(
-            {c: self._get_column_as_series(c).max(skipna=skipna) for c in target_cols}
-        )
+        # 按列：Rust 列并行
+        all_vals = list(self._inner.par_max_all())
+        col_to_val = dict(zip(self._columns, all_vals))
+        return Series({c: col_to_val.get(c) for c in target_cols})
 
     def count(self, axis: int = 0) -> "Series":
-        """按列计数 (非空值)。"""
-        # 使用字典推导式替代显式 for 循环
-        return Series({c: self._get_column_as_series(c).count() for c in self._columns})
+        """按列计数 (非空值)：调用 Rust 列并行实现。"""
+        if axis in (1, "columns"):
+            # 按行计数（逐行遍历，提升有限，保留原有风格）
+            vals = []
+            for i in range(self._nrows):
+                c = 0
+                for col in self._columns:
+                    v = self._inner.get_column(col).values[i]
+                    if v is not None and not (isinstance(v, float) and v != v):
+                        c += 1
+                vals.append(c)
+            return Series(vals, index=self._index)
+        # axis=0：一次性调用 Rust 列并行
+        all_counts = list(self._inner.par_count_all())
+        return Series(dict(zip(self._columns, all_counts)))
 
     def std(
         self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None
@@ -5137,28 +5155,27 @@ class DataFrame:
             except TypeError:
                 return False
 
-        def _std_vals(vals):
-            """计算一组值的标准差。"""
-            non_null = [v for v in vals if not _is_missing(v)]
-            if not skipna and len(non_null) < len(vals):
-                return None
-            if len(non_null) < 2:
-                return None
-            m = sum(non_null) / len(non_null)
-            var = sum((v - m) ** 2 for v in non_null) / (len(non_null) - ddof)
-            return var**0.5
-
         if axis == 1 or axis == "columns":
-            # 按行求标准差
+            # 按行求标准差（保留原实现）
+            def _std_vals(vals):
+                non_null = [v for v in vals if not _is_missing(v)]
+                if not skipna and len(non_null) < len(vals):
+                    return None
+                if len(non_null) < 2:
+                    return None
+                m = sum(non_null) / len(non_null)
+                var = sum((v - m) ** 2 for v in non_null) / (len(non_null) - ddof)
+                return var**0.5
+
             result = []
             for i in range(self._nrows):
                 vals = [self._inner.get_column(c).values[i] for c in target_cols]
                 result.append(_std_vals(vals))
             return Series(result, index=self._index)
-        # 按列求标准差
-        return Series(
-            {c: _std_vals(list(self._inner.get_column(c).values)) for c in target_cols}
-        )
+        # 按列求标准差：一次性调用 Rust 列并行
+        all_vals = list(self._inner.par_std_all(ddof))
+        col_to_val = dict(zip(self._columns, all_vals))
+        return Series({c: col_to_val.get(c) for c in target_cols})
 
     def var(
         self, axis=None, skipna=True, level=None, ddof: int = 1, numeric_only=None
@@ -7347,8 +7364,12 @@ class DataFrame:
         """
         from .series import Series
 
+        if axis == 0 and not isinstance(q, (list, tuple)):
+            # 单个分位数 + axis=0：Rust 列并行一次计算所有列
+            all_vals = list(self._inner.par_quantile_all(q))
+            return Series(dict(zip(self._columns, all_vals)))
         if axis == 0:
-            q_list = [q] if not isinstance(q, (list, tuple)) else list(q)
+            q_list = list(q)
 
             def _interp(qv, vals):
                 """线性插值计算单个分位数。"""
@@ -7358,14 +7379,11 @@ class DataFrame:
                 return vals[lo] + (vals[hi] - vals[lo]) * (pos - lo)
 
             def _quantiles(vals):
-                """计算 vals 在 q_list 各分位数的值。"""
                 if not vals:
                     return [None] * len(q_list)
                 vals.sort()
-                # 使用列表推导式替代内层显式 for 循环
                 return [_interp(qv, vals) for qv in q_list]
 
-            # 使用字典推导式替代外层显式 for 循环
             new_data = {
                 c: _quantiles(
                     [v for v in self._inner.get_column(c).values if v is not None]
@@ -8228,7 +8246,14 @@ class DataFrame:
 
         :param limit: 最大连续填充数量
         """
-        # 复用 Series.ffill 的实现，避免重复代码
+        if limit is None:
+            # 无 limit：一次 Rust 列并行调用（替代逐列 Python 循环）
+            inner_df = self._inner.par_ffill_all()
+            out: DataFrame = object.__new__(DataFrame)
+            out.__dict__.update(self.__dict__)
+            out._inner = inner_df
+            return out
+        # 有 limit：复用 Series.ffill
         new_data = {c: list(self[c].ffill(limit=limit).values) for c in self._columns}
         return DataFrame(new_data, index=self._index)
 
@@ -8237,6 +8262,13 @@ class DataFrame:
 
         :param limit: 最大连续填充数量
         """
+        if limit is None:
+            # 无 limit：一次 Rust 列并行调用
+            inner_df = self._inner.par_bfill_all()
+            out: DataFrame = object.__new__(DataFrame)
+            out.__dict__.update(self.__dict__)
+            out._inner = inner_df
+            return out
         new_data = {c: list(self[c].bfill(limit=limit).values) for c in self._columns}
         return DataFrame(new_data, index=self._index)
 

@@ -1065,72 +1065,152 @@ impl Series {
         Some(vs[lower] * (1.0 - frac) + vs[upper] * frac)
     }
 
-    /// 计算排名
-    /// method: "average"=平均排名, "min"=最小排名, "max"=最大排名, "first"=出现顺序
+    /// 计算排名（扩展版，含 dense + na_option）
+    /// method: "average"=平均排名, "min"=最小排名, "max"=最大排名,
+    ///         "first"=出现顺序, "dense"=密集排名（不跳号）
     /// ascending: true=升序, false=降序
-    pub fn rank(&self, method: &str, ascending: bool) -> Vec<Option<f64>> {
+    /// na_option: "keep"=None保持None, "top"=None排最前, "bottom"=None排最后
+    pub fn rank(&self, method: &str, ascending: bool, na_option: Option<&str>) -> Vec<Option<f64>> {
         let n = self.len();
         let mut result: Vec<Option<f64>> = vec![None; n];
+        let na = na_option.unwrap_or("keep");
 
-        // 收集 (value, index) 对，跳过 None
-        let mut indexed: Vec<(f64, usize)> = match &self.data {
+        // 收集 (value, original_index, is_none)
+        #[derive(Clone, Copy)]
+        enum EntryVal {
+            Val(f64),
+            NaN,
+        }
+        let mut indexed: Vec<(EntryVal, usize)> = match &self.data {
             ColumnData::Int(v) => v
                 .iter()
                 .enumerate()
-                .filter_map(|(i, x)| x.map(|val| (val as f64, i)))
+                .map(|(i, x)| match x {
+                    Some(val) => (EntryVal::Val(*val as f64), i),
+                    None => (EntryVal::NaN, i),
+                })
                 .collect(),
             ColumnData::Float(v) => v
                 .iter()
                 .enumerate()
-                .filter_map(|(i, x)| x.map(|val| (val, i)))
+                .map(|(i, x)| match x {
+                    Some(val) => {
+                        if val.is_nan() {
+                            (EntryVal::NaN, i)
+                        } else {
+                            (EntryVal::Val(*val), i)
+                        }
+                    }
+                    None => (EntryVal::NaN, i),
+                })
                 .collect(),
             _ => return result,
         };
 
-        // 排序
+        // 排序：根据 na_option 决定 None 值的位置
         indexed.sort_by(|a, b| {
-            if ascending {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            use EntryVal::*;
+            match (a.0, b.0, na, ascending) {
+                // keep: NaN 之间视为相等，且 NaN 与 Val 不参与排名（留最后）
+                (NaN, NaN, "keep", _) => std::cmp::Ordering::Equal,
+                (NaN, Val(_), "keep", _) => std::cmp::Ordering::Greater,
+                (Val(_), NaN, "keep", _) => std::cmp::Ordering::Less,
+                // top: NaN 排在最前
+                (NaN, NaN, "top", _) => std::cmp::Ordering::Equal,
+                (NaN, Val(_), "top", _) => std::cmp::Ordering::Less,
+                (Val(_), NaN, "top", _) => std::cmp::Ordering::Greater,
+                // bottom: NaN 排在最后
+                (NaN, NaN, "bottom", _) => std::cmp::Ordering::Equal,
+                (NaN, Val(_), "bottom", _) => std::cmp::Ordering::Greater,
+                (Val(_), NaN, "bottom", _) => std::cmp::Ordering::Less,
+                // 有效值之间按正常比较
+                (Val(x), Val(y), _, true) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                (Val(x), Val(y), _, false) => {
+                    y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                _ => std::cmp::Ordering::Equal,
             }
         });
 
-        // 分配排名
+        // 分配排名：找到第一个有效排名起点（跳过 keep 模式的前导 NaN）
         let m = indexed.len();
-        let mut i = 0;
-        while i < m {
+        // "keep" 模式下：NaN 保持 result None；有效值的排名范围 1..=有效数
+        // "top"/"bottom" 模式下：NaN 也参与排名
+        let effective_start = if na == "keep" {
+            indexed.partition_point(|(v, _)| matches!(v, EntryVal::NaN))
+        } else {
+            0
+        };
+        let effective_end = if na == "keep" {
+            // keep 模式下：跳过尾部 NaN（从左起遇到 NaN 停止）
+            indexed
+                .iter()
+                .position(|(v, _)| matches!(v, EntryVal::NaN))
+                .unwrap_or(m)
+        } else {
+            m
+        };
+
+        let effective_slice = &indexed[effective_start..effective_end];
+        let m_eff = effective_slice.len();
+        let mut i = 0usize;
+        let mut dense_rank_counter = 0usize;
+
+        while i < m_eff {
             let mut j = i + 1;
-            while j < m && indexed[j].0 == indexed[i].0 {
-                j += 1;
+            while j < m_eff {
+                let a = effective_slice[i].0;
+                let b = effective_slice[j].0;
+                let same = match (a, b) {
+                    (EntryVal::Val(x), EntryVal::Val(y)) => x == y,
+                    (EntryVal::NaN, EntryVal::NaN) => true,
+                    _ => false,
+                };
+                if same {
+                    j += 1;
+                } else {
+                    break;
+                }
             }
-            // [i, j) 是相同值的范围
+            // 全局偏移位置
+            let global_i = effective_start + i;
+            let global_j = effective_start + j;
+            dense_rank_counter += 1;
+
             match method {
                 "average" => {
-                    let avg = (i + j + 1) as f64 / 2.0; // 1-based 平均
-                    for k in i..j {
+                    let avg = (global_i + global_j + 1) as f64 / 2.0;
+                    for k in global_i..global_j {
                         result[indexed[k].1] = Some(avg);
                     }
                 }
                 "min" => {
-                    for k in i..j {
-                        result[indexed[k].1] = Some((i + 1) as f64);
+                    let rank_val = (global_i + 1) as f64;
+                    for k in global_i..global_j {
+                        result[indexed[k].1] = Some(rank_val);
                     }
                 }
                 "max" => {
-                    for k in i..j {
-                        result[indexed[k].1] = Some(j as f64);
+                    let rank_val = global_j as f64;
+                    for k in global_i..global_j {
+                        result[indexed[k].1] = Some(rank_val);
                     }
                 }
                 "first" => {
-                    for k in i..j {
+                    for k in global_i..global_j {
                         result[indexed[k].1] = Some((k + 1) as f64);
+                    }
+                }
+                "dense" => {
+                    let rank_val = dense_rank_counter as f64;
+                    for k in global_i..global_j {
+                        result[indexed[k].1] = Some(rank_val);
                     }
                 }
                 _ => {
                     // 默认 average
-                    let avg = (i + j - 1) as f64 / 2.0 + 0.5;
-                    for k in i..j {
+                    let avg = (global_i + global_j + 1) as f64 / 2.0;
+                    for k in global_i..global_j {
                         result[indexed[k].1] = Some(avg);
                     }
                 }
@@ -1138,6 +1218,83 @@ impl Series {
             i = j;
         }
         result
+    }
+
+    /// 值计数 (value_counts)
+    /// 返回 (unique_values: Vec<String>, counts: Vec<usize>)
+    /// normalize=true 时 counts 占比为 f64，这里我们用 (values, counts_as_f64 或 counts)，
+    /// 为简单统一返回 (values: Vec<Py<PyAny>>, counts: Vec<u64>) 用 Vec<(String, u64)> 代替
+    pub fn value_counts(&self, sort: bool, ascending: bool) -> (Vec<String>, Vec<u64>) {
+        use std::collections::HashMap;
+        let mut map: HashMap<String, u64> = HashMap::new();
+        match &self.data {
+            ColumnData::Int(v) => {
+                for x in v.iter() {
+                    match x {
+                        Some(val) => *map.entry(val.to_string()).or_insert(0) += 1,
+                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                    }
+                }
+            }
+            ColumnData::Float(v) => {
+                for x in v.iter() {
+                    match x {
+                        Some(val) => {
+                            if val.is_nan() {
+                                *map.entry("NaN".to_string()).or_insert(0) += 1;
+                            } else {
+                                *map.entry(val.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                    }
+                }
+            }
+            ColumnData::Bool(v) => {
+                for x in v.iter() {
+                    match x {
+                        Some(val) => *map.entry(val.to_string()).or_insert(0) += 1,
+                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                    }
+                }
+            }
+            ColumnData::String(v) => {
+                for x in v.iter() {
+                    match x {
+                        Some(val) => *map.entry(val.clone()).or_insert(0) += 1,
+                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                    }
+                }
+            }
+            ColumnData::Categorical(cd) => {
+                for code in cd.codes.iter() {
+                    match code {
+                        Some(c) if (*c as usize) < cd.categories.len() => {
+                            *map.entry(cd.categories[*c as usize].clone()).or_insert(0) += 1;
+                        }
+                        _ => *map.entry("None".to_string()).or_insert(0) += 1,
+                    }
+                }
+            }
+        }
+        // dropna=True：移除缺失值（None 表示为 "None"；float NaN 表示为 "NaN"）
+        map.remove("None");
+        map.remove("NaN");
+        let mut pairs: Vec<(String, u64)> = map.into_iter().collect();
+        if sort {
+            if ascending {
+                pairs.sort_by_key(|a| a.1);
+            } else {
+                pairs.sort_by_key(|b| std::cmp::Reverse(b.1));
+            }
+        }
+        let mut values = Vec::with_capacity(pairs.len());
+        let mut counts = Vec::with_capacity(pairs.len());
+        for (v, c) in pairs {
+            values.push(v);
+            counts.push(c);
+        }
+        (values, counts)
     }
 
     /// 滑动窗口求和
@@ -2975,32 +3132,6 @@ impl PySeries {
         self.inner.cat_as_unordered().map(|s| PySeries { inner: s })
     }
 
-    /// value_counts: 返回 (value, count) 两条 Series
-    fn value_counts<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
-        let (order, cnts): (Vec<String>, Vec<usize>) = py.detach(|| {
-            let mut counts: HashMap<String, usize> = HashMap::new();
-            let mut order: Vec<String> = Vec::new();
-            for s in self.inner.to_string_vec() {
-                // NaN 跳过
-                if s == "NaN" {
-                    continue;
-                }
-                if let std::collections::hash_map::Entry::Vacant(e) = counts.entry(s.clone()) {
-                    order.push(s.clone());
-                    e.insert(0);
-                }
-                *counts.get_mut(&s).unwrap() += 1;
-            }
-            let cnts: Vec<usize> = order.iter().map(|s| counts[s]).collect();
-            (order, cnts)
-        });
-        let values: Vec<&str> = order.iter().map(|s| s.as_str()).collect();
-        Ok((PyList::new(py, values)?, PyList::new(py, cnts)?))
-    }
-
     // ---------- 显示辅助 ----------
 
     /// 转换为字符串列表 (None -> "NaN")
@@ -3078,13 +3209,15 @@ impl PySeries {
         }
     }
 
+    #[pyo3(signature = (method, ascending, na_option=None))]
     fn rank<'py>(
         &self,
         py: Python<'py>,
         method: &str,
         ascending: bool,
+        na_option: Option<&str>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let ranks = py.detach(|| self.inner.rank(method, ascending));
+        let ranks = py.detach(|| self.inner.rank(method, ascending, na_option));
         // 将 Option<f64> 转为 Python list
         let list = PyList::empty(py);
         for r in ranks {
@@ -3094,6 +3227,19 @@ impl PySeries {
             }
         }
         Ok(list)
+    }
+
+    /// 值计数: 返回 ([values], [counts])，Python 层再转 Series
+    fn value_counts<'py>(
+        &self,
+        py: Python<'py>,
+        sort: bool,
+        ascending: bool,
+    ) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
+        let (vals, counts) = py.detach(|| self.inner.value_counts(sort, ascending));
+        let v_list = PyList::new(py, vals.iter().map(|s| s.as_str()))?;
+        let c_list = PyList::new(py, counts.iter().copied())?;
+        Ok((v_list, c_list))
     }
 
     // ---------- 滚动窗口 ----------
@@ -3738,12 +3884,18 @@ mod tests {
     #[test]
     fn test_series_rank() {
         let s = Series::new_float(None, vec![Some(3.0), Some(1.0), Some(2.0), Some(1.0)]);
-        let ranks = s.rank("average", true);
+        let ranks = s.rank("average", true, None);
         // 3.0 -> rank 4.0, 1.0 -> rank 1.5, 2.0 -> rank 3.0, 1.0 -> rank 1.5
         assert!((ranks[0].unwrap() - 4.0).abs() < 1e-10);
         assert!((ranks[1].unwrap() - 1.5).abs() < 1e-10);
         assert!((ranks[2].unwrap() - 3.0).abs() < 1e-10);
         assert!((ranks[3].unwrap() - 1.5).abs() < 1e-10);
+        // dense rank
+        let r_dense = s.rank("dense", true, None);
+        assert_eq!(r_dense[0], Some(3.0)); // 3 -> 3rd unique value
+        assert_eq!(r_dense[1], Some(1.0)); // 1 -> 1st
+        assert_eq!(r_dense[2], Some(2.0)); // 2 -> 2nd
+        assert_eq!(r_dense[3], Some(1.0)); // 1 -> 1st
     }
 
     #[test]
