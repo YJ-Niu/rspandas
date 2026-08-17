@@ -3769,6 +3769,34 @@ class Series:
         else:
             raise ValueError(f"Invalid interpolation method: {interpolation}")
 
+    def searchsorted(self, value, side: str = "left", sorter=None) -> "rnp.ndarray":
+        """在已升序的 Series 中查找 value 的插入位置（二分查找）。
+
+        等价于 ``numpy.searchsorted`` / ``pandas.Series.searchsorted``。
+
+        :param value: 标量或 list/tuple/ndarray，要查找的目标值
+        :param side: ``"left"``（默认，bisect_left）或 ``"right"``（bisect_right）
+        :param sorter: 可选整数索引数组（长度与 self 相同），使 ``self[sorter]``
+                       为升序。当 self 本身无序时通过传入 ``np.argsort(self)``
+                       实现正确的 searchsorted。可为 list/tuple/ndarray。
+        :return: rsnumpy 一维 ndarray（dtype=int64），长度与 ``value`` 扁平化后相同。
+                 单个标量输入时仍返回长度为 1 的数组（与 pandas 行为一致）。
+        """
+        import rsnumpy as rnp
+
+        # 预处理 sorter：若传入 rsnumpy.ndarray 则 list(tuple) 化以适配 Rust 端
+        # sorter 也可能是 numpy-like，取 tolist/迭代即可。
+        if sorter is not None:
+            if hasattr(sorter, "tolist"):
+                _sorter = sorter.tolist()
+            else:
+                _sorter = list(sorter)
+        else:
+            _sorter = None
+        indices = list(self._inner.searchsorted(value, side, _sorter))
+        arr = rnp.ndarray(indices, _dtype="int64")
+        return arr
+
     def mode(self, dropna: bool = True) -> _PySeries:
         """返回众数。"""
         from collections import Counter

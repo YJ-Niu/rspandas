@@ -1055,6 +1055,56 @@ impl Series {
         }
     }
 
+    /// 二分查找插入位置（等价于 numpy.searchsorted）。
+    ///
+    /// - values: 需要查找的目标值列表（已转成 f64）
+    /// - side: "left" | "right"
+    /// - sorter: 可选长度等于 self.len() 的索引数组，使得 `a[sorter]` 为升序；
+    ///   若为 None 则假定 self 本身已升序。
+    ///
+    /// 行为：NaNs（self 或 values 中的 NaN）与 numpy 保持一致：
+    /// - self 中的 NaN 会被放在有序序列末尾（与 pandas.Series.searchsorted 行为一致，
+    ///   NaN 比较视为大于任何有限值）；
+    /// - values 中的 NaN 将插入到最末尾（>= len(arr)）。
+    pub fn searchsorted(&self, values: &[f64], side: &str, sorter: Option<&[usize]>) -> Vec<usize> {
+        let f64_vals = self.as_f64_vec();
+        let n = f64_vals.len();
+
+        // 构造排序后的 arr_sorted：按 sorter 或原顺序，过滤 None 但保留 NaN
+        let mut arr_sorted: Vec<f64> = Vec::with_capacity(n);
+        if let Some(idx) = sorter {
+            for &i in idx.iter().take(n) {
+                if let Some(v) = f64_vals[i] {
+                    arr_sorted.push(v);
+                }
+            }
+        } else {
+            for v in f64_vals.iter().flatten() {
+                arr_sorted.push(*v);
+            }
+        }
+
+        let is_right = matches!(side, "right");
+        values
+            .iter()
+            .map(|&x| {
+                if x.is_nan() {
+                    return arr_sorted.len();
+                }
+                if is_right {
+                    // bisect_right: 第一个 > x 的位置
+                    arr_sorted.partition_point(|&v| {
+                        !v.is_nan() && (v <= x || v.partial_cmp(&x).is_none())
+                    })
+                } else {
+                    // bisect_left: 第一个 >= x 的位置（NaN 视为 > 任何有限值）
+                    arr_sorted
+                        .partition_point(|&v| !v.is_nan() && (v < x || v.partial_cmp(&x).is_none()))
+                }
+            })
+            .collect()
+    }
+
     /// 计算分位数（线性插值法）
     /// q: 0.0-1.0 之间的分位数
     pub fn quantile(&self, q: f64) -> Option<f64> {
@@ -3256,13 +3306,108 @@ impl PySeries {
         PySeries { inner }
     }
 
-    // ---------- 分位数 / 排名 ----------
+    // ---------- 分位数 / 排名 / searchsorted ----------
 
     fn quantile<'py>(&self, py: Python<'py>, q: f64) -> PyResult<Bound<'py, PyAny>> {
         match py.detach(|| self.inner.quantile(q)) {
             Some(v) => Ok(v.into_pyobject(py)?.into_any()),
             None => Ok(py.None().into_bound(py)),
         }
+    }
+
+    /// numpy.searchsorted：返回 values 在已升序（或经 sorter 重排后升序）的
+    /// self 中的插入位置。返回与 values 等长的 usize 列表。
+    #[pyo3(signature = (values, side="left", sorter=None))]
+    fn searchsorted<'py>(
+        &self,
+        py: Python<'py>,
+        values: &Bound<'py, PyAny>,
+        side: &str,
+        sorter: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        // 解析 values：标量 → 单元素列表；列表/元组 → 元素逐一转 f64
+        let vals_f64: Vec<f64> = if let Ok(list) = values.cast::<PyList>() {
+            list.iter()
+                .map(|x| {
+                    x.extract::<f64>().or_else(|_| {
+                        x.extract::<i64>()
+                            .map(|i| i as f64)
+                            .or_else(|_| x.extract::<bool>().map(|b| if b { 1.0 } else { 0.0 }))
+                    })
+                })
+                .collect::<PyResult<Vec<f64>>>()?
+        } else if let Ok(t) = values.cast::<pyo3::types::PyTuple>() {
+            t.iter()
+                .map(|x| {
+                    x.extract::<f64>().or_else(|_| {
+                        x.extract::<i64>()
+                            .map(|i| i as f64)
+                            .or_else(|_| x.extract::<bool>().map(|b| if b { 1.0 } else { 0.0 }))
+                    })
+                })
+                .collect::<PyResult<Vec<f64>>>()?
+        } else {
+            // 标量
+            let v: f64 = values
+                .extract::<f64>()
+                .or_else(|_| values.extract::<i64>().map(|i| i as f64))
+                .or_else(|_| values.extract::<bool>().map(|b| if b { 1.0 } else { 0.0 }))
+                .map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(
+                        "searchsorted 'value' must be numeric scalar or iterable",
+                    )
+                })?;
+            vec![v]
+        };
+
+        // 解析 sorter：Option<Vec<usize>>。传入 None/list/tuple。
+        let sorter_vec: Option<Vec<usize>> = if let Some(s) = sorter {
+            if s.is_none() {
+                None
+            } else if let Ok(list) = s.cast::<PyList>() {
+                let mut v = Vec::with_capacity(list.len());
+                for item in list.iter() {
+                    let i: i64 = item.extract().map_err(|_| {
+                        pyo3::exceptions::PyTypeError::new_err(
+                            "searchsorted sorter must be list[int]",
+                        )
+                    })?;
+                    v.push(i.max(0) as usize);
+                }
+                Some(v)
+            } else if let Ok(t) = s.cast::<pyo3::types::PyTuple>() {
+                let mut v = Vec::with_capacity(t.len());
+                for item in t.iter() {
+                    let i: i64 = item.extract().map_err(|_| {
+                        pyo3::exceptions::PyTypeError::new_err(
+                            "searchsorted sorter must be tuple[int]",
+                        )
+                    })?;
+                    v.push(i.max(0) as usize);
+                }
+                Some(v)
+            } else {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "searchsorted sorter must be None or list[int]/tuple[int]",
+                ));
+            }
+        } else {
+            None
+        };
+
+        let side_valid = if side != "left" && side != "right" {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "searchsorted side must be 'left' or 'right', got '{side}'"
+            )));
+        } else {
+            side
+        };
+
+        let result = py.detach(|| match &sorter_vec {
+            Some(idx) => self.inner.searchsorted(&vals_f64, side_valid, Some(idx)),
+            None => self.inner.searchsorted(&vals_f64, side_valid, None),
+        });
+        PyList::new(py, result)
     }
 
     #[pyo3(signature = (method, ascending, na_option=None))]
