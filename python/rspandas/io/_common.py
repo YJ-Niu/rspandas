@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import json as _json
 import pickle as _pickle
+from datetime import datetime
 
 
 class _NoDefault:
@@ -34,8 +35,12 @@ _NO_DEFAULT = _NoDefault()
 
 
 def _parse_date_series(values, date_format, dayfirst):
-    """将字符串列表解析为 ISO 格式 datetime 字符串列表。"""
-    from .._datetime import _parse_iso
+    """将字符串列表解析为 datetime 对象列表。
+
+    支持 date_format 为 dict（按列名指定格式）或 str（统一格式）。
+    与 pandas 行为对齐：date_format 作为 dict 时，key 为列名，value 为格式字符串。
+    """
+    import datetime as _datetime_module
 
     out = []
     for v in values:
@@ -45,11 +50,22 @@ def _parse_date_series(values, date_format, dayfirst):
         if not isinstance(v, str):
             out.append(v)
             continue
-        try:
-            dt = _parse_iso(v)
-            out.append(dt.isoformat())
-        except (ValueError, TypeError):
-            out.append(v)
+        # 如果 date_format 是字符串，使用指定格式解析
+        if isinstance(date_format, str):
+            try:
+                dt = _datetime_module.datetime.strptime(v, date_format)
+                out.append(dt)
+            except (ValueError, TypeError):
+                out.append(v)
+        else:
+            # 无格式或 dict 格式（由调用方按列分发）
+            from .._datetime import _parse_iso
+
+            try:
+                dt = _parse_iso(v)
+                out.append(dt)
+            except (ValueError, TypeError):
+                out.append(v)
     return out
 
 
@@ -155,6 +171,9 @@ def _infer_column_type(values):
         ]
 
     # 默认：保持 str/object
+    # 如果列中包含 datetime 对象，不转换（保持 datetime 类型）
+    if all(isinstance(v, (datetime, type(None))) for v in values):
+        return values
     return [
         None if v is None else str(v) if not isinstance(v, str) else v for v in values
     ]
@@ -345,7 +364,7 @@ class _TextFileReader:
 
         # 取出本 chunk 的行
         end = min(self._pos + size + 1, len(self._lines))
-        chunk_lines = self._lines[self._pos : end]
+        chunk_lines = self._lines[self._pos:end]
         self._pos = end
 
         # 第一行可能是表头

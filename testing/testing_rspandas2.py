@@ -731,5 +731,26 @@ data = "col1,col2,col3\na,b,1\na,b,2\nc,d,3"
 df = pd.read_csv(StringIO(data))
 print_series(359, df)
 pd.read_csv(StringIO(data), usecols=lambda x: x.upper() in ["COL1", "COL3"])
+df = pd.read_csv("./testing/data.csv")
+print_series(360, df)
+df = pd.read_csv("./testing/data.csv", header=None)
+print_series(361, df)
+df = pd.read_csv("./testing/data.csv", index_col="Value")
+print_series(362, df)
+df = pd.read_csv("./testing/data.csv", dtype={"Value": float})
+print_series(363, df)
+df = pd.read_csv("./testing/data.csv", na_values=["foo", "bar"])
+print_series(364, df)
+df = pd.read_csv("./testing/data.csv", comment="#")
+print_series(365, df)
+df = pd.read_csv("./testing/tmp.csv")
+print_series(366, df)
+print_series(367, df.dtypes)
+df = pd.read_csv(
+    "./testing/tmp.csv",
+    parse_dates=[1, 2],
+    date_format={"col 2": "%d/%m/%Y", "col 3": "%a %d %b %Y"},
+)
+print_series(368, df.dtypes)
 
 print("end_time - start_time:", end_time - start_time)

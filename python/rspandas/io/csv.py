@@ -527,14 +527,22 @@ def read_csv(
                     for i in range(len(data[src_cols[0]])):
                         parts = [str(data[c][i]) for c in src_cols]
                         combined.append(" ".join(parts))
-                    parsed = _parse_date_series(combined, date_format, dayfirst)
+                    # 若 date_format 为 dict，按 new_name 获取对应格式
+                    col_fmt = date_format
+                    if isinstance(date_format, dict):
+                        col_fmt = date_format.get(new_name, None)
+                    parsed = _parse_date_series(combined, col_fmt, dayfirst)
                     data[new_name] = parsed
                 else:
                     date_cols.append(src_cols)
 
         for c in date_cols:
             if c in data:
-                data[c] = _parse_date_series(data[c], date_format, dayfirst)
+                # 若 date_format 为 dict，按列名获取对应格式
+                col_fmt = date_format
+                if isinstance(date_format, dict):
+                    col_fmt = date_format.get(c, None)
+                data[c] = _parse_date_series(data[c], col_fmt, dayfirst)
 
     # ------------------------------------------------------------------
     # 18. 处理 dtype

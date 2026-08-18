@@ -12,6 +12,19 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple
 if TYPE_CHECKING:
     # 仅用于类型注解，运行时通过函数内 import 避免循环引用
     from .dataframe import DataFrame
+from .accessors.cat import CatAccessor  # noqa: F401
+from .accessors.datetime import DatetimeAccessor  # noqa: F401
+from .accessors.string import StringAccessor  # noqa: F401
+from .groupby.series_groupby import SeriesGroupBy  # noqa: F401
+from .indexing.series_indexers import (
+    _IatIndexer,
+    _ILocIndexer,
+    _LocIndexer,
+)  # noqa: F401
+from .window.ewm import EWM  # noqa: F401
+from .window.expanding import Expanding  # noqa: F401
+from .window.resampler import Resampler  # noqa: F401
+from .window.rolling import Rolling  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # 内部辅助函数与工具类（已迁移到 _internal/_series_helpers）
@@ -22,7 +35,7 @@ from ._internal._series_helpers import (
     _ExtensionArray,
     _PySeries_filter,
     _dtype_to_str,
-    _format_timedelta,
+    # _format_timedelta,
     _infer_dtype,
     _is_missing,
     _is_range_index,
@@ -216,6 +229,12 @@ class Series:
             elif nd.startswith("period["):
                 # 保留 period[freq] 格式（与 pandas 一致）
                 self._dtype_str = dtype_str
+            elif nd.startswith("datetime64"):
+                # datetime64[us] / datetime64[ns] 等
+                self._dtype_str = nd
+            elif nd.startswith("timedelta64"):
+                # timedelta64[us] / timedelta64[ns] 等
+                self._dtype_str = nd
             else:
                 self._dtype_str = self._inner.dtype
         else:
@@ -3743,7 +3762,7 @@ class Series:
                 out = head + tail_pad
         # datetime 列的 diff 返回 timedelta，转换为 pandas 兼容字符串
         if is_datetime:
-            from .dataframe import _convert_to_basic
+            from ._internal._dataframe_helpers import _convert_to_basic
 
             out = [_convert_to_basic(v) if v is not None else None for v in out]
             result = Series(out, name=self.name, index=self._index)
@@ -5330,16 +5349,3 @@ from ._internal._series_helpers import (  # noqa: F401
     _to_python_list,
     _to_python_list_and_index,
 )
-from .accessors.cat import CatAccessor  # noqa: F401
-from .accessors.datetime import DatetimeAccessor  # noqa: F401
-from .accessors.string import StringAccessor  # noqa: F401
-from .groupby.series_groupby import SeriesGroupBy  # noqa: F401
-from .indexing.series_indexers import (
-    _IatIndexer,
-    _ILocIndexer,
-    _LocIndexer,
-)  # noqa: F401
-from .window.ewm import EWM  # noqa: F401
-from .window.expanding import Expanding  # noqa: F401
-from .window.resampler import Resampler  # noqa: F401
-from .window.rolling import Rolling  # noqa: F401

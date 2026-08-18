@@ -4,11 +4,22 @@ from datetime import datetime, timedelta
 
 import rsnumpy as rnp
 
+# ============================================================================
+# 重新导出辅助类（向后兼容）
+# 这些类已迁移到子模块，但 dataframe.py 仍重新导出以保持向后兼容
+# ============================================================================
+from .groupby.dataframe_groupby import DataFrameGroupBy  # noqa: F401
+from .indexing.dataframe_indexers import (  # noqa: F401
+    _AtIndexer,
+    _IatIndexer,
+    _ILocIndexer,
+    _IndexerBase,
+    _LocIndexer,
+)
+
 from .series import Series, _AlignmentResult, _is_missing
 from ._internal._dataframe_helpers import (
-    _DTYPE_MAP,
     _convert_list_to_basic,
-    _convert_to_basic,
     _is_ndarray,
     _normalize_dtype,
     _to_pylist_columns,
@@ -203,15 +214,39 @@ class DataFrame:
                     ):
                         col_dtype_overrides[str(k)] = "timedelta64[us]"
         for c, vs in zip(str_col_names, col_values):
+            # 检测 datetime 列（在 _convert_to_basic 转换前）
+            col_dtype = norm_dtype
+            if col_dtype is None:
+                # 自动检测 datetime 列
+                non_null = [v for v in vs if v is not None]
+                if non_null and all(
+                    isinstance(v, datetime) and not isinstance(v, bool)
+                    for v in non_null
+                ):
+                    col_dtype = "datetime64[us]"
+                    col_dtype_overrides[c] = "datetime64[us]"
+                elif non_null and all(
+                    isinstance(v, timedelta) for v in non_null
+                ):
+                    col_dtype = "timedelta64[us]"
+                    col_dtype_overrides[c] = "timedelta64[us]"
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
-            if norm_dtype == "bool":
+            if col_dtype == "bool":
                 vs = [bool(v) if v is not None else None for v in vs]
-            elif norm_dtype in ("int64", "int32", "int"):
+            elif col_dtype in ("int64", "int32", "int"):
                 vs = [int(v) if v is not None else None for v in vs]
-            elif norm_dtype in ("float64", "float32", "float"):
+            elif col_dtype in ("float64", "float32", "float"):
                 vs = [float(v) if v is not None else None for v in vs]
-            converted_vs = _convert_list_to_basic(vs)
-            rust_series_list.append(_PySeries(converted_vs, c, dtype=norm_dtype))
+            elif col_dtype and col_dtype.startswith("datetime64"):
+                # datetime 列：转换为 ISO 字符串供 Rust 层存储，
+                # 同时保留 datetime 对象供 Series 构造函数检测 dtype
+                vs = _convert_list_to_basic(vs)
+            elif col_dtype and col_dtype.startswith("timedelta64"):
+                vs = _convert_list_to_basic(vs)
+            else:
+                vs = _convert_list_to_basic(vs)
+            converted_vs = vs
+            rust_series_list.append(_PySeries(converted_vs, c, dtype=col_dtype))
 
         # 构造 Rust 端 DataFrame
         self._inner = _PyDataFrame(str_col_names, rust_series_list)
@@ -9875,17 +9910,3 @@ class DataFrame:
             return ax
         except ImportError:
             raise NotImplementedError("plot requires rsplotlib")
-
-
-# ============================================================================
-# 重新导出辅助类（向后兼容）
-# 这些类已迁移到子模块，但 dataframe.py 仍重新导出以保持向后兼容
-# ============================================================================
-from .groupby.dataframe_groupby import DataFrameGroupBy  # noqa: F401
-from .indexing.dataframe_indexers import (  # noqa: F401
-    _AtIndexer,
-    _IatIndexer,
-    _ILocIndexer,
-    _IndexerBase,
-    _LocIndexer,
-)
