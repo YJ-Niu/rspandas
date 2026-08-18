@@ -6,7 +6,7 @@ import rsnumpy as np  # noqa: E402
 from collections import namedtuple  # noqa: E402
 from dataclasses import make_dataclass  # noqa: E402
 import rspandas as pd  # noqa: E402
-
+from io import StringIO  # noqa: E402
 
 def print_series(num, s):
     print("++++++++++++++++++++", num)
@@ -727,4 +727,9 @@ df["other_dates"] = pd.date_range("20130101", periods=3)
 df["tz_aware_dates"] = pd.date_range("20130101", periods=3, tz="US/Eastern")
 print_series(357, df)
 print_series(358, df.dtypes)
+data = "col1,col2,col3\na,b,1\na,b,2\nc,d,3"
+df = pd.read_csv(StringIO(data))
+print_series(359, df)
+pd.read_csv(StringIO(data), usecols=lambda x: x.upper() in ["COL1", "COL3"])
+
 print("end_time - start_time:", end_time - start_time)

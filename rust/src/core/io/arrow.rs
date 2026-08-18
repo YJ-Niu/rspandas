@@ -1,9 +1,9 @@
 //! Feather (Arrow IPC) 文件读写。
 //!
 //! Feather 是 Apache Arrow 的 IPC 文件格式，本模块基于 arrow::ipc 实现，
-//! 无需 pyarrow 依赖。复用 parquet_io 中的公共转换函数。
+//! 无需 pyarrow 依赖。复用 :mod:`super::parquet` 中的公共转换函数。
 
-use crate::core::parquet_io::{
+use crate::core::io::parquet::{
     arrow_array_to_column_data, arrow_err, empty_column_data, series_to_record_batch,
 };
 use crate::core::series::{PySeries, Series};
