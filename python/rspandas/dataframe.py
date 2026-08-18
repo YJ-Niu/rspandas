@@ -170,7 +170,17 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
                 # 对 ndarray 类型，保留 dtype 信息（如 int32 应保持为 int）
                 if hasattr(v, "dtype") and v.dtype is not None:
                     dt_str = str(v.dtype)
-                    if dt_str in ("int32", "int64", "int"):
+                    if dt_str in (
+                        "int8",
+                        "int16",
+                        "int32",
+                        "int64",
+                        "int",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                    ):
                         result[k] = [int(x) for x in v]
                     elif dt_str in ("float32", "float64", "float"):
                         result[k] = [float(x) for x in v]
@@ -433,6 +443,10 @@ class DataFrame:
                         "uint32",
                         "uint64",
                         "str",
+                        "bool",
+                        "category",
+                        "datetime64[us]",
+                        "timedelta64[us]",
                     ):
                         col_dtype_overrides[str(k)] = sd
                 elif isinstance(v, _Timestamp):
@@ -441,6 +455,36 @@ class DataFrame:
                 elif isinstance(v, str):
                     # str 标量广播：标记为 str（避免被 Rust 层推断为 object）
                     col_dtype_overrides[str(k)] = "str"
+                elif _is_ndarray(v) and hasattr(v, "dtype"):
+                    # rsnumpy ndarray: 保留数值子类型信息
+                    nd_dt = str(v.dtype)
+                    if nd_dt in (
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                        "int8",
+                        "int16",
+                        "int32",
+                        "float32",
+                    ):
+                        col_dtype_overrides[str(k)] = nd_dt
+                elif (
+                    hasattr(v, "values")
+                    and hasattr(v, "__len__")
+                    and not isinstance(v, str)
+                    and not isinstance(v, (_Series, _Categorical))
+                ):
+                    # 处理 DatetimeSeries 等有 values 属性的可迭代对象
+                    val_dtype = getattr(v, "dtype", None)
+                    if isinstance(val_dtype, str) and val_dtype.startswith(
+                        "datetime64"
+                    ):
+                        col_dtype_overrides[str(k)] = "datetime64[us]"
+                    elif isinstance(val_dtype, str) and val_dtype.startswith(
+                        "timedelta64"
+                    ):
+                        col_dtype_overrides[str(k)] = "timedelta64[us]"
         for c, vs in zip(str_col_names, col_values):
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
             if norm_dtype == "bool":
@@ -1644,6 +1688,8 @@ class DataFrame:
                     "uint64",
                     "str",
                     "bool",
+                    "datetime64[us]",
+                    "timedelta64[us]",
                 ):
                     self._col_dtypes[key] = series_dtype
                 elif key in self._col_dtypes:
@@ -1653,11 +1699,63 @@ class DataFrame:
             values = list(value.values)
             if len(values) < self._nrows:
                 values = values + [None] * (self._nrows - len(values))
+        elif _is_ndarray(value):
+            # rsnumpy ndarray: 转换为列表
+            values = list(value)
+            if len(values) < self._nrows:
+                values = values + [None] * (self._nrows - len(values))
+            # 保留 ndarray 的 dtype 子类型信息
+            nd_dtype = str(value.dtype) if hasattr(value, "dtype") else None
+            if nd_dtype in (
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+                "int8",
+                "int16",
+                "int32",
+                "float32",
+            ):
+                self._col_dtypes[key] = nd_dtype
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
+        elif (
+            hasattr(value, "values")
+            and hasattr(value, "__len__")
+            and not isinstance(value, str)
+        ):
+            # 处理 DatetimeSeries 等有 values 属性的可迭代对象
+            values = list(value.values)
+            if len(values) < self._nrows:
+                values = values + [None] * (self._nrows - len(values))
+            # 检测 DatetimeSeries (duck-typing: dtype 属性返回 datetime64)
+            val_dtype = getattr(value, "dtype", None)
+            if isinstance(val_dtype, str) and val_dtype.startswith("datetime64"):
+                self._col_dtypes[key] = "datetime64[us]"
+            elif isinstance(val_dtype, str) and val_dtype.startswith("timedelta64"):
+                self._col_dtypes[key] = "timedelta64[us]"
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
         elif isinstance(value, (list, tuple)):
             values = list(value)
+            if key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
         else:
             # 标量值：广播到所有行
             values = [value] * self._nrows
+            # str 标量：设置 str dtype（避免被 Rust 层推断为 object）
+            if isinstance(value, str):
+                self._col_dtypes[key] = "str"
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
 
         if len(values) != self._nrows:
             raise ValueError(
@@ -6771,66 +6869,136 @@ class DataFrame:
     def select_dtypes(self, include=None, exclude=None) -> "DataFrame":
         """根据 dtype 选择列。
 
-        :param include: 要包含的类型 (str / list[str] / type)
-        :param exclude: 要排除的类型 (str / list[str] / type)
+        :param include: 要包含的类型 (str / list[str] / type / numpy dtype)
+        :param exclude: 要排除的类型 (str / list[str] / type / numpy dtype)
         :return: DataFrame
+
+        支持的 dtype 类别（基于 NumPy dtype 层级）：
+
+        - 精确类型: int8/int16/int32/int64, uint8/uint16/uint32/uint64,
+          float16/float32/float64, bool, str, object, category,
+          datetime64[us], timedelta64[us] 等
+        - 泛型类别: number/numeric, integer, signedinteger, unsignedinteger,
+          floating/float, complex/complexfloating, datetime/datetime64,
+          timedelta/timedelta64
+        - Python 类型: bool, int, float, str, complex
+
+        注意: pandas 3.0+ 字符串列使用 str dtype（非 object）。
         """
-        # 类型映射
-        type_map = {
-            "int": "int64",
-            "int64": "int64",
-            "float": "float64",
-            "float64": "float64",
-            "bool": "bool",
-            "object": "object",
-            "string": "object",
-            "str": "object",
-            "number": ("int64", "float64"),
+        if include is None and exclude is None:
+            raise ValueError("at least one of include or exclude must be non-None")
+
+        # NumPy dtype 层级中的类型集合
+        _SIGNED_INT = {"int8", "int16", "int32", "int64", "longlong"}
+        _UNSIGNED_INT = {"uint8", "uint16", "uint32", "uint64", "ulonglong"}
+        _INTEGER = _SIGNED_INT | _UNSIGNED_INT
+        _FLOAT = {"float16", "float32", "float64", "longdouble"}
+        _COMPLEX = {"complex64", "complex128", "clongdouble"}
+        _NUMBER = _INTEGER | _FLOAT | _COMPLEX
+
+        # Python 类型 -> dtype 字符串
+        _PY_TYPE_MAP = {
+            bool: "bool",
+            int: "integer",
+            float: "float",
+            str: "str",
+            complex: "complex",
+            bytes: "bytes",
+            object: "object",
         }
 
-        def _to_dtype_set(types):
-            if types is None:
-                return set()
-            if isinstance(types, str):
-                types = [types]
-            result = set()
-            for t in types:
-                if isinstance(t, type):
-                    if t in (int,):
-                        result.add("int64")
-                    elif t in (float,):
-                        result.add("float64")
-                    elif t in (bool,):
-                        result.add("bool")
-                    elif t in (str,):
-                        result.add("object")
-                elif t in type_map:
-                    mapped = type_map[t]
-                    if isinstance(mapped, tuple):
-                        result.update(mapped)
-                    else:
-                        result.add(mapped)
-                else:
-                    result.add(t)
-            return result
+        def _normalize_criterion(c) -> str:
+            """将单个条件规范化为小写字符串。"""
+            if isinstance(c, str):
+                return c.lower()
+            if isinstance(c, type):
+                # Python 内建类型
+                if c in _PY_TYPE_MAP:
+                    return _PY_TYPE_MAP[c]
+                # numpy 类型对象（如 np.uint8, np.float32, np.number）
+                if hasattr(c, "__name__"):
+                    name = c.__name__.lower()
+                    # np.bool_ -> bool
+                    if name == "bool_":
+                        return "bool"
+                    return name
+                return str(c).lower()
+            # numpy dtype 实例（如 dtype('float32')）
+            if hasattr(c, "name"):
+                return str(c.name).lower()
+            return str(c).lower()
 
-        include_set = _to_dtype_set(include)
-        exclude_set = _to_dtype_set(exclude)
+        def _matches(col_dtype: str, criterion) -> bool:
+            """判断列 dtype 是否匹配单个条件。"""
+            crit = _normalize_criterion(criterion)
+            # 精确匹配
+            if col_dtype == crit:
+                return True
+            # 泛型类别匹配
+            if crit in ("number", "numeric"):
+                return col_dtype in _NUMBER
+            if crit == "integer":
+                return col_dtype in _INTEGER
+            if crit == "signedinteger":
+                return col_dtype in _SIGNED_INT
+            if crit == "unsignedinteger":
+                return col_dtype in _UNSIGNED_INT
+            if crit in ("floating", "float"):
+                return col_dtype in _FLOAT
+            if crit in ("complex", "complexfloating"):
+                return col_dtype in _COMPLEX
+            if crit in ("datetime", "datetime64"):
+                return col_dtype.startswith("datetime64")
+            if crit in ("timedelta", "timedelta64"):
+                return col_dtype.startswith("timedelta64")
+            if crit == "bool":
+                return col_dtype == "bool"
+            if crit == "object":
+                return col_dtype == "object"
+            if crit in ("str", "string"):
+                return col_dtype in ("str", "string")
+            if crit == "category":
+                return col_dtype == "category"
+            return False
 
-        def _match(c):
+        def _normalize_criteria(criteria) -> list:
+            """将 include/exclude 参数规范化为列表。"""
+            if criteria is None:
+                return []
+            if isinstance(criteria, (str, type)):
+                return [criteria]
+            return list(criteria)
+
+        include_list = _normalize_criteria(include)
+        exclude_list = _normalize_criteria(exclude)
+
+        # 获取每列的实际 dtype（复用 dtypes 属性逻辑，含子类型推断）
+        col_dtype_map = dict(zip(self._columns, list(self.dtypes.values)))
+
+        def _col_matches(c: str) -> bool:
             """判断单列是否匹配 include/exclude 条件。"""
-            dt = self._inner.get_column(c).dtype
-            if include_set and dt not in include_set:
+            col_dt = col_dtype_map[c]
+            # include: 若指定，列必须匹配至少一个 include 条件
+            if include_list and not any(
+                _matches(col_dt, crit) for crit in include_list
+            ):
                 return False
-            if exclude_set and dt in exclude_set:
+            # exclude: 列不能匹配任何 exclude 条件
+            if exclude_list and any(_matches(col_dt, crit) for crit in exclude_list):
                 return False
             return True
 
-        # 使用列表推导式 + 辅助函数替代显式 for 循环
-        cols = [c for c in self._columns if _match(c)]
+        # 使用列表推导式 + 辅助函数筛选列
+        cols = [c for c in self._columns if _col_matches(c)]
 
+        # 构建结果 DataFrame，保留索引和 dtype 覆盖信息
         new_data = {c: list(self._inner.get_column(c).values) for c in cols}
-        return DataFrame(new_data)
+        new_df = DataFrame(new_data, index=self._index)
+        new_df._col_dtypes = {k: v for k, v in self._col_dtypes.items() if k in cols}
+        new_df._col_categories = {
+            k: v for k, v in self._col_categories.items() if k in cols
+        }
+        return new_df
 
     # ---------- v2.0.0: swapaxes / take / xs / get / lookup ----------
 

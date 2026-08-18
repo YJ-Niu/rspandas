@@ -3952,10 +3952,51 @@ class Series:
         """计算相邻元素的差。
         :param periods: 间隔位数
         """
+        from datetime import datetime as _dt, timedelta as _td
+
         values = self.values
         n = len(values)
+        # 判断是否为 datetime 列（DatetimeSeries 存储为 ISO 字符串）
+        is_datetime = False
+        if values:
+            first_non_none = next((v for v in values if v is not None), None)
+            if isinstance(first_non_none, str):
+                # 尝试解析为 datetime
+                from ._datetime import _parse_iso
+
+                try:
+                    _parse_iso(first_non_none)
+                    is_datetime = True
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(first_non_none, (_dt, _td)):
+                is_datetime = True
+
+        if is_datetime:
+            from ._datetime import _parse_iso
+
+            # 将字符串解析回 datetime/timedelta 对象
+            def _parse_v(v):
+                if v is None:
+                    return None
+                if isinstance(v, _dt):
+                    return v
+                if isinstance(v, _td):
+                    return v
+                try:
+                    return _parse_iso(v)
+                except (ValueError, TypeError):
+                    return None
+
+            parsed = [_parse_v(v) for v in values]
+        else:
+            parsed = values
+
         if periods == 0:
-            out = [0.0 if v is not None else None for v in values]
+            out = [
+                _td(0) if is_datetime else 0.0 if v is not None else None
+                for v in parsed
+            ]
             return Series(out, name=self.name, index=self._index)
         if periods > 0:
             if periods >= n:
@@ -3964,7 +4005,7 @@ class Series:
                 head = [None] * periods
                 tail = [
                     None if a is None or b is None else a - b
-                    for a, b in zip(values[periods:], values[: n - periods])
+                    for a, b in zip(parsed[periods:], parsed[: n - periods])
                 ]
                 out = head + tail
         else:
@@ -3974,9 +4015,18 @@ class Series:
                 tail_pad = [None] * (-periods)
                 head = [
                     None if a is None or b is None else a - b
-                    for a, b in zip(values[: n + periods], values[-periods:])
+                    for a, b in zip(parsed[: n + periods], parsed[-periods:])
                 ]
                 out = head + tail_pad
+        # datetime 列的 diff 返回 timedelta，转换为 pandas 兼容字符串
+        if is_datetime:
+            from .dataframe import _convert_to_basic
+
+            out = [_convert_to_basic(v) if v is not None else None for v in out]
+            result = Series(out, name=self.name, index=self._index)
+            # 标记为 timedelta64[us] dtype（与 pandas 行为一致）
+            result._dtype_str = "timedelta64[us]"
+            return result
         return Series(out, name=self.name, index=self._index)
 
     def pct_change(self, periods: int = 1, fill_method: str = "pad") -> _PySeries:

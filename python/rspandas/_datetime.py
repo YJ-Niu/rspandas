@@ -85,6 +85,14 @@ def _parse_iso(s: str) -> datetime:
         except ValueError as e:
             last_err = e
             continue
+    # 尝试解析特殊关键字（对齐 pandas）：now/today 等
+    lower_s = s.lower().strip()
+    if lower_s in ("now", "today"):
+        return datetime.now()
+    if lower_s == "yesterday":
+        return datetime.now() - timedelta(days=1)
+    if lower_s == "tomorrow":
+        return datetime.now() + timedelta(days=1)
     raise ValueError(f"cannot parse date string: {s!r}") from last_err
 
 
