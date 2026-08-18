@@ -573,17 +573,26 @@ def read_csv(
     # ------------------------------------------------------------------
     # 18. 处理 dtype
     # ------------------------------------------------------------------
+    _dtype_overrides = {}  # 收集 dtype 覆盖信息（用户显式指定的 dtype）
     if dtype is not None:
         from ..series import _dtype_to_str as _norm_dtype
 
         if isinstance(dtype, dict):
             for col_name, dt in dtype.items():
                 if col_name in data:
-                    data[col_name] = _apply_dtype(data[col_name], _norm_dtype(dt))
+                    dt_str = _norm_dtype(dt)
+                    data[col_name] = _apply_dtype(data[col_name], dt_str)
+                    _dtype_overrides[col_name] = dt_str
+            # 对 dict 中未指定的列，仍进行自动类型推断
+            for c in cols:
+                if c in data and c not in dtype:
+                    data[c] = _infer_column_type(data[c])
         else:
             dt_str = _norm_dtype(dtype)
             for c in cols:
                 data[c] = _apply_dtype(data[c], dt_str)
+            for c in cols:
+                _dtype_overrides[c] = dt_str
     else:
         # 自动类型推断（与 pandas 行为一致）
         # 对每列尝试 int -> float -> bool -> str 的顺序推断
@@ -606,6 +615,8 @@ def read_csv(
                 new_index = list(data[col_name])
                 data.pop(col_name)
                 df = _DataFrame(data, index=new_index)
+                if _dtype_overrides:
+                    df._col_dtypes.update(_dtype_overrides)
                 return df
         elif isinstance(index_col, (list, tuple)):
             # MultiIndex
@@ -620,9 +631,14 @@ def read_csv(
             if idx_data:
                 # 简化：使用第一列作为索引
                 df = _DataFrame(data, index=list(idx_data[0]))
+                if _dtype_overrides:
+                    df._col_dtypes.update(_dtype_overrides)
                 return df
 
-    return _DataFrame(data)
+    df = _DataFrame(data)
+    if _dtype_overrides:
+        df._col_dtypes.update(_dtype_overrides)
+    return df
 
 
 def read_csv_chunked(

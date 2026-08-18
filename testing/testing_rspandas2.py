@@ -752,5 +752,26 @@ df = pd.read_csv(
     date_format={"col 2": "%d/%m/%Y", "col 3": "%a %d %b %Y"},
 )
 print_series(368, df.dtypes)
-
+data = "col1,col2,col3\na,b,1\na,b,2\nc,d,3"
+df = pd.read_csv(StringIO(data))
+print_series(369, df)
+df = pd.read_csv(StringIO(data), skiprows=lambda x: x % 2 != 0)
+print_series(370, df)
+data = "a,b,c,d\n1,2,3,4\n5,6,7,8\n9,10,11"
+df = pd.read_csv(StringIO(data), dtype=object)
+print_series(371, df)
+print_series(372, df["a"][0])
+df = pd.read_csv(StringIO(data), dtype={"b": object, "c": np.float64, "d": "Int64"})
+print_series(373, df.dtypes)
+data = "col_1\n1\n2\n'A'\n4.22"
+df = pd.read_csv(StringIO(data))
+print_series(374, df)
+print_series(375, df["col_1"].apply(type).value_counts())
+df2 = pd.read_csv(StringIO(data))
+df2["col_1"] = pd.to_numeric(df2["col_1"], errors="coerce")
+print_series(376, df2)
+print_series(377, df2["col_1"].apply(type).value_counts())
+col_1 = list(range(500000)) + ["a", "b"] + list(range(500000))
+df = pd.DataFrame({"col_1": col_1})
+df.to_csv("foo.csv")
 print("end_time - start_time:", end_time - start_time)
