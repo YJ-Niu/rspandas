@@ -364,7 +364,7 @@ class _TextFileReader:
 
         # 取出本 chunk 的行
         end = min(self._pos + size + 1, len(self._lines))
-        chunk_lines = self._lines[self._pos:end]
+        chunk_lines = self._lines[self._pos : end]
         self._pos = end
 
         # 第一行可能是表头
