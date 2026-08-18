@@ -3,7 +3,7 @@
 //! - 读取: Parquet → Arrow RecordBatch → ColumnData → PySeries
 //! - 写入: PySeries → ColumnData → Arrow Array → RecordBatch → Parquet
 //!
-//! 本模块还导出公共转换函数（ColumnData ↔ Arrow Array），供 arrow_ipc_io.rs 复用。
+//! 本模块还导出公共转换函数（ColumnData ↔ Arrow Array），供 arrow.rs 复用。
 
 use crate::core::dtype::ColumnData;
 use crate::core::series::{PySeries, Series};

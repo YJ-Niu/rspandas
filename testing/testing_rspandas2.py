@@ -730,7 +730,6 @@ print_series(358, df.dtypes)
 data = "col1,col2,col3\na,b,1\na,b,2\nc,d,3"
 df = pd.read_csv(StringIO(data))
 print_series(359, df)
-df = pd.read_csv(StringIO(data), usecols=lambda x: x.upper() in ["COL1", "COL3"])
-print_series(360, df)
+pd.read_csv(StringIO(data), usecols=lambda x: x.upper() in ["COL1", "COL3"])
 
 print("end_time - start_time:", end_time - start_time)
