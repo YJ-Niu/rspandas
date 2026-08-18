@@ -213,6 +213,7 @@ class DataFrame:
                         "timedelta64"
                     ):
                         col_dtype_overrides[str(k)] = "timedelta64[us]"
+        self._col_object_values: Dict[str, list] = {}  # 混合类型列的原始值缓存
         for c, vs in zip(str_col_names, col_values):
             # 检测 datetime 列（在 _convert_to_basic 转换前）
             col_dtype = norm_dtype
@@ -228,6 +229,23 @@ class DataFrame:
                 elif non_null and all(isinstance(v, timedelta) for v in non_null):
                     col_dtype = "timedelta64[us]"
                     col_dtype_overrides[c] = "timedelta64[us]"
+                elif non_null:
+                    # 检测混合类型列（int/float + str），缓存原始值以便后续还原
+                    has_numeric = False
+                    has_other = False
+                    for v in non_null:
+                        if isinstance(v, bool):
+                            has_other = True
+                        elif isinstance(v, (int, float)):
+                            has_numeric = True
+                        elif isinstance(v, str):
+                            has_other = True
+                        else:
+                            has_other = True
+                    if has_numeric and has_other:
+                        self._col_object_values[c] = list(vs)
+                        col_dtype = "object"
+                        col_dtype_overrides[c] = "object"
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
             if col_dtype == "bool":
                 vs = [bool(v) if v is not None else None for v in vs]
@@ -235,6 +253,9 @@ class DataFrame:
                 vs = [int(v) if v is not None else None for v in vs]
             elif col_dtype in ("float64", "float32", "float"):
                 vs = [float(v) if v is not None else None for v in vs]
+            elif col_dtype == "object":
+                # 混合类型列：转换为字符串供 Rust 层存储，原始值保留在 _col_object_values
+                vs = [str(v) if v is not None else None for v in vs]
             elif col_dtype and col_dtype.startswith("datetime64"):
                 # datetime 列：转换为 ISO 字符串供 Rust 层存储，
                 # 同时保留 datetime 对象供 Series 构造函数检测 dtype
@@ -1683,6 +1704,28 @@ class DataFrame:
         self._inner = _PyDataFrame(cols, rust_series_list)
 
     def _get_column_as_series(self, name: str) -> Series:
+        if name in self._col_dtypes:
+            override = self._col_dtypes[name]
+            # 混合类型列：跳过 Rust 层 clone + Series 构造函数多次遍历，直接构建
+            if override == "object" and name in self._col_object_values:
+                vals = self._col_object_values[name]
+                str_vals = [str(v) if v is not None else None for v in vals]
+                s = Series.__new__(Series)
+                s._inner = _PySeries(str_vals, name, dtype="object")
+                s._object_values = vals
+                s._dtype_str = "object"
+                s._index = (
+                    list(self._index)
+                    if self._index is not None
+                    else list(range(len(vals)))
+                )
+                s._dt_values = None
+                s._dt_tz = None
+                s._period_freq = None
+                s._td_values = None
+                s._cached_index_ref = None
+                s._freq = None
+                return s
         ser = self._inner.get_column(name)
         if name in self._col_dtypes:
             override = self._col_dtypes[name]
@@ -4454,8 +4497,9 @@ class DataFrame:
                 with bz2.open(path, mode + "t", encoding=encoding, errors=errors) as f:
                     f.write(content)
             else:
-                with open(path, mode, encoding=encoding, errors=errors) as f:
-                    f.write(content)
+                from .rspandas import write_string_to_file as _write_string_to_file
+
+                _write_string_to_file(path, content)
         else:
             # path_or_buf 是文件对象
             path.write(content)

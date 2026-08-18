@@ -514,3 +514,28 @@ pub fn read_csv_chunks<'py>(
     }
     Ok(chunks)
 }
+
+/// 从文件路径读取文件内容为字符串（释放 GIL 进行文件读取）
+#[pyfunction]
+pub fn read_file_to_string<'py>(py: Python<'py>, path: &str) -> PyResult<String> {
+    py.detach(|| -> PyResult<String> {
+        let mut content = String::new();
+        let mut file = File::open(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("open {path}: {e}")))?;
+        file.read_to_string(&mut content)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("read {path}: {e}")))?;
+        Ok(content)
+    })
+}
+
+/// 将字符串写入文件路径（释放 GIL 进行文件写入）
+#[pyfunction]
+pub fn write_string_to_file<'py>(py: Python<'py>, path: &str, content: &str) -> PyResult<()> {
+    py.detach(|| -> PyResult<()> {
+        let mut file = File::create(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("create {path}: {e}")))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("write {path}: {e}")))?;
+        Ok(())
+    })
+}

@@ -7,10 +7,8 @@ from __future__ import annotations
 
 from ..dataframe import DataFrame
 from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional
 
-import json as _json
-import pickle as _pickle
 from datetime import datetime
 
 
@@ -170,13 +168,36 @@ def _infer_column_type(values):
             for v in values
         ]
 
-    # 默认：保持 str/object
+    # 默认：逐值类型推断（与 pandas 行为一致：混合类型列保持 object dtype）
     # 如果列中包含 datetime 对象，不转换（保持 datetime 类型）
     if all(isinstance(v, (datetime, type(None))) for v in values):
         return values
-    return [
-        None if v is None else str(v) if not isinstance(v, str) else v for v in values
-    ]
+
+    result = []
+    for v in values:
+        if v is None:
+            result.append(None)
+        elif isinstance(v, bool):
+            result.append(v)
+        elif isinstance(v, (int, float)):
+            result.append(v)
+        elif isinstance(v, str):
+            # 尝试 int → float → bool → str
+            try:
+                result.append(int(v))
+            except (ValueError, TypeError):
+                try:
+                    result.append(float(v))
+                except (ValueError, TypeError):
+                    if v in ("True", "TRUE", "true"):
+                        result.append(True)
+                    elif v in ("False", "FALSE", "false"):
+                        result.append(False)
+                    else:
+                        result.append(v)
+        else:
+            result.append(v)
+    return result
 
 
 # ============================================================================
@@ -238,9 +259,10 @@ def _read_content(filepath_or_buffer, compression, encoding, encoding_errors):
             with zf.open(names[0]) as f:
                 content = f.read()
                 return content.decode(enc, errors=encoding_errors)
-    # 无压缩
-    with open(path, "r", encoding=enc, errors=encoding_errors) as f:
-        return f.read()
+    # 无压缩：使用 Rust 层读取文件内容
+    from ..rspandas import read_file_to_string as _read_file_to_string
+
+    return _read_file_to_string(path)
 
 
 class _TextFileReader:
@@ -356,6 +378,7 @@ class _TextFileReader:
         """读取下一个 chunk。"""
         from ..dataframe import DataFrame as _DataFrame
         import io as _io
+        from .. import read_csv
 
         if size is None:
             size = self._chunksize
@@ -364,7 +387,7 @@ class _TextFileReader:
 
         # 取出本 chunk 的行
         end = min(self._pos + size + 1, len(self._lines))
-        chunk_lines = self._lines[self._pos : end]
+        chunk_lines = self._lines[self._pos:end]
         self._pos = end
 
         # 第一行可能是表头
@@ -394,7 +417,7 @@ class _TextFileReader:
         if has_header and hasattr(self, "_cached_header"):
             text = self._cached_header + "\n" + "\n".join(data_lines)
         else:
-            text = "\n".join(chunk_lines)
+            text = "\n".join(chunk_lines) 
 
         return read_csv(
             _io.StringIO(text),

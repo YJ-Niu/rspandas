@@ -6,7 +6,7 @@ import numpy as np  # noqa: E402
 from collections import namedtuple  # noqa: E402
 from dataclasses import make_dataclass  # noqa: E402
 import pandas as pd  # noqa: E402
-
+from io import StringIO  # noqa: E402
 
 def print_series(num, s):
     print("++++++++++++++++++++", num)
@@ -533,7 +533,6 @@ stz = s.dt.tz_localize("US/Eastern")
 print_series(268, stz)
 print_series(269, stz.dt.tz)
 print_series(270, s.dt.tz_localize("UTC").dt.tz_convert("US/Eastern"))
-end_time = time.time()
 s = pd.Series(pd.date_range("20130101", periods=4))
 print_series(271, s)
 print_series(272, s.dt.strftime("%Y/%m/%d"))
@@ -727,4 +726,54 @@ df["other_dates"] = pd.date_range("20130101", periods=3)
 df["tz_aware_dates"] = pd.date_range("20130101", periods=3, tz="US/Eastern")
 print_series(357, df)
 print_series(358, df.dtypes)
-print("end_time - start_time:", end_time - start_time)
+data = "col1,col2,col3\na,b,1\na,b,2\nc,d,3"
+df = pd.read_csv(StringIO(data))
+print_series(359, df)
+pd.read_csv(StringIO(data), usecols=lambda x: x.upper() in ["COL1", "COL3"])
+df = pd.read_csv("./testing/data.csv")
+print_series(360, df)
+df = pd.read_csv("./testing/data.csv", header=None)
+print_series(361, df)
+df = pd.read_csv("./testing/data.csv", index_col="Value")
+print_series(362, df)
+df = pd.read_csv("./testing/data.csv", dtype={"Value": float})
+print_series(363, df)
+df = pd.read_csv("./testing/data.csv", na_values=["foo", "bar"])
+print_series(364, df)
+df = pd.read_csv("./testing/data.csv", comment="#")
+print_series(365, df)
+df = pd.read_csv("./testing/tmp.csv")
+print_series(366, df)
+print_series(367, df.dtypes)
+df = pd.read_csv(
+    "./testing/tmp.csv",
+    parse_dates=[1, 2],
+    date_format={"col 2": "%d/%m/%Y", "col 3": "%a %d %b %Y"},
+)
+print_series(368, df.dtypes)
+data = "col1,col2,col3\na,b,1\na,b,2\nc,d,3"
+df = pd.read_csv(StringIO(data))
+print_series(369, df)
+df = pd.read_csv(StringIO(data), skiprows=lambda x: x % 2 != 0)
+print_series(370, df)
+data = "a,b,c,d\n1,2,3,4\n5,6,7,8\n9,10,11"
+df = pd.read_csv(StringIO(data), dtype=object)
+print_series(371, df)
+print_series(372, df["a"][0])
+df = pd.read_csv(StringIO(data), dtype={"b": object, "c": np.float64, "d": "Int64"})
+print_series(373, df.dtypes)
+data = "col_1\n1\n2\n'A'\n4.22"
+df = pd.read_csv(StringIO(data))
+print_series(374, df)
+print_series(375, df["col_1"].apply(type).value_counts())
+df2 = pd.read_csv(StringIO(data))
+df2["col_1"] = pd.to_numeric(df2["col_1"], errors="coerce")
+print_series(376, df2)
+print_series(377, df2["col_1"].apply(type).value_counts())
+col_1 = list(range(500000)) + ["a", "b"] + list(range(500000))
+df = pd.DataFrame({"col_1": col_1})
+df.to_csv("./testing/foo.csv")
+mixed_df = pd.read_csv("./testing/foo.csv")
+print_series(378, mixed_df["col_1"].apply(type).value_counts())
+
+print("end_time - start_time:", time.time() - start_time)

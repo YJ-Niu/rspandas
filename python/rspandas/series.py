@@ -201,6 +201,12 @@ class Series:
         else:
             dtype_str = dtype
 
+        # object dtype：缓存原始值，转换为字符串供 Rust 层存储
+        self._object_values: Optional[list] = None
+        if dtype_str is not None and dtype_str.lower() == "object":
+            self._object_values = list(values)
+            values = [str(v) if v is not None else None for v in values]
+
         # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
         self._inner = _PySeries(values, name, dtype=dtype_str)
 
@@ -304,6 +310,8 @@ class Series:
 
     @property
     def values(self) -> list:
+        if getattr(self, "_object_values", None) is not None:
+            return self._object_values
         return list(self._inner.values)
 
     @property

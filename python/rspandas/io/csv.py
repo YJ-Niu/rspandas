@@ -678,9 +678,9 @@ def read_csv_chunked(
 
     try:
         from ..rspandas import read_csv_chunks as _read_csv_chunks_rust
+        from ..rspandas import read_file_to_string as _read_file_to_string
 
-        with open(path, "r", encoding=encoding, newline="") as f:
-            content = f.read()
+        content = _read_file_to_string(path)
         chunks = _read_csv_chunks_rust(
             content,
             header,
@@ -724,7 +724,8 @@ def to_csv(
     csv_str = _write_csv_string(cols, series_list, True, sep)
 
     if path:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(csv_str)
+        from ..rspandas import write_csv_path as _write_csv_path
+
+        _write_csv_path(path, cols, series_list, True, sep)
         return None
     return csv_str

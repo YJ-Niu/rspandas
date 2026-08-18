@@ -15,6 +15,14 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::core::io::csv::write_csv_path, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::io::csv::read_csv_chunks, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::io::csv::parse_csv_raw, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::core::io::csv::read_file_to_string,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::core::io::csv::write_string_to_file,
+        m
+    )?)?;
     // factorize 编码
     m.add_function(wrap_pyfunction!(crate::core::series::factorize, m)?)?;
     // Excel 读写
