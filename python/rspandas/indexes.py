@@ -1801,8 +1801,28 @@ class TimedeltaIndex(Index):
         )
 
     def __repr__(self) -> str:
+        # 格式化每个 timedelta 为 'N days HH:MM:SS.ffffff'（对齐 pandas 显示）
+        def _fmt_td(v):
+            if not isinstance(v, timedelta):
+                return repr(v)
+            days = v.days
+            total_sec = v.seconds
+            hours = total_sec // 3600
+            minutes = (total_sec % 3600) // 60
+            secs = total_sec % 60
+            us = v.microseconds
+            if us > 0:
+                return repr(
+                    f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}.{us:06d}"
+                )
+            return repr(f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}")
+
+        strs = [_fmt_td(v) for v in self._data]
         name = f", name='{self._name}'" if self._name else ""
-        return f"TimedeltaIndex({self._data}{name})"
+        return (
+            f"TimedeltaIndex([{', '.join(strs)}]{name}, "
+            f"dtype='timedelta64[us]', freq=None)"
+        )
 
     def __len__(self) -> int:
         return len(self._data)

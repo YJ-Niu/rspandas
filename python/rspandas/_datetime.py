@@ -966,8 +966,15 @@ def to_timedelta(arg, unit=None):
             raise ValueError(f"unsupported unit: {unit}")
     if isinstance(arg, str):
         return _parse_timedelta_str(arg)
+    # Timedelta 对象直接返回（含 rspandas.Timedelta）
+    if isinstance(arg, timedelta):
+        return arg
+    if hasattr(arg, "_td") and isinstance(getattr(arg, "_td", None), timedelta):
+        return arg._td
     if isinstance(arg, (list, tuple)):
-        return [to_timedelta(x, unit) for x in arg]
+        from .indexes import TimedeltaIndex
+
+        return TimedeltaIndex([to_timedelta(x, unit) for x in arg])
     raise TypeError(f"cannot convert {type(arg).__name__} to timedelta")
 
 

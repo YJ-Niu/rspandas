@@ -221,6 +221,12 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
                     int(v) if v is not None and v == int(v) else v for v in result
                 ]
 
+    # 对 list/tuple 输入返回 ndarray（对齐 pandas 行为）
+    if isinstance(arg, (list, tuple)):
+        import rsnumpy as _rnp
+
+        return _rnp.asarray(result)
+    # 对 Series 输入返回 Series
     return _Series(result, name=None)
 
 
@@ -1224,10 +1230,11 @@ class Timedelta:
 
     def __init__(self, *args, **kwargs):
         import datetime
+        import re
 
         if len(args) == 1 and isinstance(args[0], str):
             # 简化：只支持 "X days HH:MM:SS" 类似格式
-            s = args[0]
+            s = args[0].strip()
             parts = s.split()
             days = 0
             time_part = s
@@ -1235,9 +1242,10 @@ class Timedelta:
                 days = int(parts[0])
                 time_part = parts[2] if len(parts) > 2 else "0:0:0"
             elif "day" in s:
-                # "1 day" 格式 - 使用 next() + 生成器表达式查找首个数字
-                day_str = next((p for p in parts if p.isdigit()), "0")
-                days = int(day_str)
+                # "1day" 或 "1 day" 格式 - 使用正则提取数字
+                m = re.search(r"(\d+)\s*day", s)
+                if m:
+                    days = int(m.group(1))
                 time_part = "0:0:0"
             tparts = time_part.split(":")
             hours = int(tparts[0]) if len(tparts) > 0 else 0

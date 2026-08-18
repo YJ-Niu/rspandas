@@ -670,4 +670,13 @@ df = pd.DataFrame(
 )
 df = df.T
 print_series(333, df)
+print_series(334, df.dtypes)
+print_series(335, df.infer_objects().dtypes)
+print_series(335, df.infer_objects())
+m = ["1.1", 2, 3]
+print_series(336, pd.to_numeric(m))
+m = ["2016-07-09", datetime.datetime(2016, 3, 2)]
+print_series(337, pd.to_datetime(m))
+m = ["5us", pd.Timedelta("1day")]
+print_series(338, pd.to_timedelta(m))
 print("end_time - start_time:", end_time - start_time)
