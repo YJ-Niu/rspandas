@@ -679,4 +679,52 @@ m = ["2016-07-09", datetime.datetime(2016, 3, 2)]
 print_series(337, pd.to_datetime(m))
 m = ["5us", pd.Timedelta("1day")]
 print_series(338, pd.to_timedelta(m))
+m = ["apple", datetime.datetime(2016, 3, 2)]
+print_series(339, pd.to_datetime(m, errors="coerce"))
+m = ["apple", 2, 3]
+print_series(340, pd.to_numeric(m, errors="coerce"))
+m = ["apple", pd.Timedelta("1day")]
+print_series(341, pd.to_timedelta(m, errors="coerce"))
+m = ["1", 2, 3]
+print_series(342, pd.to_numeric(m, downcast="integer"))
+print_series(343, pd.to_numeric(m, downcast="signed"))
+print_series(344, pd.to_numeric(m, downcast="unsigned"))
+print_series(345, pd.to_numeric(m, downcast="float"))
+df = pd.DataFrame([["2016-07-09", datetime.datetime(2016, 3, 2)]] * 2, dtype="O")
+print_series(346, df)
+print_series(347, df.apply(pd.to_datetime))
+df = pd.DataFrame([["1.1", 2, 3]] * 2, dtype="O")
+print_series(348, df)
+print_series(349, df.apply(pd.to_numeric))
+df = pd.DataFrame([["5us", pd.Timedelta("1day")]] * 2, dtype="O")
+print_series(350, df)
+print_series(351, df.apply(pd.to_timedelta))
+dfi = df3.astype("int32")
+dfi["E"] = 1
+print_series(352, dfi)
+print_series(353, dfi.dtypes)
+casted = dfi[dfi > 0]
+print_series(354, casted)
+print_series(355, casted.dtypes)
+dfa = df3.copy()
+dfa["A"] = dfa["A"].astype("float32")
+print_series(356, dfa.dtypes)
+df = pd.DataFrame(
+    {
+        "string": list("abc"),
+        "int64": list(range(1, 4)),
+        "uint8": np.arange(3, 6).astype("u1"),
+        "float64": np.arange(4.0, 7.0),
+        "bool1": [True, False, True],
+        "bool2": [False, True, False],
+        "dates": pd.date_range("now", periods=3),
+        "category": pd.Series(list("ABC")).astype("category"),
+    }
+)
+df["tdeltas"] = df.dates.diff()
+df["uint64"] = np.arange(3, 6).astype("u8")
+df["other_dates"] = pd.date_range("20130101", periods=3)
+df["tz_aware_dates"] = pd.date_range("20130101", periods=3, tz="US/Eastern")
+print_series(357, df)
+print_series(358, df.dtypes)
 print("end_time - start_time:", end_time - start_time)

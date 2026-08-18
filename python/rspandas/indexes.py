@@ -1524,7 +1524,10 @@ class DatetimeIndex(Index):
         # 格式化 date 值：显示为 '2013-01-01' 格式
         date_strs = []
         for v in self._data:
-            if isinstance(v, datetime):
+            if v is None:
+                # pandas: 缺失值显示为 NaT
+                date_strs.append("NaT")
+            elif isinstance(v, datetime):
                 if (
                     v.hour == 0
                     and v.minute == 0
@@ -1803,6 +1806,9 @@ class TimedeltaIndex(Index):
     def __repr__(self) -> str:
         # 格式化每个 timedelta 为 'N days HH:MM:SS.ffffff'（对齐 pandas 显示）
         def _fmt_td(v):
+            if v is None:
+                # pandas: 缺失值显示为 NaT
+                return "NaT"
             if not isinstance(v, timedelta):
                 return repr(v)
             days = v.days

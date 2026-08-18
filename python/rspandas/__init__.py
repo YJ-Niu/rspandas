@@ -150,14 +150,15 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
     :param arg: list / Series / 标量
     :param errors: 'raise' / 'coerce' / 'ignore'
     :param downcast: None / 'integer' / 'signed' / 'unsigned' / 'float'
-    :return: 数值 Series 或标量
+    :return: 标量输入返回标量；list/tuple 输入返回 ndarray；Series 输入返回 Series
 
     Examples:
         >>> to_numeric(['1', '2', '3'])
-        [1, 2, 3]
+        array([1, 2, 3])
         >>> to_numeric(['1', 'x', '3'], errors='coerce')
-        [1, None, 3]
+        array([1.0, nan, 3.0])
     """
+    import math
     from .series import Series as _Series
 
     if isinstance(arg, _Series):
@@ -173,7 +174,7 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
             return v
         except (ValueError, TypeError):
             if errors == "coerce":
-                return None
+                return math.nan
             if errors == "ignore":
                 return arg
             raise ValueError(f"Unable to parse string {arg!r}")
@@ -181,17 +182,17 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
     def _convert_one(v):
         """将单个值转换为数值，根据 errors 决定异常处理方式。"""
         if v is None:
-            return None
+            return math.nan if errors == "coerce" else None
         try:
             # 注意：bool 是 int 的子类，需保持与原实现一致的判断顺序
-            if isinstance(v, (int, float)):
-                return v
             if isinstance(v, bool):
                 return int(v)
+            if isinstance(v, (int, float)):
+                return v
             if isinstance(v, str):
                 s = v.strip()
                 if s == "":
-                    return None if errors == "coerce" else v
+                    return math.nan if errors == "coerce" else v
                 val = float(s)
                 if val == int(val) and "." not in s and "e" not in s.lower():
                     return int(val)
@@ -200,34 +201,79 @@ def to_numeric(arg, errors: str = "raise", downcast=None):
                 return float(v)
             except (ValueError, TypeError):
                 if errors == "coerce":
-                    return None
+                    return math.nan
                 if errors == "ignore":
                     return v
                 raise ValueError(f"Unable to parse {v!r}")
         except (ValueError, TypeError):
             if errors == "coerce":
-                return None
+                return math.nan
             if errors == "ignore":
                 return v
             raise
 
     result = [_convert_one(v) for v in values]
 
+    # downcast 逻辑（对齐 pandas）
+    # 'integer'/'signed' -> int8/int16/int32/int64 中能容纳所有值的最小 dtype
+    # 'unsigned' -> uint8/uint16/uint32/uint64
+    # 'float' -> float32（如果所有值都在 float32 范围内）
+    downcast_dtype = None
     if downcast:
-        # 简化版 downcast
-        if downcast in ("integer", "signed", "unsigned"):
-            if not all(v is None or isinstance(v, int) for v in result):
-                result = [
-                    int(v) if v is not None and v == int(v) else v for v in result
-                ]
+        if downcast in ("integer", "signed"):
+            # 所有值必须为整数（或 nan）
+            int_vals = [
+                v
+                for v in result
+                if v is not None and not (isinstance(v, float) and math.isnan(v))
+            ]
+            if all(isinstance(v, int) for v in int_vals):
+                # 计算范围，选择最小 dtype
+                if int_vals:
+                    vmin, vmax = min(int_vals), max(int_vals)
+                    if vmin >= -128 and vmax <= 127:
+                        downcast_dtype = "int8"
+                    elif vmin >= -32768 and vmax <= 32767:
+                        downcast_dtype = "int16"
+                    elif vmin >= -2147483648 and vmax <= 2147483647:
+                        downcast_dtype = "int32"
+                    else:
+                        downcast_dtype = "int64"
+        elif downcast == "unsigned":
+            int_vals = [
+                v
+                for v in result
+                if v is not None and not (isinstance(v, float) and math.isnan(v))
+            ]
+            if all(isinstance(v, int) and v >= 0 for v in int_vals):
+                if int_vals:
+                    vmax = max(int_vals)
+                    if vmax <= 255:
+                        downcast_dtype = "uint8"
+                    elif vmax <= 65535:
+                        downcast_dtype = "uint16"
+                    elif vmax <= 4294967295:
+                        downcast_dtype = "uint32"
+                    else:
+                        downcast_dtype = "uint64"
+        elif downcast == "float":
+            # 如果所有值都能用 float32 表示，则 downcast 为 float32
+            downcast_dtype = "float32"
 
     # 对 list/tuple 输入返回 ndarray（对齐 pandas 行为）
     if isinstance(arg, (list, tuple)):
         import rsnumpy as _rnp
 
-        return _rnp.asarray(result)
+        arr = _rnp.asarray(result)
+        # 应用 downcast dtype
+        if downcast_dtype:
+            arr._dtype = downcast_dtype
+        return arr
     # 对 Series 输入返回 Series
-    return _Series(result, name=None)
+    s = _Series(result, name=None)
+    if downcast_dtype:
+        s._dtype_str = downcast_dtype
+    return s
 
 
 def merge(

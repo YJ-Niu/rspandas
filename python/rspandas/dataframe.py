@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import rsnumpy as rnp
 
 from .series import Series, _AlignmentResult, _is_missing
@@ -36,12 +38,33 @@ def _convert_to_basic(v: Any) -> Any:
             return dt.strftime("%Y-%m-%d")
         # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
         return dt.isoformat().replace("T", " ", 1)
-    # datetime / date -> ISO 字符串（用空格替代 'T'，与 pandas 显示一致）
+    # datetime -> ISO 字符串（去除时间部分如果为 00:00:00，用空格替代 'T'）
+    if isinstance(v, datetime):
+        if v.hour == 0 and v.minute == 0 and v.second == 0 and v.microsecond == 0:
+            return v.strftime("%Y-%m-%d")
+        return v.isoformat().replace("T", " ", 1)
+    # date -> ISO 字符串
     if hasattr(v, "isoformat"):
         return v.isoformat().replace("T", " ", 1)
     # numpy 标量 -> Python 标量
     if hasattr(v, "item"):
         return v.item()
+    # timedelta -> 'N days HH:MM:SS.ffffff' 格式（对齐 pandas 显示）
+    if isinstance(v, timedelta):
+        days = v.days
+        total_sec = v.seconds
+        hours = total_sec // 3600
+        minutes = (total_sec % 3600) // 60
+        secs = total_sec % 60
+        us = v.microseconds
+        if us > 0:
+            return f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}.{us:06d}"
+        if hours == 0 and minutes == 0 and secs == 0:
+            return f"{days} days"
+        return f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}"
+    # rspandas.Timedelta 对象
+    if hasattr(v, "_td") and isinstance(getattr(v, "_td", None), timedelta):
+        return _convert_to_basic(v._td)
     # 其他可转换对象 -> str
     return str(v) if v is not None else None
 
@@ -1522,18 +1545,58 @@ class DataFrame:
         return {c: list(self._inner.get_column(c).values) for c in columns}
 
     def _filter_with_dataframe_mask(self, mask_df: "DataFrame") -> "DataFrame":
-        """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 None/NaN。"""
+        """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 NaN。
+
+        pandas 行为：int 列中引入 NaN 时，整列 upcast 为 float64；
+        若无 NaN 引入则保留原 dtype（如 int32）。
+        """
         new_data = {}
+        col_dtype_overrides: Dict[str, str] = {}
         for c in self._columns:
             ser = self._inner.get_column(c)
             values = list(ser.values)
             if c in mask_df._columns:
                 mask_ser = mask_df._inner.get_column(c)
                 mask_values = list(mask_ser.values)
-                new_data[c] = [v if m else None for v, m in zip(values, mask_values)]
+                # True 保留原值，False 置为 NaN（而非 None）
+                import math
+
+                new_vals = [v if m else math.nan for v, m in zip(values, mask_values)]
+                new_data[c] = new_vals
+                # 判断是否引入了 NaN
+                has_nan = any((m is False or m == 0) for m in mask_values)
+                # 获取原 dtype（优先 col_dtypes，其次 Series._dtype_str）
+                orig_dtype = self._col_dtypes.get(c, ser.dtype)
+                if has_nan:
+                    # 引入 NaN 时，整数类型 upcast 为 float64
+                    if orig_dtype in (
+                        "int8",
+                        "int16",
+                        "int32",
+                        "int64",
+                        "int",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                    ):
+                        col_dtype_overrides[c] = "float64"
+                    else:
+                        # 浮点类型保持不变
+                        if orig_dtype in ("float32",):
+                            col_dtype_overrides[c] = "float32"
+                        elif orig_dtype in ("float64", "float"):
+                            col_dtype_overrides[c] = "float64"
+                else:
+                    # 无 NaN 引入：保留原 dtype
+                    if orig_dtype in ("int8", "int16", "int32", "float32"):
+                        col_dtype_overrides[c] = orig_dtype
             else:
                 new_data[c] = values
-        return DataFrame(new_data, index=self._index)
+        new_df = DataFrame(new_data, index=self._index)
+        if col_dtype_overrides:
+            new_df._col_dtypes.update(col_dtype_overrides)
+        return new_df
 
     def __setitem__(self, key, value) -> None:
         """df['new_col'] = values 添加/更新列，或 df[bool_mask] = value 布尔掩码赋值。"""
@@ -1563,10 +1626,29 @@ class DataFrame:
                     self._col_categories[key] = list(value._categories)
                 elif key in self._col_categories:
                     del self._col_categories[key]
-            elif key in self._col_dtypes:
-                del self._col_dtypes[key]
+            else:
+                # 保留 Series 的 dtype 信息（如 float32/int8 等子类型）
+                # pandas 行为：df['A'] = df['A'].astype('float32') 后 dtype 为 float32
                 if key in self._col_categories:
                     del self._col_categories[key]
+                # 检查 Series 的 _dtype_str 是否有子类型信息
+                series_dtype = getattr(value, "_dtype_str", None)
+                if series_dtype in (
+                    "float32",
+                    "int8",
+                    "int16",
+                    "int32",
+                    "uint8",
+                    "uint16",
+                    "uint32",
+                    "uint64",
+                    "str",
+                    "bool",
+                ):
+                    self._col_dtypes[key] = series_dtype
+                elif key in self._col_dtypes:
+                    # 清除不再适用的 dtype 覆盖
+                    del self._col_dtypes[key]
         elif isinstance(value, _PySeries):
             values = list(value.values)
             if len(values) < self._nrows:
