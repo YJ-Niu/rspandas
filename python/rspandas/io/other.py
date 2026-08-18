@@ -7,10 +7,8 @@ from __future__ import annotations
 
 from ..dataframe import DataFrame
 from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
 
-import json as _json
-import pickle as _pickle
+from .arrow import _arrow_table_to_dataframe, _dataframe_to_arrow_table
 
 
 def read_orc(path: str, **kwargs) -> DataFrame:
@@ -78,6 +76,8 @@ def to_stata(df: DataFrame, path: str, **kwargs) -> None:
         "to_stata: rspandas 不依赖 pandas，无法直接写入 .dta 格式。"
         "回退为写入 CSV 格式。如需 .dta 格式，请手动处理。"
     )
+    from . import to_csv
+
     to_csv(df, path.replace(".dta", ".csv"))
 
 

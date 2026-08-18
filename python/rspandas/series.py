@@ -2,6 +2,25 @@
 
 from __future__ import annotations
 
+# ============================================================================
+# 重新导出辅助类（向后兼容）
+# 这些类已迁移到子模块，但 series.py 仍重新导出以保持向后兼容
+# ============================================================================
+from ._internal._series_helpers import (  # noqa: F401
+    _AlignmentResult,
+    _DtypeScalar,
+    _ExtensionArray,
+    _PySeries_filter,
+    _dtype_to_str,
+    _format_timedelta,
+    _infer_dtype,
+    _is_missing,
+    _is_range_index,
+    _to_python_list,
+    _to_python_list_and_index,
+)
+
+
 import rsnumpy as rnp
 
 from .rspandas import _DataFrame as _PyDataFrame
@@ -25,23 +44,6 @@ from .window.ewm import EWM  # noqa: F401
 from .window.expanding import Expanding  # noqa: F401
 from .window.resampler import Resampler  # noqa: F401
 from .window.rolling import Rolling  # noqa: F401
-
-# ---------------------------------------------------------------------------
-# 内部辅助函数与工具类（已迁移到 _internal/_series_helpers）
-# ---------------------------------------------------------------------------
-from ._internal._series_helpers import (
-    _AlignmentResult,
-    _DtypeScalar,
-    _ExtensionArray,
-    _PySeries_filter,
-    _dtype_to_str,
-    # _format_timedelta,
-    _infer_dtype,
-    _is_missing,
-    _is_range_index,
-    _to_python_list,
-    _to_python_list_and_index,
-)
 
 # ---------------------------------------------------------------------------
 # Series
@@ -303,6 +305,22 @@ class Series:
     @property
     def values(self) -> list:
         return list(self._inner.values)
+
+    @property
+    def _array(self):
+        """返回底层 _core.ndarray，供 rsnumpy 统计函数直接使用。
+
+        通过暴露 _array 属性，rsnumpy 的 _ensure_raw() 可直接获取
+        原始 Rust ndarray 而无需通过 _core.ndarray() 构造，
+        避免 TypeError: Unsupported data type。
+        """
+        import rsnumpy.num_core as _core
+
+        vals = list(self._inner.values)
+        # 将 None 替换为 NaN，避免 _core.ndarray 因 None 值报错
+        if any(v is None for v in vals):
+            vals = [float("nan") if v is None else v for v in vals]
+        return _core.ndarray(vals)
 
     @property
     def size(self) -> int:
@@ -1228,7 +1246,11 @@ class Series:
 
     def __array__(self, dtype=None):
         """支持 rnp.array(series) 转换。"""
-        return rnp.array(self.values, dtype=dtype)
+        values = self.values
+        # 将 None 替换为 float('nan')，避免 rsnumpy 因混合类型报错
+        if any(v is None for v in values):
+            values = [float("nan") if v is None else v for v in values]
+        return rnp.array(values, dtype=dtype)
 
     # ---------- 命名算术方法 ----------
 
@@ -5330,22 +5352,3 @@ class Series:
             pass
 
         return "unknown"
-
-
-# ============================================================================
-# 重新导出辅助类（向后兼容）
-# 这些类已迁移到子模块，但 series.py 仍重新导出以保持向后兼容
-# ============================================================================
-from ._internal._series_helpers import (  # noqa: F401
-    _AlignmentResult,
-    _DtypeScalar,
-    _ExtensionArray,
-    _PySeries_filter,
-    _dtype_to_str,
-    _format_timedelta,
-    _infer_dtype,
-    _is_missing,
-    _is_range_index,
-    _to_python_list,
-    _to_python_list_and_index,
-)

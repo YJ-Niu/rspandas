@@ -13,12 +13,32 @@ use crate::core::series::{PySeries, Series};
 
 type CsvParseResult = (Vec<String>, Vec<Vec<Option<String>>>);
 
-/// 从 CSV 字符串构造 DataFrame
-fn parse_csv_string(content: &str, has_header: bool) -> PyResult<CsvParseResult> {
-    let mut rdr = csv::ReaderBuilder::new()
+/// 从 CSV 字符串构造 DataFrame（支持自定义分隔符、引号等参数）
+#[allow(clippy::too_many_arguments)]
+fn parse_csv_string(
+    content: &str,
+    has_header: bool,
+    delimiter: u8,
+    quote: u8,
+    quoting: bool,
+    double_quote: bool,
+    escape: Option<u8>,
+    skip_initial_space: bool,
+) -> PyResult<CsvParseResult> {
+    let mut builder = csv::ReaderBuilder::new();
+    builder
         .has_headers(has_header)
         .flexible(true)
-        .from_reader(content.as_bytes());
+        .delimiter(delimiter)
+        .quote(quote)
+        .quoting(quoting)
+        .double_quote(double_quote);
+    if let Some(esc) = escape {
+        builder.escape(Some(esc));
+    } else {
+        builder.escape(None);
+    }
+    let mut rdr = builder.from_reader(content.as_bytes());
 
     let mut headers: Vec<String> = Vec::new();
     if has_header {
@@ -56,6 +76,8 @@ fn parse_csv_string(content: &str, has_header: bool) -> PyResult<CsvParseResult>
             }
             if val.is_empty() {
                 cols[i].push(None);
+            } else if skip_initial_space {
+                cols[i].push(Some(val.trim_start().to_string()));
             } else {
                 cols[i].push(Some(val.to_string()));
             }
@@ -154,14 +176,45 @@ fn cast_strings(
 }
 
 /// 从 CSV 字符串构造 DataFrame（释放 GIL 进行解析）
+///
+/// 参数:
+/// - delimiter: 字段分隔符字节（默认 b','）
+/// - quote: 引号字符字节（默认 b'"'）
+/// - quoting: 是否启用引号处理（默认 true）
+/// - double_quote: 是否双引号转义（默认 true）
+/// - escape: 转义字符（None 表示无）
+/// - skip_initial_space: 是否跳过字段前导空格（默认 false）
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 pub fn read_csv_string<'py>(
     py: Python<'py>,
     content: &str,
     has_header: bool,
+    delimiter: Option<u8>,
+    quote: Option<u8>,
+    quoting: Option<bool>,
+    double_quote: Option<bool>,
+    escape: Option<u8>,
+    skip_initial_space: Option<bool>,
 ) -> PyResult<(Vec<String>, Vec<PySeries>)> {
+    let delimiter = delimiter.unwrap_or(b',');
+    let quote = quote.unwrap_or(b'"');
+    let quoting = quoting.unwrap_or(true);
+    let double_quote = double_quote.unwrap_or(true);
+    let skip_initial_space = skip_initial_space.unwrap_or(false);
     // 释放 GIL 进行 CSV 解析和类型推断
-    let (headers, cols) = py.detach(|| parse_csv_string(content, has_header))?;
+    let (headers, cols) = py.detach(|| {
+        parse_csv_string(
+            content,
+            has_header,
+            delimiter,
+            quote,
+            quoting,
+            double_quote,
+            escape,
+            skip_initial_space,
+        )
+    })?;
     let series_list: Vec<PySeries> = headers
         .par_iter()
         .zip(cols.par_iter())
@@ -228,15 +281,17 @@ pub fn write_csv_string<'py>(
     columns: Vec<String>,
     series_list: Vec<PySeries>,
     include_header: bool,
+    sep: Option<String>,
 ) -> PyResult<String> {
+    let sep_str = sep.unwrap_or_else(|| ",".to_string());
     // 释放 GIL 进行并行 CSV 序列化
     py.detach(|| {
         let mut buf = String::new();
-        let sep = ',';
+        let sep_char = sep_str.as_str();
 
         if include_header {
             let escaped: Vec<String> = columns.iter().map(|c| csv_escape(c)).collect();
-            buf.push_str(&escaped.join(&sep.to_string()));
+            buf.push_str(&escaped.join(sep_char));
             buf.push('\n');
         }
 
@@ -254,7 +309,7 @@ pub fn write_csv_string<'py>(
                     let v = s.inner.get_str_at(i);
                     record.push(csv_escape(&v));
                 }
-                record.join(&sep.to_string())
+                record.join(sep_char)
             })
             .collect();
         for row_str in &row_strings {
@@ -265,12 +320,56 @@ pub fn write_csv_string<'py>(
     })
 }
 
+/// 解析 CSV 为原始字符串列（不进行类型推断），返回 (headers, 字符串列)。
+///
+/// 与 read_csv_string 不同，本函数不进行类型推断，适合 Python 侧仍需
+/// 做 na_values/converters/parse_dates 等后处理的场景。
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub fn parse_csv_raw<'py>(
+    py: Python<'py>,
+    content: &str,
+    has_header: bool,
+    delimiter: Option<u8>,
+    quote: Option<u8>,
+    quoting: Option<bool>,
+    double_quote: Option<bool>,
+    escape: Option<u8>,
+    skip_initial_space: Option<bool>,
+) -> PyResult<(Vec<String>, Vec<Vec<Option<String>>>)> {
+    let delimiter = delimiter.unwrap_or(b',');
+    let quote = quote.unwrap_or(b'"');
+    let quoting = quoting.unwrap_or(true);
+    let double_quote = double_quote.unwrap_or(true);
+    let skip_initial_space = skip_initial_space.unwrap_or(false);
+    py.detach(|| {
+        parse_csv_string(
+            content,
+            has_header,
+            delimiter,
+            quote,
+            quoting,
+            double_quote,
+            escape,
+            skip_initial_space,
+        )
+    })
+}
+
 /// 从文件路径读取 CSV（释放 GIL 进行文件读取和解析）
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 pub fn read_csv_path<'py>(
     py: Python<'py>,
     path: &str,
     has_header: bool,
+    delimiter: Option<u8>,
+    quote: Option<u8>,
+    quoting: Option<bool>,
+    double_quote: Option<bool>,
+    escape: Option<u8>,
+    skip_initial_space: Option<bool>,
 ) -> PyResult<(Vec<String>, Vec<PySeries>)> {
     let content = py.detach(|| -> PyResult<String> {
         let mut content = String::new();
@@ -280,7 +379,17 @@ pub fn read_csv_path<'py>(
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("read {path}: {e}")))?;
         Ok(content)
     })?;
-    read_csv_string(py, &content, has_header)
+    read_csv_string(
+        py,
+        &content,
+        has_header,
+        delimiter,
+        quote,
+        quoting,
+        double_quote,
+        escape,
+        skip_initial_space,
+    )
 }
 
 /// 写入 CSV 到文件路径（释放 GIL 进行文件写入）
@@ -291,8 +400,9 @@ pub fn write_csv_path<'py>(
     columns: Vec<String>,
     series_list: Vec<PySeries>,
     include_header: bool,
+    sep: Option<String>,
 ) -> PyResult<()> {
-    let content = write_csv_string(py, columns, series_list, include_header)?;
+    let content = write_csv_string(py, columns, series_list, include_header, sep)?;
     py.detach(|| -> PyResult<()> {
         let mut file = File::create(path)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("create {path}: {e}")))?;
@@ -305,19 +415,42 @@ pub fn write_csv_path<'py>(
 /// 分块读取 CSV：返回每个块的 (headers, PySeries 列表) 列表
 /// chunk_size: 每块的行数
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 pub fn read_csv_chunks<'py>(
     py: Python<'py>,
     content: &str,
     has_header: bool,
     chunk_size: usize,
+    delimiter: Option<u8>,
+    quote: Option<u8>,
+    quoting: Option<bool>,
+    double_quote: Option<bool>,
+    escape: Option<u8>,
+    skip_initial_space: Option<bool>,
 ) -> PyResult<Vec<(Vec<String>, Vec<PySeries>)>> {
     if chunk_size == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "chunk_size must be > 0",
         ));
     }
+    let delimiter = delimiter.unwrap_or(b',');
+    let quote = quote.unwrap_or(b'"');
+    let quoting = quoting.unwrap_or(true);
+    let double_quote = double_quote.unwrap_or(true);
+    let skip_initial_space = skip_initial_space.unwrap_or(false);
     // 释放 GIL 解析 CSV
-    let (headers, cols) = py.detach(|| parse_csv_string(content, has_header))?;
+    let (headers, cols) = py.detach(|| {
+        parse_csv_string(
+            content,
+            has_header,
+            delimiter,
+            quote,
+            quoting,
+            double_quote,
+            escape,
+            skip_initial_space,
+        )
+    })?;
     if cols.is_empty() {
         return Ok(Vec::new());
     }

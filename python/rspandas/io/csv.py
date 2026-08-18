@@ -7,10 +7,7 @@ from __future__ import annotations
 
 from ..dataframe import DataFrame
 from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-import json as _json
-import pickle as _pickle
+from typing import Optional
 
 from ._common import (
     _NO_DEFAULT,
@@ -132,8 +129,6 @@ def read_csv(
     DataFrame
     """
     from ..dataframe import DataFrame as _DataFrame
-    import csv as _csv
-    import io as _io
 
     # ------------------------------------------------------------------
     # 1. 处理 sep / delimiter 别名
@@ -272,45 +267,78 @@ def read_csv(
         lines = lines[:-skipfooter] if skipfooter < len(lines) else []
 
     # ------------------------------------------------------------------
-    # 7. 使用 Python csv 解析（统一路径，便于处理各种参数）
+    # 7. 使用 Rust 解析 CSV（释放 GIL，不依赖 Python csv 模块）
     # ------------------------------------------------------------------
-    # 处理 skipinitialspace
-    csv_sep = sep
-    csv_kwargs = {
-        "delimiter": csv_sep,
-        "quotechar": quotechar,
-        "quoting": quoting,
-        "doublequote": doublequote,
-    }
-    if escapechar is not None:
-        csv_kwargs["escapechar"] = escapechar
-    if skipinitialspace:
-        csv_kwargs["skipinitialspace"] = True
-    if lineterminator is not None:
-        csv_kwargs["lineterminator"] = lineterminator
+    csv_content = "\n".join(lines)
+    # 处理 lineterminator：Rust csv crate 默认支持 \n 和 \r\n
+    if lineterminator is not None and lineterminator not in ("\n", "\r\n"):
+        csv_content = csv_content.replace(lineterminator, "\n")
 
-    reader = _csv.reader(_io.StringIO("\n".join(lines)), **csv_kwargs)
-    rows = list(reader)
-    if not rows:
+    # 将 quoting 整数转换为布尔值（QUOTE_NONE=3 时禁用引号处理）
+    quoting_enabled = quoting != 3
+
+    # 分隔符必须为单字节字符
+    if len(sep) != 1:
+        return _DataFrame()
+
+    from ..rspandas import parse_csv_raw as _parse_csv_raw
+
+    try:
+        rust_headers, cols_data = _parse_csv_raw(
+            csv_content,
+            has_header if header_rows_count <= 1 else False,
+            delimiter=ord(sep),
+            quote=ord(quotechar),
+            quoting=quoting_enabled,
+            double_quote=doublequote,
+            escape=ord(escapechar) if escapechar is not None else None,
+            skip_initial_space=skipinitialspace,
+        )
+    except Exception:
+        return _DataFrame()
+
+    if not cols_data and not rust_headers:
         return _DataFrame()
 
     # ------------------------------------------------------------------
     # 8. 解析表头与数据行
     # ------------------------------------------------------------------
+    # cols_data 是列导向的: List[List[Optional[str]]]，每列是一个列表
+    # rust_headers 是 Rust 解析出的列名
     if has_header:
         if header_rows_count > 1:
-            # MultiIndex 表头：合并所有表头行
-            header_rows = rows[:header_rows_count]
-            data_rows = rows[header_rows_count:]
-            # 简化：使用最后一行作为列名（与 pandas 行为有差异，但满足基本需求）
-            cols = list(header_rows[-1])
+            # MultiIndex 表头：Rust 以 has_header=False 解析，全部数据在 cols_data 中
+            # 前 header_rows_count 行的每一列值构成 MultiIndex 表头
+            ncols = len(cols_data)
+            nrows_total = len(cols_data[0]) if cols_data else 0
+            # 提取表头行：每列的前 header_rows_count 个值
+            header_rows_list = []
+            for r in range(min(header_rows_count, nrows_total)):
+                header_rows_list.append(
+                    [
+                        cols_data[c][r] if r < len(cols_data[c]) else None
+                        for c in range(ncols)
+                    ]
+                )
+            # 使用最后一行表头作为列名
+            cols = [str(h) if h is not None else "" for h in header_rows_list[-1]]
+            # 数据行：跳过表头行
+            data_start = header_rows_count
+            data_cols = []
+            for c in range(ncols):
+                col = cols_data[c]
+                data_cols.append(col[data_start:])
+            cols_data = data_cols
         else:
-            cols = list(rows[0])
-            data_rows = rows[1:]
+            # 单行表头：Rust 已分离表头和数据
+            cols = list(rust_headers)
+            # cols_data 已经是数据行（不含表头）
     else:
-        ncols = max(len(r) for r in rows)
+        # 无表头：Rust 自动生成 "col0", "col1", ... 作为列名
+        # 但我们使用用户期望的默认列名（0, 1, 2, ...）
+        ncols = len(cols_data)
         cols = [str(i) for i in range(ncols)]
-        data_rows = rows
+        # 重命名 rust_headers 为我们的默认列名（实际上不需要，因为 cols_data 直接是数据）
 
     # 显式 names 覆盖
     if names is not None and names is not _NO_DEFAULT:
@@ -318,7 +346,6 @@ def read_csv(
         if len(names_list) >= len(cols):
             cols = names_list[: len(cols)]
         else:
-            # names 长度小于列数，填充默认列名
             cols = names_list + [str(i) for i in range(len(names_list), len(cols))]
 
     # 空列名处理（pandas 行为）
@@ -337,27 +364,26 @@ def read_csv(
     cols = new_cols
 
     # ------------------------------------------------------------------
-    # 9. 对齐数据行长度（补齐或截断）
+    # 9. 对齐数据列数（补齐或截断）
     # ------------------------------------------------------------------
-    aligned_rows = []
-    for r in data_rows:
-        if len(r) < len(cols):
-            r = list(r) + [None] * (len(cols) - len(r))
-        else:
-            r = list(r)[: len(cols)]
-        aligned_rows.append(r)
-    data_rows = aligned_rows
+    if len(cols_data) < len(cols):
+        # 补齐缺失的列
+        nrows = len(cols_data[0]) if cols_data else 0
+        for _ in range(len(cols) - len(cols_data)):
+            cols_data.append([None] * nrows)
+    elif len(cols_data) > len(cols):
+        cols_data = cols_data[: len(cols)]
 
     # ------------------------------------------------------------------
     # 10. 处理 nrows
     # ------------------------------------------------------------------
-    if nrows is not None:
-        data_rows = data_rows[:nrows]
+    if nrows is not None and cols_data:
+        cols_data = [col[:nrows] for col in cols_data]
 
     # ------------------------------------------------------------------
     # 11. 构建 dict[str, list]
     # ------------------------------------------------------------------
-    data = {c: [r[i] for r in data_rows] for i, c in enumerate(cols)}
+    data = {c: list(col_data) for c, col_data in zip(cols, cols_data)}
 
     # ------------------------------------------------------------------
     # 12. 处理 usecols
@@ -620,7 +646,7 @@ def read_csv_chunked(
     encoding : str
         文件编码（默认 utf-8）。
     delimiter : str
-        分隔符（默认逗号，Rust 层仅支持逗号，其他分隔符回退到 Python 实现）。
+        分隔符（默认逗号，仅支持单字节字符）。
     header : bool
         是否有表头（默认 True）。
 
@@ -629,55 +655,45 @@ def read_csv_chunked(
     DataFrame
         每次产出一个 chunk_size 行的 DataFrame。
     """
-    # 优先调用 Rust 层 read_csv_chunks（仅支持逗号分隔符）
-    if delimiter == ",":
-        try:
-            from ..rspandas import read_csv_chunks as _read_csv_chunks_rust
+    # 使用 Rust 层 read_csv_chunks（支持自定义单字节分隔符）
+    if len(delimiter) != 1:
+        # 多字节分隔符不支持，回退为空
+        return
 
-            with open(path, "r", encoding=encoding, newline="") as f:
-                content = f.read()
-            chunks = _read_csv_chunks_rust(content, header, chunk_size)
-            from ..series import Series as _Series
-            from ..dataframe import DataFrame as _DataFrame
+    try:
+        from ..rspandas import read_csv_chunks as _read_csv_chunks_rust
 
-            for cols, series_list in chunks:
-                # 构造 Series 列表
-                py_series_list = []
-                for s in series_list:
-                    py_s = _Series.__new__(_Series)
-                    py_s._inner = s
-                    py_s._dtype_str = s.dtype
-                    py_s._index = list(range(s.size))
-                    py_s._name = s.name
-                    py_series_list.append(py_s)
-                # 直接构造 DataFrame
-                df_data = {c: py_s.values for c, py_s in zip(cols, py_series_list)}
-                yield _DataFrame(df_data)
-            return
-        except Exception:
-            pass
+        with open(path, "r", encoding=encoding, newline="") as f:
+            content = f.read()
+        chunks = _read_csv_chunks_rust(
+            content,
+            header,
+            chunk_size,
+            delimiter=ord(delimiter),
+            quote=None,
+            quoting=None,
+            double_quote=None,
+            escape=None,
+            skip_initial_space=None,
+        )
+        from ..series import Series as _Series
+        from ..dataframe import DataFrame as _DataFrame
 
-    # 回退到 Python 实现
-    import csv as _csv
-
-    with open(path, "r", encoding=encoding, newline="") as f:
-        reader = _csv.reader(f, delimiter=delimiter)
-        col_names = None
-        if header:
-            col_names = next(reader, None)
-
-        chunk: List[list] = []
-        for row in reader:
-            chunk.append(row)
-            if len(chunk) >= chunk_size:
-                data = _rows_to_dict(chunk, col_names)
-                yield DataFrame(data)
-                chunk = []
-
-        # 输出剩余行
-        if chunk:
-            data = _rows_to_dict(chunk, col_names)
-            yield DataFrame(data)
+        for cols, series_list in chunks:
+            # 构造 Series 列表
+            py_series_list = []
+            for s in series_list:
+                py_s = _Series.__new__(_Series)
+                py_s._inner = s
+                py_s._dtype_str = s.dtype
+                py_s._index = list(range(s.size))
+                py_s._name = s.name
+                py_series_list.append(py_s)
+            # 直接构造 DataFrame
+            df_data = {c: py_s.values for c, py_s in zip(cols, py_series_list)}
+            yield _DataFrame(df_data)
+    except Exception:
+        return
 
 
 def to_csv(
@@ -689,7 +705,7 @@ def to_csv(
     # 使用 Rust 层的 write_csv_string
     cols = list(df.columns)
     series_list = [df._inner.get_column(c) for c in cols]
-    csv_str = _write_csv_string(cols, series_list, sep, index)
+    csv_str = _write_csv_string(cols, series_list, True, sep)
 
     if path:
         with open(path, "w", encoding="utf-8") as f:

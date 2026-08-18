@@ -14,6 +14,7 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::core::io::csv::read_csv_path, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::io::csv::write_csv_path, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::io::csv::read_csv_chunks, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::core::io::csv::parse_csv_raw, m)?)?;
     // factorize 编码
     m.add_function(wrap_pyfunction!(crate::core::series::factorize, m)?)?;
     // Excel 读写
@@ -44,5 +45,11 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crate::core::io::arrow::from_arrow_ipc_bytes,
         m
     )?)?;
+    // JSON 读写 —— 纯 Rust serde_json，释放 GIL
+    m.add_function(wrap_pyfunction!(crate::core::io::json::read_json, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::core::io::json::write_json, m)?)?;
+    // HTML / XML 序列化 —— 纯 Rust 字符串构建，释放 GIL
+    m.add_function(wrap_pyfunction!(crate::core::io::html_xml::to_html, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::core::io::html_xml::to_xml, m)?)?;
     Ok(())
 }

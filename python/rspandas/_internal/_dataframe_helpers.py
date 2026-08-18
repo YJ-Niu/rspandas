@@ -6,14 +6,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import rsnumpy as rnp
 
 from ..rspandas import _Series as _PySeries  # type: ignore
-
-if TYPE_CHECKING:
-    from ..series import Series  # noqa: F401
 
 
 def _is_ndarray(data: Any) -> bool:
@@ -46,6 +43,9 @@ def _convert_to_basic(v: Any) -> Any:
         return v.isoformat().replace("T", " ", 1)
     # numpy 标量 -> Python 标量
     if hasattr(v, "item"):
+        # 多元素数组无法调用无参 item()，转换为 list
+        if hasattr(v, "size") and v.size > 1:
+            return list(v)
         return v.item()
     # timedelta -> 'N days HH:MM:SS.ffffff' 格式（对齐 pandas 显示）
     if isinstance(v, timedelta):

@@ -225,9 +225,7 @@ class DataFrame:
                 ):
                     col_dtype = "datetime64[us]"
                     col_dtype_overrides[c] = "datetime64[us]"
-                elif non_null and all(
-                    isinstance(v, timedelta) for v in non_null
-                ):
+                elif non_null and all(isinstance(v, timedelta) for v in non_null):
                     col_dtype = "timedelta64[us]"
                     col_dtype_overrides[c] = "timedelta64[us]"
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
@@ -3624,6 +3622,8 @@ class DataFrame:
                         col_key = (c, fname)
                         if isinstance(result, Series):
                             new_data[col_key] = list(result.values)
+                        elif isinstance(result, rnp.ndarray):
+                            new_data[col_key] = list(result)
                         else:
                             new_data[col_key] = [result] * self._nrows
         elif isinstance(func, list):
@@ -3653,6 +3653,8 @@ class DataFrame:
                     col_key = (c, fname)
                     if isinstance(result, Series):
                         new_data[col_key] = list(result.values)
+                    elif isinstance(result, rnp.ndarray):
+                        new_data[col_key] = list(result)
                     else:
                         new_data[col_key] = [result] * self._nrows
         else:
@@ -3669,6 +3671,8 @@ class DataFrame:
 
                 if isinstance(result, Series):
                     new_data[c] = list(result.values)
+                elif isinstance(result, rnp.ndarray):
+                    new_data[c] = list(result)
                 else:
                     new_data[c] = [result] * self._nrows
 

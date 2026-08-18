@@ -7,9 +7,7 @@ from __future__ import annotations
 
 from ..dataframe import DataFrame
 from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
 
-import json as _json
 import pickle as _pickle
 
 

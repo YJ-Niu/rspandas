@@ -2,7 +2,19 @@
 
 A drop-in pandas-like API where the heavy lifting is done in Rust.
 """
-
+# ============================================================================
+# 类型常量
+# ============================================================================
+from ._scalars import (
+    Categorical,
+    DateOffset,
+    Interval,
+    NA,
+    NaT,
+    Period,
+    Timestamp,
+    Timedelta,
+)
 from . import offsets
 from ._datetime import (
     bdate_range,
@@ -429,7 +441,7 @@ def value_counts(
     raise TypeError("value_counts requires Series or list")
 
 
-__version__ = "2.1.2"
+__version__ = "2.1.3"
 __all__ = [
     "Series",
     "DataFrame",
@@ -527,9 +539,6 @@ __all__ = [
 # ============================================================================
 # rsnumpy 函数包装 - 让 rnp.exp(Series) 返回 Series 而非 ndarray
 # ============================================================================
-
-
-from ._rsnumpy_wrappers import _wrap_rsnumpy_functions
 
 
 def read_csv(
@@ -835,22 +844,6 @@ def lreshape(
 
     return DataFrame(result_rows)
 
-
-# ============================================================================
-# 类型常量
-# ============================================================================
-
-
-from ._scalars import (
-    Categorical,
-    DateOffset,
-    Interval,
-    NA,
-    NaT,
-    Period,
-    Timestamp,
-    Timedelta,
-)
 
 # ============================================================================
 # 数组创建函数
