@@ -379,7 +379,11 @@ class DatetimeAccessor:
             if v is None:
                 converted.append(None)
             elif isinstance(v, (datetime, date, time)):
-                converted.append(v.isoformat() if hasattr(v, "isoformat") else str(v))
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                s = v.isoformat() if hasattr(v, "isoformat") else str(v)
+                if "T" in s:
+                    s = s.replace("T", " ", 1)
+                converted.append(s)
             elif isinstance(v, timedelta):
                 converted.append(v.total_seconds())
             else:

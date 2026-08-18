@@ -124,6 +124,28 @@ class _DtypeScalar:
         return abs(self._value)
 
 
+def _dtype_to_str(dtype) -> str:
+    """将 dtype 参数（str/type 对象/numpy dtype 对象）规范化为字符串。
+
+    - str 直接返回
+    - Python type（如 bool/int/float/str）取 __name__
+    - numpy dtype 对象（如 np.uint8, np.float32）取对应的字符串
+    """
+    if isinstance(dtype, str):
+        return dtype
+    # numpy dtype 对象（如 np.float32, np.uint8）有 __name__ 属性
+    if hasattr(dtype, "__name__"):
+        name = dtype.__name__.lower()
+        # np.bool_ -> bool
+        if name == "bool_":
+            return "bool"
+        return name
+    # numpy dtype 实例（如 dtype('float32')）
+    if hasattr(dtype, "name"):
+        return str(dtype.name).lower()
+    return str(dtype).lower()
+
+
 def _infer_dtype(values: list) -> str:
     """根据数据推断 dtype（对齐 pandas 的行为）。"""
     if not values:
@@ -434,12 +456,19 @@ class Series:
         if dtype is None:
             dtype = _infer_dtype(values)
 
+        # 规范化 dtype：type 对象（如 np.uint8/bool/int）→ 字符串
+        # Rust 层 _PySeries 要求 dtype: Option<&str>，不能接受 type 对象
+        if dtype is not None and not isinstance(dtype, str):
+            dtype_str = _dtype_to_str(dtype)
+        else:
+            dtype_str = dtype
+
         # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
-        self._inner = _PySeries(values, name, dtype=dtype)
+        self._inner = _PySeries(values, name, dtype=dtype_str)
 
         # 缓存 dtype
         if dtype is not None:
-            nd = dtype.lower() if isinstance(dtype, str) else str(dtype).lower()
+            nd = dtype_str.lower()
             if nd == "category":
                 self._dtype_str = "category"
             elif nd in ("str", "string"):
@@ -463,7 +492,7 @@ class Series:
                 self._dtype_str = nd
             elif nd.startswith("period["):
                 # 保留 period[freq] 格式（与 pandas 一致）
-                self._dtype_str = dtype
+                self._dtype_str = dtype_str
             else:
                 self._dtype_str = self._inner.dtype
         else:
@@ -2169,23 +2198,21 @@ class Series:
     def astype(self, dtype, copy: bool = True, errors: str = "raise") -> _PySeries:
         """类型转换。
 
-        :param dtype: 目标类型 (str 或 dtype 对象)
+        :param dtype: 目标类型 (str/type 对象/numpy dtype 对象)
         :param copy: 是否复制数据 (默认 True)
         :param errors: 错误处理 ('raise' 或 'ignore')
         """
-        if isinstance(dtype, str):
-            target = dtype.lower()
-        elif isinstance(dtype, type):
-            # Python 类型对象 (如 bool, int, float, str)
-            target = dtype.__name__.lower()
-        else:
-            target = str(dtype).lower()
+        # 统一规范化 dtype 为字符串（支持 np.uint8/np.float32 等 type 对象）
+        dtype_str = _dtype_to_str(dtype)
+        target = dtype_str.lower()
 
         if target == self._dtype_str and not copy:
             return self
 
         if target == self._dtype_str:
-            return Series(self.values, name=self.name, dtype=dtype, index=self._index)
+            return Series(
+                self.values, name=self.name, dtype=dtype_str, index=self._index
+            )
 
         vals = []
         try:
@@ -2222,8 +2249,8 @@ class Series:
             # errors == 'ignore': 返回原始 Series
             return self.copy()
 
-        # 传递原始 dtype 字符串以保留子类型信息（如 int8/uint8/float32）
-        return Series(vals, name=self.name, dtype=dtype, index=self._index)
+        # 传递规范化后的 dtype 字符串以保留子类型信息（如 int8/uint8/float32）
+        return Series(vals, name=self.name, dtype=dtype_str, index=self._index)
 
     def abs(self) -> _PySeries:
         """返回绝对值 Series。"""
@@ -3613,11 +3640,22 @@ class Series:
         if value is None:
             raise ValueError("Must specify a fill 'value' or 'method'")
 
-        result = self._inner.fillna(value)
+        # 优先 Python 层实现（避免 Rust 层跨边界类型不匹配）
+        # Rust 层 fillna: Int64 列要求 value 为 int，Float64 要求 f64，Object 要求 String
+        # Python 层实现能兼容 value=0.0 等标量，并自动处理 upcasting
+        vals = list(self.values)
+        filled = [value if _is_missing(v) else v for v in vals]
+        # 推断新的 dtype（int 列 + float value → float64）
+        new_dtype = self._dtype_str
+        if new_dtype in ("int8", "int16", "int32", "int64", "int") and isinstance(
+            value, float
+        ):
+            new_dtype = "float64"
         if inplace:
-            self._inner = _PySeries(result, self.name, dtype=self._dtype_str)
+            self._inner = _PySeries(filled, self.name, dtype=new_dtype)
+            self._dtype_str = new_dtype
             return self
-        return Series(result, name=self.name, dtype=self._dtype_str, index=self._index)
+        return Series(filled, name=self.name, dtype=new_dtype, index=self._index)
 
     # ---------- 唯一值 ----------
 
@@ -5079,11 +5117,8 @@ class Series:
         from datetime import datetime
 
         def _fmt_val(v):
-            """格式化单个值，datetime 去除 00:00:00。"""
+            """格式化单个值，datetime 去除 00:00:00，用空格替代 'T'。"""
             if isinstance(v, datetime):
-                # 如果有 tzinfo，显示完整格式（含时区）
-                if v.tzinfo is not None:
-                    return str(v)
                 # 如果时间部分为 0，只显示日期
                 if (
                     v.hour == 0
@@ -5092,7 +5127,8 @@ class Series:
                     and v.microsecond == 0
                 ):
                     return v.strftime("%Y-%m-%d")
-                return str(v)
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                return v.isoformat().replace("T", " ", 1)
             if v is None:
                 return "NaN"
             if isinstance(v, float) and v != v:

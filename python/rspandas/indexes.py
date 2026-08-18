@@ -121,7 +121,8 @@ class Index:
                 ):
                     data_strs.append(repr(v.strftime("%Y-%m-%d")))
                 else:
-                    data_strs.append(repr(str(v)))
+                    # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                    data_strs.append(repr(v.isoformat().replace("T", " ", 1)))
             else:
                 data_strs.append(repr(v))
         if len(data_strs) <= 6:
@@ -1532,7 +1533,8 @@ class DatetimeIndex(Index):
                 ):
                     date_strs.append(repr(v.strftime("%Y-%m-%d")))
                 else:
-                    date_strs.append(repr(str(v)))
+                    # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                    date_strs.append(repr(v.isoformat().replace("T", " ", 1)))
             else:
                 date_strs.append(repr(v))
         # 多行显示（每行最多 4 个值，对齐 pandas 行为）

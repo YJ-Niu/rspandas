@@ -1,7 +1,7 @@
 import time
 start_time = time.time()
 from functools import partial  # noqa: E402
-
+import datetime  # noqa: E402
 import rsnumpy as np  # noqa: E402
 from collections import namedtuple  # noqa: E402
 from dataclasses import make_dataclass  # noqa: E402
@@ -659,4 +659,15 @@ print_series(328, frame)
 df3 = df1.reindex_like(df2).fillna(value=0.0) + df2
 print_series(329, df3)
 print_series(330, df3.dtypes)
+print_series(331, df3.to_numpy().dtype)
+print_series(332, df3.astype("float32").dtypes)
+df = pd.DataFrame(
+    [
+        [1, 2],
+        ["a", "b"],
+        [datetime.datetime(2016, 3, 2), datetime.datetime(2016, 3, 2)],
+    ]
+)
+df = df.T
+print_series(333, df)
 print("end_time - start_time:", end_time - start_time)

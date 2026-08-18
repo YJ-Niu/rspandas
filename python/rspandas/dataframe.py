@@ -34,10 +34,11 @@ def _convert_to_basic(v: Any) -> Any:
         dt = v._dt
         if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
             return dt.strftime("%Y-%m-%d")
-        return dt.isoformat()
-    # datetime / date -> ISO 字符串
+        # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+        return dt.isoformat().replace("T", " ", 1)
+    # datetime / date -> ISO 字符串（用空格替代 'T'，与 pandas 显示一致）
     if hasattr(v, "isoformat"):
-        return v.isoformat()
+        return v.isoformat().replace("T", " ", 1)
     # numpy 标量 -> Python 标量
     if hasattr(v, "item"):
         return v.item()
@@ -1545,6 +1546,11 @@ class DataFrame:
             self._setitem_with_list_mask(key, value)
             return
 
+        # df[['a', 'b']] = value: 按列名列表批量赋值（支持 DataFrame/列表/标量）
+        if isinstance(key, list) and all(isinstance(x, str) for x in key):
+            self._setitem_with_col_list(key, value)
+            return
+
         # 原有逻辑：df['col'] = values
         if isinstance(value, Series):
             values = list(value.values)
@@ -1607,6 +1613,74 @@ class DataFrame:
             self._reload(new_data)
             self._columns.append(key)
             self._raw_columns.append(key)
+
+    def _setitem_with_col_list(self, keys: list, value) -> None:
+        """按列名列表批量赋值（df[['a', 'b']] = other_df 或标量）。
+
+        pandas 行为：按位置（而非列名）将 value 的列分配到 keys。
+        - 若 value 是 DataFrame，按位置取其列值
+        - 若 value 是 Series，广播到所有 keys
+        - 若 value 是 list，要求长度与 keys 相同（每列一个值列表）或与 nrows 相同（广播）
+        """
+        # 收集每列的目标值
+        col_values: Dict[str, list] = {}
+        col_dtype_overrides: Dict[str, str] = {}
+
+        if isinstance(value, DataFrame):
+            # DataFrame: 按位置取列值（而非列名匹配）
+            value_cols = value._columns
+            value_cache = value._cache_columns(value_cols)
+            for i, k in enumerate(keys):
+                if i < len(value_cols):
+                    col_values[k] = list(value_cache[value_cols[i]])
+                    # 继承 dtype 覆盖（如 uint8/float32）
+                    if value_cols[i] in value._col_dtypes:
+                        col_dtype_overrides[k] = value._col_dtypes[value_cols[i]]
+                else:
+                    # value 列不足，用 None 填充
+                    col_values[k] = [None] * self._nrows
+        elif isinstance(value, Series):
+            # Series: 广播到所有 keys
+            vals = list(value.values)
+            if len(vals) < self._nrows:
+                vals = vals + [None] * (self._nrows - len(vals))
+            for k in keys:
+                col_values[k] = list(vals)
+        elif isinstance(value, (list, tuple)):
+            # list: 如果是嵌套列表（长度等于 keys 数量），每元素是一列的值
+            # 否则视为单列值广播到所有 keys
+            if len(value) == len(keys) and all(
+                isinstance(v, (list, tuple)) for v in value
+            ):
+                for i, k in enumerate(keys):
+                    col_values[k] = list(value[i])
+            else:
+                for k in keys:
+                    col_values[k] = list(value)
+        else:
+            # 标量: 广播到所有 keys
+            for k in keys:
+                col_values[k] = [value] * self._nrows
+
+        # 长度校验
+        for k, vs in col_values.items():
+            if len(vs) != self._nrows:
+                raise ValueError(
+                    f"length of values {len(vs)} != length of DataFrame {self._nrows}"
+                )
+
+        # 重建 DataFrame：保留未修改列 + 更新指定列
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        for k, vs in col_values.items():
+            new_data[k] = vs
+            # 新增列：追加到 _columns/_raw_columns
+            if k not in self._columns:
+                self._columns.append(k)
+                self._raw_columns.append(k)
+
+        self._reload(new_data)
+        # 应用 dtype 覆盖（保留子类型信息如 uint8/float32）
+        self._col_dtypes.update(col_dtype_overrides)
 
     def _setitem_with_mask(self, mask_df: "DataFrame", value) -> None:
         """使用布尔 DataFrame 作为掩码进行赋值。"""
@@ -2344,26 +2418,30 @@ class DataFrame:
                 return self
             return DataFrame(new_data, index=self._index)
 
-        # 标量: 对每列单独调用 fillna
+        # 标量: 对每列单独调用 fillna（Python 层实现，避免 Rust 层跨边界类型不匹配）
+        # 注意：Rust 层 _PySeries.fillna 对 Object 列要求 value 必须是字符串，
+        # 对 Int64 列要求 value 必须是整数，此处统一用 Python 实现以兼容 value=0.0 等标量
+        col_cache = self._cache_columns(self._columns)
         if limit is not None:
-            # 限制填充数量 - 保持显式循环（涉及 fill_count 状态）
+            # 限制填充数量 - 显式循环（涉及 fill_count 状态）
             new_data: Dict[str, list] = {}
             for c in self._columns:
-                ser = self._inner.get_column(c)
                 filled_vals = []
                 fill_count = 0
-                for v in ser.values:
-                    if v is None and fill_count < limit:
+                for v in col_cache[c]:
+                    if _is_missing(v) and fill_count < limit:
                         filled_vals.append(value)
                         fill_count += 1
                     else:
                         filled_vals.append(v)
                 new_data[c] = filled_vals
         else:
-            # 无 limit - 使用字典推导式替代显式 for 循环
+            # 无 limit - 使用字典推导式批量填充
+            def _fill_val(v):
+                return value if _is_missing(v) else v
+
             new_data: Dict[str, list] = {
-                c: list(self._inner.get_column(c).fillna(value).values)
-                for c in self._columns
+                c: [_fill_val(v) for v in col_cache[c]] for c in self._columns
             }
 
         if inplace:
@@ -5446,7 +5524,8 @@ class DataFrame:
                     and v.microsecond == 0
                 ):
                     return v.strftime("%Y-%m-%d")
-                return str(v)
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                return v.isoformat().replace("T", " ", 1)
             return str(v)
 
         # 准备每列的字符串化数据
@@ -6698,7 +6777,8 @@ class DataFrame:
         def _fmt_idx(v):
             if isinstance(v, datetime):
                 if v.tzinfo is not None:
-                    return str(v)
+                    # 带时区的 datetime：用空格替代 'T'
+                    return v.isoformat().replace("T", " ", 1)
                 if (
                     v.hour == 0
                     and v.minute == 0
@@ -6706,7 +6786,8 @@ class DataFrame:
                     and v.microsecond == 0
                 ):
                     return v.strftime("%Y-%m-%d")
-                return str(v)
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                return v.isoformat().replace("T", " ", 1)
             return str(v)
 
         new_data: Dict[str, list] = {
@@ -7963,27 +8044,72 @@ class DataFrame:
             try_cast=try_cast,
         )
 
-    def astype(self, dtype: str) -> "DataFrame":
+    def astype(self, dtype, copy: bool = True, errors: str = "raise") -> "DataFrame":
         """转换每列的数据类型。
 
-        :param dtype: 目标类型 (如 'int64'/'float64'/'object'/'bool')
+        :param dtype: 目标类型 (str/type 对象/numpy dtype/字典 {列名: 类型})
+        :param copy: 是否复制数据 (默认 True)
+        :param errors: 错误处理 ('raise' 或 'ignore')
         """
+        from .series import _dtype_to_str
+
+        new_data: Dict[str, list] = {}
+        # 收集每列的 dtype 覆盖（如 float32/int8/uint8 等子类型信息）
+        col_dtype_overrides: Dict[str, str] = {}
+
         if isinstance(dtype, dict):
-            new_data = {}
+            # 字典形式：{列名: 目标类型}，未指定的列保持原值
             for c in self._columns:
-                target = dtype.get(c, None)
+                target = dtype.get(c)
                 if target is None:
                     new_data[c] = list(self._inner.get_column(c).values)
                 else:
                     ser = self._get_column_as_series(c)
-                    new_data[c] = list(ser.astype(target).values)
-            return DataFrame(new_data)
+                    converted = ser.astype(target, copy=copy, errors=errors)
+                    new_data[c] = list(converted.values)
+                    # 保留 dtype 子类型信息（如 uint8/float32/bool）
+                    target_str = _dtype_to_str(target).lower()
+                    if target_str in (
+                        "float32",
+                        "int8",
+                        "int16",
+                        "int32",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                        "str",
+                        "bool",
+                    ):
+                        col_dtype_overrides[c] = target_str
         else:
-            new_data = {}
+            # 标量形式：所有列统一转换
             for c in self._columns:
                 ser = self._get_column_as_series(c)
-                new_data[c] = list(ser.astype(dtype).values)
-            return DataFrame(new_data)
+                converted = ser.astype(dtype, copy=copy, errors=errors)
+                new_data[c] = list(converted.values)
+            # 统一 dtype 覆盖
+            target_str = _dtype_to_str(dtype).lower()
+            if target_str in (
+                "float32",
+                "int8",
+                "int16",
+                "int32",
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+                "str",
+                "bool",
+            ):
+                for c in self._columns:
+                    col_dtype_overrides[c] = target_str
+
+        new_df = DataFrame(new_data)
+        # 应用 dtype 覆盖以保留子类型信息
+        if col_dtype_overrides:
+            new_df._col_dtypes.update(col_dtype_overrides)
+        return new_df
 
     # ---------- v2.0.0: 概览 ----------
 
@@ -11192,6 +11318,51 @@ class _LocIndexer(_IndexerBase):
                     new_data[col_key][row_idx] = (
                         values[i] if i < len(values) else values[0]
                     )
+            self._df._reload_inplace(new_data)
+        elif isinstance(col_key, list) and all(isinstance(x, str) for x in col_key):
+            # df.loc[:, ["a", "b"]] = value  (对指定列列表赋值，保留原 dtype)
+            # pandas 行为：loc 赋值会尽量适配现有 dtype，不改变列的 dtype
+            # value 可以是 DataFrame（按位置取列）或标量/列表
+            if isinstance(value, DataFrame):
+                value_cols = value._columns
+                value_cache = value._cache_columns(value_cols)
+                new_data = {c: list(self._df[c].values) for c in self._df._columns}
+                for i, col_name in enumerate(col_key):
+                    if col_name not in new_data:
+                        new_data[col_name] = [None] * self._df._nrows
+                        self._df._columns.append(col_name)
+                        self._df._raw_columns.append(col_name)
+                    if i < len(value_cols):
+                        src_vals = list(value_cache[value_cols[i]])
+                        # 按行索引赋值（row_indices 为空表示全行）
+                        if row_indices:
+                            for j, row_idx in enumerate(row_indices):
+                                if row_idx < len(new_data[col_name]):
+                                    new_data[col_name][row_idx] = (
+                                        src_vals[j]
+                                        if j < len(src_vals)
+                                        else src_vals[0]
+                                    )
+                        else:
+                            new_data[col_name] = src_vals
+            else:
+                # 标量或列表：广播到指定列
+                values = (
+                    list(value)
+                    if hasattr(value, "__iter__") and not isinstance(value, str)
+                    else [value] * len(row_indices)
+                )
+                new_data = {c: list(self._df[c].values) for c in self._df._columns}
+                for col_name in col_key:
+                    if col_name not in new_data:
+                        new_data[col_name] = [None] * self._df._nrows
+                        self._df._columns.append(col_name)
+                        self._df._raw_columns.append(col_name)
+                    for i, row_idx in enumerate(row_indices):
+                        if row_idx < len(new_data[col_name]):
+                            new_data[col_name][row_idx] = (
+                                values[i] if i < len(values) else values[0]
+                            )
             self._df._reload_inplace(new_data)
         elif (
             isinstance(col_key, slice)

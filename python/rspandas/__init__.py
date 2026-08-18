@@ -1168,10 +1168,12 @@ class Timestamp:
             self._dt = datetime.datetime(*args, **kwargs)
 
     def __repr__(self) -> str:
-        return f"Timestamp('{self._dt.isoformat()}')"
+        # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+        return f"Timestamp('{self._dt.isoformat().replace('T', ' ', 1)}')"
 
     def __str__(self) -> str:
-        return str(self._dt)
+        # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+        return self._dt.isoformat().replace("T", " ", 1)
 
     def __eq__(self, other):
         if isinstance(other, Timestamp):
