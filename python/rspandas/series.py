@@ -124,6 +124,28 @@ class _DtypeScalar:
         return abs(self._value)
 
 
+def _dtype_to_str(dtype) -> str:
+    """将 dtype 参数（str/type 对象/numpy dtype 对象）规范化为字符串。
+
+    - str 直接返回
+    - Python type（如 bool/int/float/str）取 __name__
+    - numpy dtype 对象（如 np.uint8, np.float32）取对应的字符串
+    """
+    if isinstance(dtype, str):
+        return dtype
+    # numpy dtype 对象（如 np.float32, np.uint8）有 __name__ 属性
+    if hasattr(dtype, "__name__"):
+        name = dtype.__name__.lower()
+        # np.bool_ -> bool
+        if name == "bool_":
+            return "bool"
+        return name
+    # numpy dtype 实例（如 dtype('float32')）
+    if hasattr(dtype, "name"):
+        return str(dtype.name).lower()
+    return str(dtype).lower()
+
+
 def _infer_dtype(values: list) -> str:
     """根据数据推断 dtype（对齐 pandas 的行为）。"""
     if not values:
@@ -434,22 +456,43 @@ class Series:
         if dtype is None:
             dtype = _infer_dtype(values)
 
+        # 规范化 dtype：type 对象（如 np.uint8/bool/int）→ 字符串
+        # Rust 层 _PySeries 要求 dtype: Option<&str>，不能接受 type 对象
+        if dtype is not None and not isinstance(dtype, str):
+            dtype_str = _dtype_to_str(dtype)
+        else:
+            dtype_str = dtype
+
         # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
-        self._inner = _PySeries(values, name, dtype=dtype)
+        self._inner = _PySeries(values, name, dtype=dtype_str)
 
         # 缓存 dtype
         if dtype is not None:
-            nd = dtype.lower() if isinstance(dtype, str) else str(dtype).lower()
+            nd = dtype_str.lower()
             if nd == "category":
                 self._dtype_str = "category"
             elif nd in ("str", "string"):
                 self._dtype_str = "str"
-            elif nd in ("float32", "float64", "float"):
-                # 保留显式指定的 float 子类型（对齐 pandas 行为）
+            elif nd in (
+                "float32",
+                "float64",
+                "float",
+                "int8",
+                "int16",
+                "int32",
+                "int64",
+                "int",
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+            ):
+                # 保留显式指定的数值子类型（对齐 pandas 行为）
+                # Rust 层仅支持 int64/float64，但 Python 层 _dtype_str 追踪精确子类型
                 self._dtype_str = nd
             elif nd.startswith("period["):
                 # 保留 period[freq] 格式（与 pandas 一致）
-                self._dtype_str = dtype
+                self._dtype_str = dtype_str
             else:
                 self._dtype_str = self._inner.dtype
         else:
@@ -2155,33 +2198,43 @@ class Series:
     def astype(self, dtype, copy: bool = True, errors: str = "raise") -> _PySeries:
         """类型转换。
 
-        :param dtype: 目标类型 (str 或 dtype 对象)
+        :param dtype: 目标类型 (str/type 对象/numpy dtype 对象)
         :param copy: 是否复制数据 (默认 True)
         :param errors: 错误处理 ('raise' 或 'ignore')
         """
-        if isinstance(dtype, str):
-            target = dtype.lower()
-        elif isinstance(dtype, type):
-            # Python 类型对象 (如 bool, int, float, str)
-            target = dtype.__name__.lower()
-        else:
-            target = str(dtype).lower()
+        # 统一规范化 dtype 为字符串（支持 np.uint8/np.float32 等 type 对象）
+        dtype_str = _dtype_to_str(dtype)
+        target = dtype_str.lower()
 
         if target == self._dtype_str and not copy:
             return self
 
         if target == self._dtype_str:
-            return Series(self.values, name=self.name, dtype=dtype, index=self._index)
+            return Series(
+                self.values, name=self.name, dtype=dtype_str, index=self._index
+            )
 
         vals = []
         try:
-            if target == "int64":
+            if target in (
+                "int8",
+                "int16",
+                "int32",
+                "int64",
+                "int",
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+            ):
+                # 整数族：Rust 层统一存储为 int64，Python 层 _dtype_str 追踪精确子类型
                 vals = [None if v is None else int(v) for v in self.values]
-            elif target == "float64":
+            elif target in ("float32", "float64", "float"):
+                # 浮点族：Rust 层统一存储为 float64，Python 层 _dtype_str 追踪精确子类型
                 vals = [None if v is None else float(v) for v in self.values]
             elif target == "bool":
                 vals = [None if v is None else bool(v) for v in self.values]
-            elif target == "object":
+            elif target in ("object", "str", "string"):
                 vals = [None if v is None else str(v) for v in self.values]
             elif target == "category":
                 # 转换为 Categorical（Rust 层不支持 category dtype，强制设置 _dtype_str）
@@ -2196,7 +2249,8 @@ class Series:
             # errors == 'ignore': 返回原始 Series
             return self.copy()
 
-        return Series(vals, name=self.name, dtype=target, index=self._index)
+        # 传递规范化后的 dtype 字符串以保留子类型信息（如 int8/uint8/float32）
+        return Series(vals, name=self.name, dtype=dtype_str, index=self._index)
 
     def abs(self) -> _PySeries:
         """返回绝对值 Series。"""
@@ -2346,34 +2400,22 @@ class Series:
     def nlargest(self, n: int = 5, keep: str = "first") -> _PySeries:
         """返回最大的 N 个元素。
 
+        等价于 ``pandas.Series.nlargest``，使用 Rust 稳定排序实现，
+        None/NaN 一律跳过。
+
         :param n: 返回的元素数量
         :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
+        if n < 0:
+            raise ValueError("n must be non-negative")
+        # 调用 Rust 层 arg_top_n 获取原始索引
+        idx_list = list(self._inner.arg_top_n(n, keep, True))
         values = self.values
-        indexed = [(i, v) for i, v in enumerate(values) if v is not None]
-        indexed.sort(key=lambda x: x[1], reverse=True)
-
-        if keep == "first":
-            top = indexed[:n]
-        elif keep == "last":
-            # 反转后取前 n，再反转回来
-            indexed.reverse()
-            top = indexed[:n]
-        elif keep == "all":
-            if len(indexed) <= n:
-                top = indexed
-            else:
-                threshold = indexed[n - 1][1]
-                top = [(i, v) for i, v in indexed if v >= threshold]
+        result_values = [values[i] for i in idx_list]
+        if self._index:
+            result_index = [self._index[i] for i in idx_list]
         else:
-            raise ValueError(f"invalid keep: {keep}")
-
-        if not self._index:
-            result_values = [v for _, v in top]
-            result_index = [i for i, _ in top]
-        else:
-            result_values = [v for _, v in top]
-            result_index = [self._index[i] for i, _ in top]
+            result_index = list(idx_list)
         return Series(
             result_values, name=self.name, dtype=self._dtype_str, index=result_index
         )
@@ -2381,33 +2423,21 @@ class Series:
     def nsmallest(self, n: int = 5, keep: str = "first") -> _PySeries:
         """返回最小的 N 个元素。
 
+        等价于 ``pandas.Series.nsmallest``，使用 Rust 稳定排序实现，
+        None/NaN 一律跳过。
+
         :param n: 返回的元素数量
         :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
+        if n < 0:
+            raise ValueError("n must be non-negative")
+        idx_list = list(self._inner.arg_top_n(n, keep, False))
         values = self.values
-        indexed = [(i, v) for i, v in enumerate(values) if v is not None]
-        indexed.sort(key=lambda x: x[1])
-
-        if keep == "first":
-            top = indexed[:n]
-        elif keep == "last":
-            indexed.reverse()
-            top = indexed[:n]
-        elif keep == "all":
-            if len(indexed) <= n:
-                top = indexed
-            else:
-                threshold = indexed[n - 1][1]
-                top = [(i, v) for i, v in indexed if v <= threshold]
+        result_values = [values[i] for i in idx_list]
+        if self._index:
+            result_index = [self._index[i] for i in idx_list]
         else:
-            raise ValueError(f"invalid keep: {keep}")
-
-        if not self._index:
-            result_values = [v for _, v in top]
-            result_index = [i for i, _ in top]
-        else:
-            result_values = [v for _, v in top]
-            result_index = [self._index[i] for i, _ in top]
+            result_index = list(idx_list)
         return Series(
             result_values, name=self.name, dtype=self._dtype_str, index=result_index
         )
@@ -3610,11 +3640,22 @@ class Series:
         if value is None:
             raise ValueError("Must specify a fill 'value' or 'method'")
 
-        result = self._inner.fillna(value)
+        # 优先 Python 层实现（避免 Rust 层跨边界类型不匹配）
+        # Rust 层 fillna: Int64 列要求 value 为 int，Float64 要求 f64，Object 要求 String
+        # Python 层实现能兼容 value=0.0 等标量，并自动处理 upcasting
+        vals = list(self.values)
+        filled = [value if _is_missing(v) else v for v in vals]
+        # 推断新的 dtype（int 列 + float value → float64）
+        new_dtype = self._dtype_str
+        if new_dtype in ("int8", "int16", "int32", "int64", "int") and isinstance(
+            value, float
+        ):
+            new_dtype = "float64"
         if inplace:
-            self._inner = _PySeries(result, self.name, dtype=self._dtype_str)
+            self._inner = _PySeries(filled, self.name, dtype=new_dtype)
+            self._dtype_str = new_dtype
             return self
-        return Series(result, name=self.name, dtype=self._dtype_str, index=self._index)
+        return Series(filled, name=self.name, dtype=new_dtype, index=self._index)
 
     # ---------- 唯一值 ----------
 
@@ -3911,10 +3952,51 @@ class Series:
         """计算相邻元素的差。
         :param periods: 间隔位数
         """
+        from datetime import datetime as _dt, timedelta as _td
+
         values = self.values
         n = len(values)
+        # 判断是否为 datetime 列（DatetimeSeries 存储为 ISO 字符串）
+        is_datetime = False
+        if values:
+            first_non_none = next((v for v in values if v is not None), None)
+            if isinstance(first_non_none, str):
+                # 尝试解析为 datetime
+                from ._datetime import _parse_iso
+
+                try:
+                    _parse_iso(first_non_none)
+                    is_datetime = True
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(first_non_none, (_dt, _td)):
+                is_datetime = True
+
+        if is_datetime:
+            from ._datetime import _parse_iso
+
+            # 将字符串解析回 datetime/timedelta 对象
+            def _parse_v(v):
+                if v is None:
+                    return None
+                if isinstance(v, _dt):
+                    return v
+                if isinstance(v, _td):
+                    return v
+                try:
+                    return _parse_iso(v)
+                except (ValueError, TypeError):
+                    return None
+
+            parsed = [_parse_v(v) for v in values]
+        else:
+            parsed = values
+
         if periods == 0:
-            out = [0.0 if v is not None else None for v in values]
+            out = [
+                _td(0) if is_datetime else 0.0 if v is not None else None
+                for v in parsed
+            ]
             return Series(out, name=self.name, index=self._index)
         if periods > 0:
             if periods >= n:
@@ -3923,7 +4005,7 @@ class Series:
                 head = [None] * periods
                 tail = [
                     None if a is None or b is None else a - b
-                    for a, b in zip(values[periods:], values[: n - periods])
+                    for a, b in zip(parsed[periods:], parsed[: n - periods])
                 ]
                 out = head + tail
         else:
@@ -3933,9 +4015,18 @@ class Series:
                 tail_pad = [None] * (-periods)
                 head = [
                     None if a is None or b is None else a - b
-                    for a, b in zip(values[: n + periods], values[-periods:])
+                    for a, b in zip(parsed[: n + periods], parsed[-periods:])
                 ]
                 out = head + tail_pad
+        # datetime 列的 diff 返回 timedelta，转换为 pandas 兼容字符串
+        if is_datetime:
+            from .dataframe import _convert_to_basic
+
+            out = [_convert_to_basic(v) if v is not None else None for v in out]
+            result = Series(out, name=self.name, index=self._index)
+            # 标记为 timedelta64[us] dtype（与 pandas 行为一致）
+            result._dtype_str = "timedelta64[us]"
+            return result
         return Series(out, name=self.name, index=self._index)
 
     def pct_change(self, periods: int = 1, fill_method: str = "pad") -> _PySeries:
@@ -5076,11 +5167,8 @@ class Series:
         from datetime import datetime
 
         def _fmt_val(v):
-            """格式化单个值，datetime 去除 00:00:00。"""
+            """格式化单个值，datetime 去除 00:00:00，用空格替代 'T'。"""
             if isinstance(v, datetime):
-                # 如果有 tzinfo，显示完整格式（含时区）
-                if v.tzinfo is not None:
-                    return str(v)
                 # 如果时间部分为 0，只显示日期
                 if (
                     v.hour == 0
@@ -5089,7 +5177,8 @@ class Series:
                     and v.microsecond == 0
                 ):
                     return v.strftime("%Y-%m-%d")
-                return str(v)
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                return v.isoformat().replace("T", " ", 1)
             if v is None:
                 return "NaN"
             if isinstance(v, float) and v != v:

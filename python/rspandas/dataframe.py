@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import rsnumpy as rnp
 
 from .series import Series, _AlignmentResult, _is_missing
@@ -34,13 +36,35 @@ def _convert_to_basic(v: Any) -> Any:
         dt = v._dt
         if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
             return dt.strftime("%Y-%m-%d")
-        return dt.isoformat()
-    # datetime / date -> ISO 字符串
+        # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+        return dt.isoformat().replace("T", " ", 1)
+    # datetime -> ISO 字符串（去除时间部分如果为 00:00:00，用空格替代 'T'）
+    if isinstance(v, datetime):
+        if v.hour == 0 and v.minute == 0 and v.second == 0 and v.microsecond == 0:
+            return v.strftime("%Y-%m-%d")
+        return v.isoformat().replace("T", " ", 1)
+    # date -> ISO 字符串
     if hasattr(v, "isoformat"):
-        return v.isoformat()
+        return v.isoformat().replace("T", " ", 1)
     # numpy 标量 -> Python 标量
     if hasattr(v, "item"):
         return v.item()
+    # timedelta -> 'N days HH:MM:SS.ffffff' 格式（对齐 pandas 显示）
+    if isinstance(v, timedelta):
+        days = v.days
+        total_sec = v.seconds
+        hours = total_sec // 3600
+        minutes = (total_sec % 3600) // 60
+        secs = total_sec % 60
+        us = v.microseconds
+        if us > 0:
+            return f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}.{us:06d}"
+        if hours == 0 and minutes == 0 and secs == 0:
+            return f"{days} days"
+        return f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}"
+    # rspandas.Timedelta 对象
+    if hasattr(v, "_td") and isinstance(getattr(v, "_td", None), timedelta):
+        return _convert_to_basic(v._td)
     # 其他可转换对象 -> str
     return str(v) if v is not None else None
 
@@ -146,7 +170,17 @@ def _to_pylist_columns(data: Any, columns: Optional[List[str]]) -> Dict[str, lis
                 # 对 ndarray 类型，保留 dtype 信息（如 int32 应保持为 int）
                 if hasattr(v, "dtype") and v.dtype is not None:
                     dt_str = str(v.dtype)
-                    if dt_str in ("int32", "int64", "int"):
+                    if dt_str in (
+                        "int8",
+                        "int16",
+                        "int32",
+                        "int64",
+                        "int",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                    ):
                         result[k] = [int(x) for x in v]
                     elif dt_str in ("float32", "float64", "float"):
                         result[k] = [float(x) for x in v]
@@ -391,15 +425,66 @@ class DataFrame:
         if isinstance(data, dict):
             from . import Categorical as _Categorical
             from .series import Series as _Series
+            from . import Timestamp as _Timestamp
 
             for k, v in data.items():
                 if isinstance(v, _Categorical):
                     col_dtype_overrides[str(k)] = "category"
                 elif isinstance(v, _Series):
-                    # 保留 Series 的 dtype 信息（如 float32）
+                    # 保留 Series 的 dtype 信息（如 float32/int8/uint8 等数值子类型）
                     sd = v._dtype_str
-                    if sd in ("float32", "int32", "str"):
+                    if sd in (
+                        "float32",
+                        "int8",
+                        "int16",
+                        "int32",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                        "str",
+                        "bool",
+                        "category",
+                        "datetime64[us]",
+                        "timedelta64[us]",
+                    ):
                         col_dtype_overrides[str(k)] = sd
+                elif isinstance(v, _Timestamp):
+                    # Timestamp 标量：标记为 datetime64[us]
+                    col_dtype_overrides[str(k)] = "datetime64[us]"
+                elif isinstance(v, str):
+                    # str 标量广播：标记为 str（避免被 Rust 层推断为 object）
+                    col_dtype_overrides[str(k)] = "str"
+                elif _is_ndarray(v) and hasattr(v, "dtype"):
+                    # rsnumpy ndarray: 保留数值子类型信息
+                    nd_dt = str(v.dtype)
+                    if nd_dt in (
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                        "int8",
+                        "int16",
+                        "int32",
+                        "float32",
+                    ):
+                        col_dtype_overrides[str(k)] = nd_dt
+                elif (
+                    hasattr(v, "values")
+                    and hasattr(v, "__len__")
+                    and not isinstance(v, str)
+                    and not isinstance(v, (_Series, _Categorical))
+                ):
+                    # 处理 DatetimeSeries 等有 values 属性的可迭代对象
+                    val_dtype = getattr(v, "dtype", None)
+                    if isinstance(val_dtype, str) and val_dtype.startswith(
+                        "datetime64"
+                    ):
+                        col_dtype_overrides[str(k)] = "datetime64[us]"
+                    elif isinstance(val_dtype, str) and val_dtype.startswith(
+                        "timedelta64"
+                    ):
+                        col_dtype_overrides[str(k)] = "timedelta64[us]"
         for c, vs in zip(str_col_names, col_values):
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
             if norm_dtype == "bool":
@@ -466,14 +551,14 @@ class DataFrame:
             raise ValueError(
                 f"new columns length {len(value)} != old {len(self._columns)}"
             )
+        # 将新列名转换为字符串用于 Rust 层（支持 MultiIndex 元组列名）
+        str_value = [str(c) if not isinstance(c, str) else c for c in value]
         # 更新 Rust 端 column 名称 - 通过重命名每个 series
         # MVP 简化: 用 values 重建
         old_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
         new_series = [
-            _PySeries(old_data[c], value[i]) for i, c in enumerate(self._columns)
+            _PySeries(old_data[c], str_value[i]) for i, c in enumerate(self._columns)
         ]
-        # 将新列名转换为字符串用于 Rust 层
-        str_value = [str(c) for c in value]
         self._inner = _PyDataFrame(str_value, new_series)
         self._columns = list(str_value)
         self._raw_columns = list(value)
@@ -620,12 +705,11 @@ class DataFrame:
     @property
     def values(self) -> list:
         """返回 list[dict]，每行一个 dict。"""
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         result = []
         for i in range(self._nrows):
-            row = {}
-            for c in self._columns:
-                ser = self._inner.get_column(c)
-                row[c] = ser.values[i]
+            row = {c: col_cache[c][i] for c in self._columns}
             result.append(row)
         return result
 
@@ -989,33 +1073,33 @@ class DataFrame:
 
     def __neg__(self) -> "DataFrame":
         # 对 bool 列，取负相当于逻辑 NOT
+        # 批量预取列值，消除 M 次 PyO3 跨边界（内层列表推导式不再重复调用 get_column）
+        col_cache = self._cache_columns(self._columns)
         new_data = {}
         for c in self._columns:
-            col = self._inner.get_column(c)
-            if col.dtype == "bool":
-                new_data[c] = [
-                    not bool(v) if v is not None else None for v in col.values
-                ]
+            vals = col_cache[c]
+            if self._inner.get_column(c).dtype == "bool":
+                new_data[c] = [not bool(v) if v is not None else None for v in vals]
             else:
-                new_data[c] = [-v if v is not None else None for v in col.values]
+                new_data[c] = [-v if v is not None else None for v in vals]
         return DataFrame(new_data, index=self._index)
 
     def __invert__(self) -> "DataFrame":
+        # 批量预取列值，消除 M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         new_data = {}
         for c in self._columns:
             new_data[c] = [
-                (not bool(v)) if v is not None else None
-                for v in self._inner.get_column(c).values
+                (not bool(v)) if v is not None else None for v in col_cache[c]
             ]
         return DataFrame(new_data, index=self._index)
 
     def __abs__(self) -> "DataFrame":
+        # 批量预取列值，消除 M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         new_data = {}
         for c in self._columns:
-            new_data[c] = [
-                abs(v) if v is not None else None
-                for v in self._inner.get_column(c).values
-            ]
+            new_data[c] = [abs(v) if v is not None else None for v in col_cache[c]]
         return DataFrame(new_data, index=self._index)
 
     def _apply_arithmetic(
@@ -1468,10 +1552,9 @@ class DataFrame:
             else:
                 start, stop, step = key.indices(self._nrows)
                 idx = list(range(start, stop, step))
-            new_data = {
-                c: [self._inner.get_column(c).values[i] for i in idx]
-                for c in self._columns
-            }
+            # 批量预取列值，消除 M×len(idx) 次 PyO3 跨边界
+            col_cache = self._cache_columns(self._columns)
+            new_data = {c: [col_cache[c][i] for i in idx] for c in self._columns}
             new_index = [self._index[i] for i in idx]
             return DataFrame(new_data, index=new_index)
         raise TypeError(f"Cannot index DataFrame with {type(key).__name__}")
@@ -1495,19 +1578,69 @@ class DataFrame:
         new_index = [self._index[i] for i in range(self._nrows) if mask[i]]
         return DataFrame(new_data, index=new_index)
 
+    def _cache_columns(self, columns: Optional[List[str]] = None) -> Dict[str, list]:
+        """批量预取列值，返回 {列名: list(values)}。
+
+        消除 N×M 次 PyO3 跨边界调用，改为 M 次（每列一次）。
+        所有循环内调用 ``self._inner.get_column(c).values[i]`` 的方法都应先调用本方法。
+        """
+        if columns is None:
+            columns = self._columns
+        return {c: list(self._inner.get_column(c).values) for c in columns}
+
     def _filter_with_dataframe_mask(self, mask_df: "DataFrame") -> "DataFrame":
-        """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 None/NaN。"""
+        """使用 DataFrame 作为布尔掩码过滤。True 保留值，False 置为 NaN。
+
+        pandas 行为：int 列中引入 NaN 时，整列 upcast 为 float64；
+        若无 NaN 引入则保留原 dtype（如 int32）。
+        """
         new_data = {}
+        col_dtype_overrides: Dict[str, str] = {}
         for c in self._columns:
             ser = self._inner.get_column(c)
             values = list(ser.values)
             if c in mask_df._columns:
                 mask_ser = mask_df._inner.get_column(c)
                 mask_values = list(mask_ser.values)
-                new_data[c] = [v if m else None for v, m in zip(values, mask_values)]
+                # True 保留原值，False 置为 NaN（而非 None）
+                import math
+
+                new_vals = [v if m else math.nan for v, m in zip(values, mask_values)]
+                new_data[c] = new_vals
+                # 判断是否引入了 NaN
+                has_nan = any((m is False or m == 0) for m in mask_values)
+                # 获取原 dtype（优先 col_dtypes，其次 Series._dtype_str）
+                orig_dtype = self._col_dtypes.get(c, ser.dtype)
+                if has_nan:
+                    # 引入 NaN 时，整数类型 upcast 为 float64
+                    if orig_dtype in (
+                        "int8",
+                        "int16",
+                        "int32",
+                        "int64",
+                        "int",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                    ):
+                        col_dtype_overrides[c] = "float64"
+                    else:
+                        # 浮点类型保持不变
+                        if orig_dtype in ("float32",):
+                            col_dtype_overrides[c] = "float32"
+                        elif orig_dtype in ("float64", "float"):
+                            col_dtype_overrides[c] = "float64"
+                else:
+                    # 无 NaN 引入：保留原 dtype
+                    if orig_dtype in ("int8", "int16", "int32", "float32"):
+                        col_dtype_overrides[c] = orig_dtype
             else:
                 new_data[c] = values
-        return DataFrame(new_data, index=self._index)
+        new_df = DataFrame(new_data, index=self._index)
+        if col_dtype_overrides:
+            new_df._col_dtypes.update(col_dtype_overrides)
+        return new_df
 
     def __setitem__(self, key, value) -> None:
         """df['new_col'] = values 添加/更新列，或 df[bool_mask] = value 布尔掩码赋值。"""
@@ -1518,6 +1651,11 @@ class DataFrame:
 
         if isinstance(key, list) and all(isinstance(x, bool) for x in key):
             self._setitem_with_list_mask(key, value)
+            return
+
+        # df[['a', 'b']] = value: 按列名列表批量赋值（支持 DataFrame/列表/标量）
+        if isinstance(key, list) and all(isinstance(x, str) for x in key):
+            self._setitem_with_col_list(key, value)
             return
 
         # 原有逻辑：df['col'] = values
@@ -1532,19 +1670,92 @@ class DataFrame:
                     self._col_categories[key] = list(value._categories)
                 elif key in self._col_categories:
                     del self._col_categories[key]
-            elif key in self._col_dtypes:
-                del self._col_dtypes[key]
+            else:
+                # 保留 Series 的 dtype 信息（如 float32/int8 等子类型）
+                # pandas 行为：df['A'] = df['A'].astype('float32') 后 dtype 为 float32
                 if key in self._col_categories:
                     del self._col_categories[key]
+                # 检查 Series 的 _dtype_str 是否有子类型信息
+                series_dtype = getattr(value, "_dtype_str", None)
+                if series_dtype in (
+                    "float32",
+                    "int8",
+                    "int16",
+                    "int32",
+                    "uint8",
+                    "uint16",
+                    "uint32",
+                    "uint64",
+                    "str",
+                    "bool",
+                    "datetime64[us]",
+                    "timedelta64[us]",
+                ):
+                    self._col_dtypes[key] = series_dtype
+                elif key in self._col_dtypes:
+                    # 清除不再适用的 dtype 覆盖
+                    del self._col_dtypes[key]
         elif isinstance(value, _PySeries):
             values = list(value.values)
             if len(values) < self._nrows:
                 values = values + [None] * (self._nrows - len(values))
+        elif _is_ndarray(value):
+            # rsnumpy ndarray: 转换为列表
+            values = list(value)
+            if len(values) < self._nrows:
+                values = values + [None] * (self._nrows - len(values))
+            # 保留 ndarray 的 dtype 子类型信息
+            nd_dtype = str(value.dtype) if hasattr(value, "dtype") else None
+            if nd_dtype in (
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+                "int8",
+                "int16",
+                "int32",
+                "float32",
+            ):
+                self._col_dtypes[key] = nd_dtype
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
+        elif (
+            hasattr(value, "values")
+            and hasattr(value, "__len__")
+            and not isinstance(value, str)
+        ):
+            # 处理 DatetimeSeries 等有 values 属性的可迭代对象
+            values = list(value.values)
+            if len(values) < self._nrows:
+                values = values + [None] * (self._nrows - len(values))
+            # 检测 DatetimeSeries (duck-typing: dtype 属性返回 datetime64)
+            val_dtype = getattr(value, "dtype", None)
+            if isinstance(val_dtype, str) and val_dtype.startswith("datetime64"):
+                self._col_dtypes[key] = "datetime64[us]"
+            elif isinstance(val_dtype, str) and val_dtype.startswith("timedelta64"):
+                self._col_dtypes[key] = "timedelta64[us]"
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
         elif isinstance(value, (list, tuple)):
             values = list(value)
+            if key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
         else:
             # 标量值：广播到所有行
             values = [value] * self._nrows
+            # str 标量：设置 str dtype（避免被 Rust 层推断为 object）
+            if isinstance(value, str):
+                self._col_dtypes[key] = "str"
+            elif key in self._col_dtypes:
+                del self._col_dtypes[key]
+            if key in self._col_categories:
+                del self._col_categories[key]
 
         if len(values) != self._nrows:
             raise ValueError(
@@ -1582,6 +1793,74 @@ class DataFrame:
             self._reload(new_data)
             self._columns.append(key)
             self._raw_columns.append(key)
+
+    def _setitem_with_col_list(self, keys: list, value) -> None:
+        """按列名列表批量赋值（df[['a', 'b']] = other_df 或标量）。
+
+        pandas 行为：按位置（而非列名）将 value 的列分配到 keys。
+        - 若 value 是 DataFrame，按位置取其列值
+        - 若 value 是 Series，广播到所有 keys
+        - 若 value 是 list，要求长度与 keys 相同（每列一个值列表）或与 nrows 相同（广播）
+        """
+        # 收集每列的目标值
+        col_values: Dict[str, list] = {}
+        col_dtype_overrides: Dict[str, str] = {}
+
+        if isinstance(value, DataFrame):
+            # DataFrame: 按位置取列值（而非列名匹配）
+            value_cols = value._columns
+            value_cache = value._cache_columns(value_cols)
+            for i, k in enumerate(keys):
+                if i < len(value_cols):
+                    col_values[k] = list(value_cache[value_cols[i]])
+                    # 继承 dtype 覆盖（如 uint8/float32）
+                    if value_cols[i] in value._col_dtypes:
+                        col_dtype_overrides[k] = value._col_dtypes[value_cols[i]]
+                else:
+                    # value 列不足，用 None 填充
+                    col_values[k] = [None] * self._nrows
+        elif isinstance(value, Series):
+            # Series: 广播到所有 keys
+            vals = list(value.values)
+            if len(vals) < self._nrows:
+                vals = vals + [None] * (self._nrows - len(vals))
+            for k in keys:
+                col_values[k] = list(vals)
+        elif isinstance(value, (list, tuple)):
+            # list: 如果是嵌套列表（长度等于 keys 数量），每元素是一列的值
+            # 否则视为单列值广播到所有 keys
+            if len(value) == len(keys) and all(
+                isinstance(v, (list, tuple)) for v in value
+            ):
+                for i, k in enumerate(keys):
+                    col_values[k] = list(value[i])
+            else:
+                for k in keys:
+                    col_values[k] = list(value)
+        else:
+            # 标量: 广播到所有 keys
+            for k in keys:
+                col_values[k] = [value] * self._nrows
+
+        # 长度校验
+        for k, vs in col_values.items():
+            if len(vs) != self._nrows:
+                raise ValueError(
+                    f"length of values {len(vs)} != length of DataFrame {self._nrows}"
+                )
+
+        # 重建 DataFrame：保留未修改列 + 更新指定列
+        new_data = {c: list(self._inner.get_column(c).values) for c in self._columns}
+        for k, vs in col_values.items():
+            new_data[k] = vs
+            # 新增列：追加到 _columns/_raw_columns
+            if k not in self._columns:
+                self._columns.append(k)
+                self._raw_columns.append(k)
+
+        self._reload(new_data)
+        # 应用 dtype 覆盖（保留子类型信息如 uint8/float32）
+        self._col_dtypes.update(col_dtype_overrides)
 
     def _setitem_with_mask(self, mask_df: "DataFrame", value) -> None:
         """使用布尔 DataFrame 作为掩码进行赋值。"""
@@ -1656,8 +1935,30 @@ class DataFrame:
     def _get_column_as_series(self, name: str) -> Series:
         ser = self._inner.get_column(name)
         if name in self._col_dtypes:
-            s = Series(list(ser.values), name=name, dtype="object", index=self._index)
-            s._dtype_str = self._col_dtypes[name]
+            override = self._col_dtypes[name]
+            vals = list(ser.values)
+            if override == "datetime64[us]":
+                # datetime 列在 Rust 层以字符串存储，这里还原为 datetime 对象
+                from datetime import datetime
+
+                restored = []
+                for v in vals:
+                    if v is None:
+                        restored.append(None)
+                    elif isinstance(v, datetime):
+                        restored.append(v)
+                    else:
+                        try:
+                            restored.append(datetime.fromisoformat(str(v)))
+                        except (ValueError, TypeError):
+                            restored.append(v)
+                s = Series(restored, name=name, dtype="object", index=self._index)
+                s._dtype_str = "datetime64[us]"
+                # 同步 _dt_values 缓存以支持 .dt 访问器
+                s._dt_values = list(restored)
+                return s
+            s = Series(vals, name=name, dtype="object", index=self._index)
+            s._dtype_str = override
             # 恢复 categories
             if name in self._col_categories and self._col_categories[name]:
                 s._categories = list(self._col_categories[name])
@@ -1704,11 +2005,12 @@ class DataFrame:
         :param ignore_index: 是否忽略索引并从 0 开始重新生成
         :param key: 排序键函数或 {列名: 函数} 字典（按列应用，如 ``lambda col: col.str.lower()``）
         """
-        if isinstance(by, str):
+        # by 可为 str、tuple（MultiIndex 列名）或 list
+        if isinstance(by, (str, tuple)):
             by = [by]
         n = self._nrows
 
-        # 每个 by 键可以是「列名」或（MultiIndex 的）「级别名」。
+        # 每个 by 键可以是「列名」「MultiIndex 元组列名」或（索引的）「级别名」。
         # 解析级别名 → 级别位置索引；None 表示来源是列。列名与级别名冲突时列优先。
         level_map: Dict[str, int] = {}
         if self._index_names:
@@ -1716,10 +2018,19 @@ class DataFrame:
                 if nm is not None and nm not in level_map and nm not in self._columns:
                     level_map[nm] = li
 
+        # 构建原始列名（可能为 tuple）→ Rust 层字符串列名 的映射，支持 MultiIndex 元组列名
+        raw_to_col: Dict[Any, str] = {}
+        if len(self._raw_columns) == len(self._columns):
+            for raw, col in zip(self._raw_columns, self._columns):
+                if raw != col:
+                    raw_to_col[raw] = col
+
         # 校验 by 键来源合法性
-        src_by: List[Tuple[str, object]] = []  # [(key, ('col' | 'lvl', srcinfo))]
+        src_by: List[Tuple[Any, object]] = []  # [(key, ('col' | 'lvl', srcinfo))]
         for c in by:
-            if c in self._columns:
+            if c in raw_to_col:
+                src_by.append((c, ("col", raw_to_col[c])))
+            elif c in self._columns:
                 src_by.append((c, ("col", c)))
             elif c in level_map:
                 src_by.append((c, ("lvl", level_map[c])))
@@ -1818,10 +2129,9 @@ class DataFrame:
         except TypeError:
             raise TypeError("cannot sort mixed types")
 
-        new_data = {
-            c: [self._inner.get_column(c).values[i] for i in order]
-            for c in self._columns
-        }
+        # 批量预取列值后按 order 重排（消除 N×M 次 PyO3 跨边界）
+        col_cache = self._cache_columns(self._columns)
+        new_data = {c: [col_cache[c][i] for i in order] for c in self._columns}
         new_index = list(range(n)) if ignore_index else [self._index[i] for i in order]
 
         if inplace:
@@ -1945,13 +2255,20 @@ class DataFrame:
         # 验证 (validate 参数)
         if validate is not None:
             # 简化实现：仅做基本检查
+            # 批量预取键列以消除 N×K 次 PyO3 跨边界调用
+            left_keys_cache = {
+                k: list(self._inner.get_column(k).values) for k in left_keys
+            }
+            right_keys_cache = {
+                k: list(other._inner.get_column(k).values) for k in right_keys
+            }
             left_counts: Dict[tuple, int] = {}
             right_counts: Dict[tuple, int] = {}
             for i in range(self._nrows):
-                key = tuple(self._inner.get_column(k).values[i] for k in left_keys)
+                key = tuple(left_keys_cache[k][i] for k in left_keys)
                 left_counts[key] = left_counts.get(key, 0) + 1
             for i in range(other._nrows):
-                key = tuple(other._inner.get_column(k).values[i] for k in right_keys)
+                key = tuple(right_keys_cache[k][i] for k in right_keys)
                 right_counts[key] = right_counts.get(key, 0) + 1
 
             if validate in ("one_to_one", "1:1"):
@@ -1970,17 +2287,20 @@ class DataFrame:
             # many_to_many / m:m 无需验证
 
         # 构建左侧和右侧的键值对
+        # 批量预取列值，消除 N×(K+C) 次 PyO3 跨边界调用
+        left_cache = self._cache_columns(self._columns)
+        right_cache = other._cache_columns(other._columns)
         left = [
             (
-                tuple(self._inner.get_column(k).values[i] for k in left_keys),
-                {c: self._inner.get_column(c).values[i] for c in self._columns},
+                tuple(left_cache[k][i] for k in left_keys),
+                {c: left_cache[c][i] for c in self._columns},
             )
             for i in range(self._nrows)
         ]
         right = [
             (
-                tuple(other._inner.get_column(k).values[i] for k in right_keys),
-                {c: other._inner.get_column(c).values[i] for c in other._columns},
+                tuple(right_cache[k][i] for k in right_keys),
+                {c: right_cache[c][i] for c in other._columns},
             )
             for i in range(other._nrows)
         ]
@@ -2182,18 +2502,16 @@ class DataFrame:
                     return any(v is not None for v in row_values)
                 raise ValueError(f"invalid how: {how}")
 
-            # 使用列表推导式替代显式 for 循环（保持原行为：空表时不校验 how）
+            # 批量预取列值，消除 N×M 次 PyO3 跨边界
+            col_cache = self._cache_columns(cols_to_check)
             keep_mask = [
-                _keep_row([self._inner.get_column(c).values[i] for c in cols_to_check])
-                for i in range(n)
+                _keep_row([col_cache[c][i] for c in cols_to_check]) for i in range(n)
             ]
 
+            # 同样预取所有列用于重建
+            full_cache = self._cache_columns(self._columns)
             new_data = {
-                c: [
-                    self._inner.get_column(c).values[i]
-                    for i in range(n)
-                    if keep_mask[i]
-                ]
+                c: [full_cache[c][i] for i in range(n) if keep_mask[i]]
                 for c in self._columns
             }
             new_index = [self._index[i] for i in range(n) if keep_mask[i]]
@@ -2264,15 +2582,13 @@ class DataFrame:
                 raise ValueError(f"Unsupported method: {method}")
 
         if isinstance(value, dict):
-            # 按列填充 - 使用字典推导式替代显式 for 循环
+            # 按列填充 - 批量预取列值，消除 M 次 PyO3 跨边界
+            col_cache = self._cache_columns(self._columns)
             new_data: Dict[str, list] = {
                 c: (
-                    list(self._inner.get_column(c).values)
+                    col_cache[c]
                     if value.get(c) is None
-                    else [
-                        value.get(c) if v is None else v
-                        for v in self._inner.get_column(c).values
-                    ]
+                    else [value.get(c) if v is None else v for v in col_cache[c]]
                 )
                 for c in self._columns
             }
@@ -2282,26 +2598,30 @@ class DataFrame:
                 return self
             return DataFrame(new_data, index=self._index)
 
-        # 标量: 对每列单独调用 fillna
+        # 标量: 对每列单独调用 fillna（Python 层实现，避免 Rust 层跨边界类型不匹配）
+        # 注意：Rust 层 _PySeries.fillna 对 Object 列要求 value 必须是字符串，
+        # 对 Int64 列要求 value 必须是整数，此处统一用 Python 实现以兼容 value=0.0 等标量
+        col_cache = self._cache_columns(self._columns)
         if limit is not None:
-            # 限制填充数量 - 保持显式循环（涉及 fill_count 状态）
+            # 限制填充数量 - 显式循环（涉及 fill_count 状态）
             new_data: Dict[str, list] = {}
             for c in self._columns:
-                ser = self._inner.get_column(c)
                 filled_vals = []
                 fill_count = 0
-                for v in ser.values:
-                    if v is None and fill_count < limit:
+                for v in col_cache[c]:
+                    if _is_missing(v) and fill_count < limit:
                         filled_vals.append(value)
                         fill_count += 1
                     else:
                         filled_vals.append(v)
                 new_data[c] = filled_vals
         else:
-            # 无 limit - 使用字典推导式替代显式 for 循环
+            # 无 limit - 使用字典推导式批量填充
+            def _fill_val(v):
+                return value if _is_missing(v) else v
+
             new_data: Dict[str, list] = {
-                c: list(self._inner.get_column(c).fillna(value).values)
-                for c in self._columns
+                c: [_fill_val(v) for v in col_cache[c]] for c in self._columns
             }
 
         if inplace:
@@ -2479,9 +2799,11 @@ class DataFrame:
                     return values
             return Series(values, name=c, index=self._index)
 
-        # 获取行数据
+        # 获取行数据（批量预取列值，消除 N×M 次 PyO3 跨边界）
+        col_cache_for_rows = self._cache_columns(self._columns)
+
         def _get_row_data(i):
-            values = [self._inner.get_column(c).values[i] for c in self._columns]
+            values = [col_cache_for_rows[c][i] for c in self._columns]
             if raw:
                 try:
                     import rsnumpy as rnp
@@ -2735,72 +3057,117 @@ class DataFrame:
         return self.notna()
 
     def nlargest(self, n: int = 5, columns=None, keep: str = "first") -> "DataFrame":
-        """返回最大的 N 行。
+        """返回按 columns 排序后最大的 N 行。
+
+        等价于 ``pandas.DataFrame.nlargest``。单列时调用 Rust 层 ``arg_top_n``
+        以获得 O(n log n) 性能；多列时回退到 Python 稳定排序。
 
         :param n: 返回的行数
         :param columns: 用于排序的列 (str 或 list[str])
-        :param keep: 重复值的保留方式
+        :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
-        if columns is None:
-            columns = self._columns[0] if self._columns else []
-        if isinstance(columns, str):
-            columns = [columns]
-
-        # 按指定列排序 - 使用列表推导式替代显式 for 循环
-        missing = [c for c in columns if c not in self._columns]
-        if missing:
-            raise KeyError(f"column not found: {missing[0]}")
-        sort_keys = [
-            [self._inner.get_column(c).values[i] for i in range(self._nrows)]
-            for c in columns
-        ]
-
-        def key_func(i):
-            return tuple(
-                (1 if sort_keys[j][i] is None else 0, sort_keys[j][i])
-                for j in range(len(columns))
-            )
-
-        order = sorted(range(self._nrows), key=key_func, reverse=True)[:n]
-        new_data = {
-            c: [self._inner.get_column(c).values[i] for i in order]
-            for c in self._columns
-        }
-        return DataFrame(new_data)
+        return self._top_n(n, columns, keep, largest=True)
 
     def nsmallest(self, n: int = 5, columns=None, keep: str = "first") -> "DataFrame":
-        """返回最小的 N 行。
+        """返回按 columns 排序后最小的 N 行。
+
+        等价于 ``pandas.DataFrame.nsmallest``。单列时调用 Rust 层 ``arg_top_n``
+        以获得 O(n log n) 性能；多列时回退到 Python 稳定排序。
 
         :param n: 返回的行数
         :param columns: 用于排序的列 (str 或 list[str])
-        :param keep: 重复值的保留方式
+        :param keep: 重复值的保留方式 ('first' / 'last' / 'all')
         """
+        return self._top_n(n, columns, keep, largest=False)
+
+    def _top_n(self, n: int, columns, keep: str, largest: bool) -> "DataFrame":
+        """nlargest/nsmallest 共用实现。"""
         if columns is None:
             columns = self._columns[0] if self._columns else []
         if isinstance(columns, str):
             columns = [columns]
 
-        # 使用列表推导式替代显式 for 循环
         missing = [c for c in columns if c not in self._columns]
         if missing:
             raise KeyError(f"column not found: {missing[0]}")
-        sort_keys = [
-            [self._inner.get_column(c).values[i] for i in range(self._nrows)]
-            for c in columns
-        ]
 
-        def key_func(i):
-            return tuple(
-                (1 if sort_keys[j][i] is None else 0, sort_keys[j][i])
-                for j in range(len(columns))
+        if n < 0:
+            raise ValueError("n must be non-negative")
+
+        # 单列：直接走 Rust 层 arg_top_n（None/NaN 一律跳过，与 pandas 一致）
+        if len(columns) == 1:
+            col = columns[0]
+            idx_list = list(self._inner.get_column(col).arg_top_n(n, keep, largest))
+            col_cache = self._cache_columns(self._columns)
+            new_data = {c: [col_cache[c][i] for i in idx_list] for c in self._columns}
+            new_index = [self._index[i] for i in idx_list] if self._index else None
+            return DataFrame(new_data, index=new_index)
+
+        # 多列：Python 稳定排序。从最后一列向前依次稳定排序，
+        # 保证前面的列优先级更高。None 始终排最后（pandas 默认 na_position='last'）。
+        col_cache = self._cache_columns(columns)
+        order = list(range(self._nrows))
+
+        # 从最后一列向前稳定排序
+        for c in reversed(columns):
+            vals = col_cache[c]
+            # None 排最后：构造 key = (is_none, value_or_default)
+            # - is_none=0 (有值) 排前；is_none=1 (None) 排后
+            # - value_or_default：有值时取实际值，None 时取 0（不影响，因为先按 is_none 比较）
+            order.sort(
+                key=lambda i, c=c, vals=vals: (
+                    1 if vals[i] is None else 0,
+                    vals[i] if vals[i] is not None else 0,
+                ),
+                reverse=largest,
             )
 
-        order = sorted(range(self._nrows), key=key_func)[:n]
-        new_data = {
-            c: [self._inner.get_column(c).values[i] for i in order]
-            for c in self._columns
-        }
-        return DataFrame(new_data)
+        # reverse=largest 同时反转了 (is_none, value)；
+        # 但我们希望 None 始终排最后（不论升降序），所以反转后再把 None 移到末尾。
+        none_idx = [i for i in order if any(col_cache[c][i] is None for c in columns)]
+        non_none_idx = [i for i in order if i not in set(none_idx)]
+        order = non_none_idx + none_idx
+
+        # keep 处理
+        if keep == "last":
+            # 保持按值升/降序，但对相同 key 内的元素反转顺序
+            # （即相同 key 优先取最后出现的）
+            # 实现：分块反转——遍历 order，将相同 key 的连续段反转
+            if order:
+                reversed_order: list = []
+                i = 0
+                while i < len(order):
+                    j = i
+                    cur_key = tuple(col_cache[c][order[i]] for c in columns)
+                    while (
+                        j < len(order)
+                        and tuple(col_cache[c][order[j]] for c in columns) == cur_key
+                    ):
+                        j += 1
+                    # 反转 [i, j) 段
+                    reversed_order.extend(order[i:j][::-1])
+                    i = j
+                order = reversed_order[:n]
+            else:
+                order = order[:n]
+        elif keep == "all":
+            if len(order) > n:
+                # 阈值：第 n 个值的 key
+                threshold_idx = order[n - 1]
+                threshold_key = tuple(col_cache[c][threshold_idx] for c in columns)
+                order = [
+                    i
+                    for i in order
+                    if tuple(col_cache[c][i] for c in columns) == threshold_key
+                ]
+            # 否则保留全部
+        else:
+            order = order[:n]
+
+        all_cache = self._cache_columns(self._columns)
+        new_data = {c: [all_cache[c][i] for i in order] for c in self._columns}
+        new_index = [self._index[i] for i in order] if self._index else None
+        return DataFrame(new_data, index=new_index)
 
     def corr(self, method: str = "pearson", min_periods: int = 1) -> "DataFrame":
         """计算列之间的相关系数矩阵。
@@ -3421,24 +3788,15 @@ class DataFrame:
         except Exception:
             pass
 
-        # 回退到 Python 实现：使用列表推导式替代显式 for 循环
+        # 回退到 Python 实现：批量预取列值消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         mask = [
-            bool(
-                eval(
-                    expr,
-                    {},
-                    {c: self._inner.get_column(c).values[i] for c in self._columns},
-                )
-            )
+            bool(eval(expr, {}, {c: col_cache[c][i] for c in self._columns}))
             for i in range(self._nrows)
         ]
 
         new_data = {
-            c: [
-                self._inner.get_column(c).values[i]
-                for i in range(self._nrows)
-                if mask[i]
-            ]
+            c: [col_cache[c][i] for i in range(self._nrows) if mask[i]]
             for c in self._columns
         }
         new_index = [self._index[i] for i in range(self._nrows) if mask[i]]
@@ -3735,10 +4093,9 @@ class DataFrame:
         :param dtype: 目标 dtype
         """
         cols = list(self._columns)
-        data = [
-            [self._inner.get_column(c).values[i] for c in cols]
-            for i in range(self._nrows)
-        ]
+        # 批量预取列值消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(cols)
+        data = [[col_cache[c][i] for c in cols] for i in range(self._nrows)]
         return rnp.array(data, dtype=dtype) if dtype else rnp.array(data)
 
     @classmethod
@@ -4995,10 +5352,12 @@ class DataFrame:
                     return False
 
             result = []
+            # 批量预取列值（消除 N×M 次 PyO3 跨边界，改为 M 次）
+            col_cache = self._cache_columns(target_cols)
             for i in range(self._nrows):
                 vals = []
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if _is_missing(v):
                         if not skipna:
                             result.append(None)
@@ -5041,13 +5400,14 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求均值（保留原实现）
+            # 按行求均值（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
                 vals = []
                 has_missing = False
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if v is None or (isinstance(v, float) and v != v):
                         has_missing = True
                     elif isinstance(v, (int, float)):
@@ -5080,13 +5440,14 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求最小值（保留原实现）
+            # 按行求最小值（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
                 vals = []
                 has_missing = False
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if v is None or (isinstance(v, float) and v != v):
                         has_missing = True
                     elif isinstance(v, (int, float)):
@@ -5119,13 +5480,14 @@ class DataFrame:
             or self._inner.get_column(c).dtype in ("int64", "float64")
         ]
         if axis == 1 or axis == "columns":
-            # 按行求最大值（保留原实现）
+            # 按行求最大值（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
                 vals = []
                 has_missing = False
                 for c in target_cols:
-                    v = self._inner.get_column(c).values[i]
+                    v = col_cache[c][i]
                     if v is None or (isinstance(v, float) and v != v):
                         has_missing = True
                     elif isinstance(v, (int, float)):
@@ -5145,12 +5507,13 @@ class DataFrame:
     def count(self, axis: int = 0) -> "Series":
         """按列计数 (非空值)：调用 Rust 列并行实现。"""
         if axis in (1, "columns"):
-            # 按行计数（逐行遍历，提升有限，保留原有风格）
+            # 按行计数（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(self._columns)
             vals = []
             for i in range(self._nrows):
                 c = 0
                 for col in self._columns:
-                    v = self._inner.get_column(col).values[i]
+                    v = col_cache[col][i]
                     if v is not None and not (isinstance(v, float) and v != v):
                         c += 1
                 vals.append(c)
@@ -5187,7 +5550,9 @@ class DataFrame:
                 return False
 
         if axis == 1 or axis == "columns":
-            # 按行求标准差（保留原实现）
+            # 按行求标准差（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
+
             def _std_vals(vals):
                 non_null = [v for v in vals if not _is_missing(v)]
                 if not skipna and len(non_null) < len(vals):
@@ -5200,7 +5565,7 @@ class DataFrame:
 
             result = []
             for i in range(self._nrows):
-                vals = [self._inner.get_column(c).values[i] for c in target_cols]
+                vals = [col_cache[c][i] for c in target_cols]
                 result.append(_std_vals(vals))
             return Series(result, index=self._index)
         # 按列求标准差：一次性调用 Rust 列并行
@@ -5246,10 +5611,11 @@ class DataFrame:
             return sum((v - m) ** 2 for v in non_null) / (len(non_null) - ddof)
 
         if axis == 1 or axis == "columns":
-            # 按行求方差
+            # 按行求方差（批量预取列值，消除 N×M 次 PyO3 跨边界）
+            col_cache = self._cache_columns(target_cols)
             result = []
             for i in range(self._nrows):
-                vals = [self._inner.get_column(c).values[i] for c in target_cols]
+                vals = [col_cache[c][i] for c in target_cols]
                 result.append(_var_vals(vals))
             return Series(result, index=self._index)
         # 按列求方差
@@ -5284,15 +5650,12 @@ class DataFrame:
             for c, v in zip(self._columns, all_vals):
                 result_dict[c] = v
             return Series(result_dict)
-        # axis=1 逐行：用已有 Python 实现（按行开销大但使用频率较低）
+        # axis=1 逐行：批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         return Series(
             {
                 i: any(
-                    v
-                    for v in (
-                        self._inner.get_column(c).values[i] for c in self._columns
-                    )
-                    if v is not None
+                    v for v in (col_cache[c][i] for c in self._columns) if v is not None
                 )
                 for i in range(self._nrows)
             }
@@ -5306,15 +5669,12 @@ class DataFrame:
             for c, v in zip(self._columns, all_vals):
                 result_dict[c] = v
             return Series(result_dict)
-        # axis=1 逐行
+        # axis=1 逐行：批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         return Series(
             {
                 i: all(
-                    v
-                    for v in (
-                        self._inner.get_column(c).values[i] for c in self._columns
-                    )
-                    if v is not None
+                    v for v in (col_cache[c][i] for c in self._columns) if v is not None
                 )
                 for i in range(self._nrows)
             }
@@ -5344,7 +5704,8 @@ class DataFrame:
                     and v.microsecond == 0
                 ):
                     return v.strftime("%Y-%m-%d")
-                return str(v)
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                return v.isoformat().replace("T", " ", 1)
             return str(v)
 
         # 准备每列的字符串化数据
@@ -6508,66 +6869,136 @@ class DataFrame:
     def select_dtypes(self, include=None, exclude=None) -> "DataFrame":
         """根据 dtype 选择列。
 
-        :param include: 要包含的类型 (str / list[str] / type)
-        :param exclude: 要排除的类型 (str / list[str] / type)
+        :param include: 要包含的类型 (str / list[str] / type / numpy dtype)
+        :param exclude: 要排除的类型 (str / list[str] / type / numpy dtype)
         :return: DataFrame
+
+        支持的 dtype 类别（基于 NumPy dtype 层级）：
+
+        - 精确类型: int8/int16/int32/int64, uint8/uint16/uint32/uint64,
+          float16/float32/float64, bool, str, object, category,
+          datetime64[us], timedelta64[us] 等
+        - 泛型类别: number/numeric, integer, signedinteger, unsignedinteger,
+          floating/float, complex/complexfloating, datetime/datetime64,
+          timedelta/timedelta64
+        - Python 类型: bool, int, float, str, complex
+
+        注意: pandas 3.0+ 字符串列使用 str dtype（非 object）。
         """
-        # 类型映射
-        type_map = {
-            "int": "int64",
-            "int64": "int64",
-            "float": "float64",
-            "float64": "float64",
-            "bool": "bool",
-            "object": "object",
-            "string": "object",
-            "str": "object",
-            "number": ("int64", "float64"),
+        if include is None and exclude is None:
+            raise ValueError("at least one of include or exclude must be non-None")
+
+        # NumPy dtype 层级中的类型集合
+        _SIGNED_INT = {"int8", "int16", "int32", "int64", "longlong"}
+        _UNSIGNED_INT = {"uint8", "uint16", "uint32", "uint64", "ulonglong"}
+        _INTEGER = _SIGNED_INT | _UNSIGNED_INT
+        _FLOAT = {"float16", "float32", "float64", "longdouble"}
+        _COMPLEX = {"complex64", "complex128", "clongdouble"}
+        _NUMBER = _INTEGER | _FLOAT | _COMPLEX
+
+        # Python 类型 -> dtype 字符串
+        _PY_TYPE_MAP = {
+            bool: "bool",
+            int: "integer",
+            float: "float",
+            str: "str",
+            complex: "complex",
+            bytes: "bytes",
+            object: "object",
         }
 
-        def _to_dtype_set(types):
-            if types is None:
-                return set()
-            if isinstance(types, str):
-                types = [types]
-            result = set()
-            for t in types:
-                if isinstance(t, type):
-                    if t in (int,):
-                        result.add("int64")
-                    elif t in (float,):
-                        result.add("float64")
-                    elif t in (bool,):
-                        result.add("bool")
-                    elif t in (str,):
-                        result.add("object")
-                elif t in type_map:
-                    mapped = type_map[t]
-                    if isinstance(mapped, tuple):
-                        result.update(mapped)
-                    else:
-                        result.add(mapped)
-                else:
-                    result.add(t)
-            return result
+        def _normalize_criterion(c) -> str:
+            """将单个条件规范化为小写字符串。"""
+            if isinstance(c, str):
+                return c.lower()
+            if isinstance(c, type):
+                # Python 内建类型
+                if c in _PY_TYPE_MAP:
+                    return _PY_TYPE_MAP[c]
+                # numpy 类型对象（如 np.uint8, np.float32, np.number）
+                if hasattr(c, "__name__"):
+                    name = c.__name__.lower()
+                    # np.bool_ -> bool
+                    if name == "bool_":
+                        return "bool"
+                    return name
+                return str(c).lower()
+            # numpy dtype 实例（如 dtype('float32')）
+            if hasattr(c, "name"):
+                return str(c.name).lower()
+            return str(c).lower()
 
-        include_set = _to_dtype_set(include)
-        exclude_set = _to_dtype_set(exclude)
+        def _matches(col_dtype: str, criterion) -> bool:
+            """判断列 dtype 是否匹配单个条件。"""
+            crit = _normalize_criterion(criterion)
+            # 精确匹配
+            if col_dtype == crit:
+                return True
+            # 泛型类别匹配
+            if crit in ("number", "numeric"):
+                return col_dtype in _NUMBER
+            if crit == "integer":
+                return col_dtype in _INTEGER
+            if crit == "signedinteger":
+                return col_dtype in _SIGNED_INT
+            if crit == "unsignedinteger":
+                return col_dtype in _UNSIGNED_INT
+            if crit in ("floating", "float"):
+                return col_dtype in _FLOAT
+            if crit in ("complex", "complexfloating"):
+                return col_dtype in _COMPLEX
+            if crit in ("datetime", "datetime64"):
+                return col_dtype.startswith("datetime64")
+            if crit in ("timedelta", "timedelta64"):
+                return col_dtype.startswith("timedelta64")
+            if crit == "bool":
+                return col_dtype == "bool"
+            if crit == "object":
+                return col_dtype == "object"
+            if crit in ("str", "string"):
+                return col_dtype in ("str", "string")
+            if crit == "category":
+                return col_dtype == "category"
+            return False
 
-        def _match(c):
+        def _normalize_criteria(criteria) -> list:
+            """将 include/exclude 参数规范化为列表。"""
+            if criteria is None:
+                return []
+            if isinstance(criteria, (str, type)):
+                return [criteria]
+            return list(criteria)
+
+        include_list = _normalize_criteria(include)
+        exclude_list = _normalize_criteria(exclude)
+
+        # 获取每列的实际 dtype（复用 dtypes 属性逻辑，含子类型推断）
+        col_dtype_map = dict(zip(self._columns, list(self.dtypes.values)))
+
+        def _col_matches(c: str) -> bool:
             """判断单列是否匹配 include/exclude 条件。"""
-            dt = self._inner.get_column(c).dtype
-            if include_set and dt not in include_set:
+            col_dt = col_dtype_map[c]
+            # include: 若指定，列必须匹配至少一个 include 条件
+            if include_list and not any(
+                _matches(col_dt, crit) for crit in include_list
+            ):
                 return False
-            if exclude_set and dt in exclude_set:
+            # exclude: 列不能匹配任何 exclude 条件
+            if exclude_list and any(_matches(col_dt, crit) for crit in exclude_list):
                 return False
             return True
 
-        # 使用列表推导式 + 辅助函数替代显式 for 循环
-        cols = [c for c in self._columns if _match(c)]
+        # 使用列表推导式 + 辅助函数筛选列
+        cols = [c for c in self._columns if _col_matches(c)]
 
+        # 构建结果 DataFrame，保留索引和 dtype 覆盖信息
         new_data = {c: list(self._inner.get_column(c).values) for c in cols}
-        return DataFrame(new_data)
+        new_df = DataFrame(new_data, index=self._index)
+        new_df._col_dtypes = {k: v for k, v in self._col_dtypes.items() if k in cols}
+        new_df._col_categories = {
+            k: v for k, v in self._col_categories.items() if k in cols
+        }
+        return new_df
 
     # ---------- v2.0.0: swapaxes / take / xs / get / lookup ----------
 
@@ -6588,13 +7019,16 @@ class DataFrame:
         from datetime import datetime
 
         n = self._nrows
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         # 使用字典推导式替代显式 for 循环：每行变成一列
         # 列名使用原始索引值（datetime 去除 00:00:00）
 
         def _fmt_idx(v):
             if isinstance(v, datetime):
                 if v.tzinfo is not None:
-                    return str(v)
+                    # 带时区的 datetime：用空格替代 'T'
+                    return v.isoformat().replace("T", " ", 1)
                 if (
                     v.hour == 0
                     and v.minute == 0
@@ -6602,13 +7036,12 @@ class DataFrame:
                     and v.microsecond == 0
                 ):
                     return v.strftime("%Y-%m-%d")
-                return str(v)
+                # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                return v.isoformat().replace("T", " ", 1)
             return str(v)
 
         new_data: Dict[str, list] = {
-            _fmt_idx(self._index[i]): [
-                self._inner.get_column(c).values[i] for c in self._columns
-            ]
+            _fmt_idx(self._index[i]): [col_cache[c][i] for c in self._columns]
             for i in range(n)
         }
         result = DataFrame(new_data)
@@ -6627,10 +7060,9 @@ class DataFrame:
             if isinstance(indices, int):
                 indices = [indices]
             self._validate_indices(indices)
-            new_data = {
-                c: [self._inner.get_column(c).values[i] for i in indices]
-                for c in self._columns
-            }
+            # 批量预取列值，消除 M×len(indices) 次 PyO3 跨边界
+            col_cache = self._cache_columns(self._columns)
+            new_data = {c: [col_cache[c][i] for i in indices] for c in self._columns}
             return DataFrame(new_data)
         else:
             if isinstance(indices, int):
@@ -7862,27 +8294,72 @@ class DataFrame:
             try_cast=try_cast,
         )
 
-    def astype(self, dtype: str) -> "DataFrame":
+    def astype(self, dtype, copy: bool = True, errors: str = "raise") -> "DataFrame":
         """转换每列的数据类型。
 
-        :param dtype: 目标类型 (如 'int64'/'float64'/'object'/'bool')
+        :param dtype: 目标类型 (str/type 对象/numpy dtype/字典 {列名: 类型})
+        :param copy: 是否复制数据 (默认 True)
+        :param errors: 错误处理 ('raise' 或 'ignore')
         """
+        from .series import _dtype_to_str
+
+        new_data: Dict[str, list] = {}
+        # 收集每列的 dtype 覆盖（如 float32/int8/uint8 等子类型信息）
+        col_dtype_overrides: Dict[str, str] = {}
+
         if isinstance(dtype, dict):
-            new_data = {}
+            # 字典形式：{列名: 目标类型}，未指定的列保持原值
             for c in self._columns:
-                target = dtype.get(c, None)
+                target = dtype.get(c)
                 if target is None:
                     new_data[c] = list(self._inner.get_column(c).values)
                 else:
                     ser = self._get_column_as_series(c)
-                    new_data[c] = list(ser.astype(target).values)
-            return DataFrame(new_data)
+                    converted = ser.astype(target, copy=copy, errors=errors)
+                    new_data[c] = list(converted.values)
+                    # 保留 dtype 子类型信息（如 uint8/float32/bool）
+                    target_str = _dtype_to_str(target).lower()
+                    if target_str in (
+                        "float32",
+                        "int8",
+                        "int16",
+                        "int32",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                        "str",
+                        "bool",
+                    ):
+                        col_dtype_overrides[c] = target_str
         else:
-            new_data = {}
+            # 标量形式：所有列统一转换
             for c in self._columns:
                 ser = self._get_column_as_series(c)
-                new_data[c] = list(ser.astype(dtype).values)
-            return DataFrame(new_data)
+                converted = ser.astype(dtype, copy=copy, errors=errors)
+                new_data[c] = list(converted.values)
+            # 统一 dtype 覆盖
+            target_str = _dtype_to_str(dtype).lower()
+            if target_str in (
+                "float32",
+                "int8",
+                "int16",
+                "int32",
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+                "str",
+                "bool",
+            ):
+                for c in self._columns:
+                    col_dtype_overrides[c] = target_str
+
+        new_df = DataFrame(new_data)
+        # 应用 dtype 覆盖以保留子类型信息
+        if col_dtype_overrides:
+            new_df._col_dtypes.update(col_dtype_overrides)
+        return new_df
 
     # ---------- v2.0.0: 概览 ----------
 
@@ -8166,7 +8643,8 @@ class DataFrame:
 
         :param index: 是否包含索引
         """
-        # 使用列表推导式替代显式 for 循环
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         return [
             {
                 **(
@@ -8180,7 +8658,7 @@ class DataFrame:
                     if index
                     else {}
                 ),
-                **{c: self._inner.get_column(c).values[i] for c in self._columns},
+                **{c: col_cache[c][i] for c in self._columns},
             }
             for i in range(self._nrows)
         ]
@@ -8191,6 +8669,8 @@ class DataFrame:
         :param index: 是否显示索引
         :param header: 是否显示列名
         """
+        # 批量预取列值，消除 N×M 次 PyO3 跨边界
+        col_cache = self._cache_columns(self._columns)
         lines = []
         if header:
             cols = [""] + list(self._columns) if index else list(self._columns)
@@ -8202,7 +8682,7 @@ class DataFrame:
                     str(self._index[i] if self._index and i < len(self._index) else i)
                 )
             for c in self._columns:
-                v = self._inner.get_column(c).values[i]
+                v = col_cache[c][i]
                 row.append(str(v) if v is not None else "NaN")
             lines.append("  ".join(row))
         return "\n".join(lines)
@@ -11088,6 +11568,51 @@ class _LocIndexer(_IndexerBase):
                     new_data[col_key][row_idx] = (
                         values[i] if i < len(values) else values[0]
                     )
+            self._df._reload_inplace(new_data)
+        elif isinstance(col_key, list) and all(isinstance(x, str) for x in col_key):
+            # df.loc[:, ["a", "b"]] = value  (对指定列列表赋值，保留原 dtype)
+            # pandas 行为：loc 赋值会尽量适配现有 dtype，不改变列的 dtype
+            # value 可以是 DataFrame（按位置取列）或标量/列表
+            if isinstance(value, DataFrame):
+                value_cols = value._columns
+                value_cache = value._cache_columns(value_cols)
+                new_data = {c: list(self._df[c].values) for c in self._df._columns}
+                for i, col_name in enumerate(col_key):
+                    if col_name not in new_data:
+                        new_data[col_name] = [None] * self._df._nrows
+                        self._df._columns.append(col_name)
+                        self._df._raw_columns.append(col_name)
+                    if i < len(value_cols):
+                        src_vals = list(value_cache[value_cols[i]])
+                        # 按行索引赋值（row_indices 为空表示全行）
+                        if row_indices:
+                            for j, row_idx in enumerate(row_indices):
+                                if row_idx < len(new_data[col_name]):
+                                    new_data[col_name][row_idx] = (
+                                        src_vals[j]
+                                        if j < len(src_vals)
+                                        else src_vals[0]
+                                    )
+                        else:
+                            new_data[col_name] = src_vals
+            else:
+                # 标量或列表：广播到指定列
+                values = (
+                    list(value)
+                    if hasattr(value, "__iter__") and not isinstance(value, str)
+                    else [value] * len(row_indices)
+                )
+                new_data = {c: list(self._df[c].values) for c in self._df._columns}
+                for col_name in col_key:
+                    if col_name not in new_data:
+                        new_data[col_name] = [None] * self._df._nrows
+                        self._df._columns.append(col_name)
+                        self._df._raw_columns.append(col_name)
+                    for i, row_idx in enumerate(row_indices):
+                        if row_idx < len(new_data[col_name]):
+                            new_data[col_name][row_idx] = (
+                                values[i] if i < len(values) else values[0]
+                            )
             self._df._reload_inplace(new_data)
         elif (
             isinstance(col_key, slice)

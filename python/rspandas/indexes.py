@@ -121,7 +121,8 @@ class Index:
                 ):
                     data_strs.append(repr(v.strftime("%Y-%m-%d")))
                 else:
-                    data_strs.append(repr(str(v)))
+                    # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                    data_strs.append(repr(v.isoformat().replace("T", " ", 1)))
             else:
                 data_strs.append(repr(v))
         if len(data_strs) <= 6:
@@ -1523,7 +1524,10 @@ class DatetimeIndex(Index):
         # 格式化 date 值：显示为 '2013-01-01' 格式
         date_strs = []
         for v in self._data:
-            if isinstance(v, datetime):
+            if v is None:
+                # pandas: 缺失值显示为 NaT
+                date_strs.append("NaT")
+            elif isinstance(v, datetime):
                 if (
                     v.hour == 0
                     and v.minute == 0
@@ -1532,7 +1536,8 @@ class DatetimeIndex(Index):
                 ):
                     date_strs.append(repr(v.strftime("%Y-%m-%d")))
                 else:
-                    date_strs.append(repr(str(v)))
+                    # 用空格替代 ISO 默认的 'T'，与 pandas 显示一致
+                    date_strs.append(repr(v.isoformat().replace("T", " ", 1)))
             else:
                 date_strs.append(repr(v))
         # 多行显示（每行最多 4 个值，对齐 pandas 行为）
@@ -1799,8 +1804,31 @@ class TimedeltaIndex(Index):
         )
 
     def __repr__(self) -> str:
+        # 格式化每个 timedelta 为 'N days HH:MM:SS.ffffff'（对齐 pandas 显示）
+        def _fmt_td(v):
+            if v is None:
+                # pandas: 缺失值显示为 NaT
+                return "NaT"
+            if not isinstance(v, timedelta):
+                return repr(v)
+            days = v.days
+            total_sec = v.seconds
+            hours = total_sec // 3600
+            minutes = (total_sec % 3600) // 60
+            secs = total_sec % 60
+            us = v.microseconds
+            if us > 0:
+                return repr(
+                    f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}.{us:06d}"
+                )
+            return repr(f"{days} days {hours:02d}:{minutes:02d}:{secs:02d}")
+
+        strs = [_fmt_td(v) for v in self._data]
         name = f", name='{self._name}'" if self._name else ""
-        return f"TimedeltaIndex({self._data}{name})"
+        return (
+            f"TimedeltaIndex([{', '.join(strs)}]{name}, "
+            f"dtype='timedelta64[us]', freq=None)"
+        )
 
     def __len__(self) -> int:
         return len(self._data)
