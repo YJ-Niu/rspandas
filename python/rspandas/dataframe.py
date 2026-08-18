@@ -5090,7 +5090,7 @@ class DataFrame:
     def info(self) -> None:
         nrows = self._nrows
         ncols = len(self._columns)
-        print("<class 'pandas.DataFrame'>")
+        print("<class 'rspandas.DataFrame'>")
         print(f"RangeIndex: {nrows} entries, 0 to {nrows - 1}")
         print(f"Data columns (total {ncols} columns):")
         col_width = 15

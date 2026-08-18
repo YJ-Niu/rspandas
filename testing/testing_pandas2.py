@@ -1,7 +1,7 @@
 import time
 start_time = time.time()
 from functools import partial  # noqa: E402
-
+import datetime  # noqa: E402
 import numpy as np  # noqa: E402
 from collections import namedtuple  # noqa: E402
 from dataclasses import make_dataclass  # noqa: E402
@@ -521,5 +521,210 @@ print_series(260, df2)
 print_series(261, df2.T)
 df2_t = pd.DataFrame({idx: values for idx, values in df2.iterrows()})
 print_series(262, df2_t)
+for row in df.itertuples():
+    print(row)
+s = pd.Series(pd.date_range("20130101 09:10:12", periods=4))
+print_series(263, s)
+print_series(264, s.dt.hour)
+print_series(265, s.dt.second)
+print_series(266, s.dt.day)
+print_series(267, s[s.dt.day == 2])
+stz = s.dt.tz_localize("US/Eastern")
+print_series(268, stz)
+print_series(269, stz.dt.tz)
+print_series(270, s.dt.tz_localize("UTC").dt.tz_convert("US/Eastern"))
 end_time = time.time()
+s = pd.Series(pd.date_range("20130101", periods=4))
+print_series(271, s)
+print_series(272, s.dt.strftime("%Y/%m/%d"))
+s = pd.Series(pd.period_range("20130101", periods=4))
+print_series(273, s)
+print_series(274, s.dt.strftime("%Y-%m-%d"))
+s = pd.Series(pd.period_range("20130101", periods=4, freq="D"))
+print_series(275, s)
+print_series(276, s.dt.year)
+print_series(277, s.dt.day)
+s = pd.Series(pd.timedelta_range("1 day 00:00:05", periods=4, freq="s"))
+print_series(278, s)
+print_series(279, s.dt.days)
+print_series(280, s.dt.seconds)
+print_series(281, s.dt.components)
+s = pd.Series(
+    ["A", "B", "C", "Aaba", "Baca", np.nan, "CABA", "dog", "cat"], dtype="string"
+)
+print_series(282, s.str.lower())
+df = pd.DataFrame(
+    {
+        "one": pd.Series(np.random.randn(3), index=["a", "b", "c"]),
+        "two": pd.Series(np.random.randn(4), index=["a", "b", "c", "d"]),
+        "three": pd.Series(np.random.randn(3), index=["b", "c", "d"]),
+    }
+)
+unsorted_df = df.reindex(
+    index=["a", "d", "c", "b"], columns=["three", "two", "one"]
+)
+print_series(283, unsorted_df)
+print_series(284, unsorted_df.sort_index())
+print_series(285, unsorted_df.sort_index(ascending=False))
+print_series(286, unsorted_df.sort_index(axis=1))
+print_series(287, unsorted_df["three"].sort_index())
+s1 = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3], "c": [2, 3, 4]}).set_index(
+    list("ab")
+)
+print_series(288, s1)
+print_series(289, s1.sort_index(level="a"))
+print_series(290, s1.sort_index(level="a", key=lambda idx: idx.str.lower()))
+df1 = pd.DataFrame(
+    {"one": [2, 1, 1, 1], "two": [1, 3, 2, 4], "three": [5, 4, 3, 2]}
+)
+print_series(291, df1.sort_values(by="two"))
+print_series(292, df1[["one", "two", "three"]].sort_values(by=["one", "two"]))
+s[2] = np.nan
+print_series(293, s.sort_values())
+print_series(294, s.sort_values(na_position="first"))
+s1 = pd.Series(["B", "a", "C"])
+print_series(295, s1.sort_values())
+print_series(296, s1.sort_values(key=lambda x: x.str.lower()))
+df = pd.DataFrame({"a": ["B", "a", "C"], "b": [1, 2, 3]})
+print_series(297, df.sort_values(by="a"))
+print_series(298, df.sort_values(by="a", key=lambda col: col.str.lower()))
+idx = pd.MultiIndex.from_tuples(
+    [("a", 1), ("a", 2), ("a", 2), ("b", 2), ("b", 1), ("b", 1)]
+)
+idx.names = ["first", "second"]
+df_multi = pd.DataFrame({"A": np.arange(6, 0, -1)}, index=idx)
+print_series(299, df_multi)
+print_series(300, df_multi.sort_values(by=["second", "A"]))
+ser = pd.Series([1, 2, 3])
+print_series(301, ser.searchsorted([0, 3]))
+print_series(302, ser.searchsorted([0, 4]))
+print_series(303, ser.searchsorted([1, 3], side="right"))
+print_series(304, ser.searchsorted([1, 3], side="left"))
+ser = pd.Series([3, 1, 2])
+print_series(305, ser.searchsorted([0, 3], sorter=np.argsort(ser)))
+s = pd.Series(np.random.permutation(10))
+print_series(306, s)
+print_series(307, s.sort_values())
+print_series(308, s.nsmallest(3))
+print_series(309, s.nlargest(3))
+df = pd.DataFrame(
+    {
+        "a": [-2, -1, 1, 10, 8, 11, -1],
+        "b": list("abdceff"),
+        "c": [1.0, 2.0, 4.0, 3.2, np.nan, 3.0, 4.0],
+    }
+)
+print_series(310, df.nlargest(3, "a"))
+print_series(311, df.nlargest(5, ["a", "c"]))
+print_series(312, df.nsmallest(3, "a"))
+print_series(313, df.nsmallest(5, ["a", "c"]))
+df1.columns = pd.MultiIndex.from_tuples(
+    [("a", "one"), ("a", "two"), ("b", "three")]
+)
+print_series(314, df1.sort_values(by=("a", "two")))
+dft = pd.DataFrame(
+    {
+        "A": np.random.rand(3),
+        "B": 1,
+        "C": "foo",
+        "D": pd.Timestamp("20010102"),
+        "E": pd.Series([1.0] * 3).astype("float32"),
+        "F": False,
+        "G": pd.Series([1] * 3, dtype="int8"),
+    }
+)
+print_series(315, dft)
+print_series(316, dft.dtypes)
+print_series(317, dft["A"].dtype)
+print_series(318, pd.Series([1, 2, 3, 4, 5, 6.0]))
+print_series(319, pd.Series([1, 2, 3, 6.0, "foo"]))
+print_series(320, dft.dtypes.value_counts())
+df1 = pd.DataFrame(np.random.randn(8, 1), columns=["A"], dtype="float64")
+print_series(321, df1)
+print_series(322, df1.dtypes)
+df2 = pd.DataFrame(
+    {
+        "A": pd.Series(np.random.randn(8), dtype="float32"),
+        "B": pd.Series(np.random.randn(8)),
+        "C": pd.Series(np.random.randint(0, 255, size=8), dtype="uint8"),  # [0,255] (range of uint8)
+    }
+)
+print_series(323, df2)
+print_series(324, df2.dtypes)
+print_series(325, pd.DataFrame([1, 2], columns=["a"]).dtypes)
+print_series(326, pd.DataFrame({"a": [1, 2]}).dtypes)
+print_series(327, pd.DataFrame({"a": 1}, index=list(range(2))).dtypes)
+frame = pd.DataFrame(np.array([1, 2]))
+print_series(328, frame)
+df3 = df1.reindex_like(df2).fillna(value=0.0) + df2
+print_series(329, df3)
+print_series(330, df3.dtypes)
+print_series(331, df3.to_numpy().dtype)
+print_series(332, df3.astype("float32").dtypes)
+df = pd.DataFrame(
+    [
+        [1, 2],
+        ["a", "b"],
+        [datetime.datetime(2016, 3, 2), datetime.datetime(2016, 3, 2)],
+    ]
+)
+df = df.T
+print_series(333, df)
+print_series(334, df.dtypes)
+print_series(335, df.infer_objects().dtypes)
+print_series(335, df.infer_objects())
+m = ["1.1", 2, 3]
+print_series(336, pd.to_numeric(m))
+m = ["2016-07-09", datetime.datetime(2016, 3, 2)]
+print_series(337, pd.to_datetime(m))
+m = ["5us", pd.Timedelta("1day")]
+print_series(338, pd.to_timedelta(m))
+m = ["apple", datetime.datetime(2016, 3, 2)]
+print_series(339, pd.to_datetime(m, errors="coerce"))
+m = ["apple", 2, 3]
+print_series(340, pd.to_numeric(m, errors="coerce"))
+m = ["apple", pd.Timedelta("1day")]
+print_series(341, pd.to_timedelta(m, errors="coerce"))
+m = ["1", 2, 3]
+print_series(342, pd.to_numeric(m, downcast="integer"))
+print_series(343, pd.to_numeric(m, downcast="signed"))
+print_series(344, pd.to_numeric(m, downcast="unsigned"))
+print_series(345, pd.to_numeric(m, downcast="float"))
+df = pd.DataFrame([["2016-07-09", datetime.datetime(2016, 3, 2)]] * 2, dtype="O")
+print_series(346, df)
+print_series(347, df.apply(pd.to_datetime))
+df = pd.DataFrame([["1.1", 2, 3]] * 2, dtype="O")
+print_series(348, df)
+print_series(349, df.apply(pd.to_numeric))
+df = pd.DataFrame([["5us", pd.Timedelta("1day")]] * 2, dtype="O")
+print_series(350, df)
+print_series(351, df.apply(pd.to_timedelta))
+dfi = df3.astype("int32")
+dfi["E"] = 1
+print_series(352, dfi)
+print_series(353, dfi.dtypes)
+casted = dfi[dfi > 0]
+print_series(354, casted)
+print_series(355, casted.dtypes)
+dfa = df3.copy()
+dfa["A"] = dfa["A"].astype("float32")
+print_series(356, dfa.dtypes)
+df = pd.DataFrame(
+    {
+        "string": list("abc"),
+        "int64": list(range(1, 4)),
+        "uint8": np.arange(3, 6).astype("u1"),
+        "float64": np.arange(4.0, 7.0),
+        "bool1": [True, False, True],
+        "bool2": [False, True, False],
+        "dates": pd.date_range("now", periods=3),
+        "category": pd.Series(list("ABC")).astype("category"),
+    }
+)
+df["tdeltas"] = df.dates.diff()
+df["uint64"] = np.arange(3, 6).astype("u8")
+df["other_dates"] = pd.date_range("20130101", periods=3)
+df["tz_aware_dates"] = pd.date_range("20130101", periods=3, tz="US/Eastern")
+print_series(357, df)
+print_series(358, df.dtypes)
 print("end_time - start_time:", end_time - start_time)
