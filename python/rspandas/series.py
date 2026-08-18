@@ -444,8 +444,22 @@ class Series:
                 self._dtype_str = "category"
             elif nd in ("str", "string"):
                 self._dtype_str = "str"
-            elif nd in ("float32", "float64", "float"):
-                # 保留显式指定的 float 子类型（对齐 pandas 行为）
+            elif nd in (
+                "float32",
+                "float64",
+                "float",
+                "int8",
+                "int16",
+                "int32",
+                "int64",
+                "int",
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+            ):
+                # 保留显式指定的数值子类型（对齐 pandas 行为）
+                # Rust 层仅支持 int64/float64，但 Python 层 _dtype_str 追踪精确子类型
                 self._dtype_str = nd
             elif nd.startswith("period["):
                 # 保留 period[freq] 格式（与 pandas 一致）
@@ -2175,13 +2189,25 @@ class Series:
 
         vals = []
         try:
-            if target == "int64":
+            if target in (
+                "int8",
+                "int16",
+                "int32",
+                "int64",
+                "int",
+                "uint8",
+                "uint16",
+                "uint32",
+                "uint64",
+            ):
+                # 整数族：Rust 层统一存储为 int64，Python 层 _dtype_str 追踪精确子类型
                 vals = [None if v is None else int(v) for v in self.values]
-            elif target == "float64":
+            elif target in ("float32", "float64", "float"):
+                # 浮点族：Rust 层统一存储为 float64，Python 层 _dtype_str 追踪精确子类型
                 vals = [None if v is None else float(v) for v in self.values]
             elif target == "bool":
                 vals = [None if v is None else bool(v) for v in self.values]
-            elif target == "object":
+            elif target in ("object", "str", "string"):
                 vals = [None if v is None else str(v) for v in self.values]
             elif target == "category":
                 # 转换为 Categorical（Rust 层不支持 category dtype，强制设置 _dtype_str）
@@ -2196,7 +2222,8 @@ class Series:
             # errors == 'ignore': 返回原始 Series
             return self.copy()
 
-        return Series(vals, name=self.name, dtype=target, index=self._index)
+        # 传递原始 dtype 字符串以保留子类型信息（如 int8/uint8/float32）
+        return Series(vals, name=self.name, dtype=dtype, index=self._index)
 
     def abs(self) -> _PySeries:
         """返回绝对值 Series。"""

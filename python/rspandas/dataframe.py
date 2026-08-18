@@ -391,15 +391,32 @@ class DataFrame:
         if isinstance(data, dict):
             from . import Categorical as _Categorical
             from .series import Series as _Series
+            from . import Timestamp as _Timestamp
 
             for k, v in data.items():
                 if isinstance(v, _Categorical):
                     col_dtype_overrides[str(k)] = "category"
                 elif isinstance(v, _Series):
-                    # 保留 Series 的 dtype 信息（如 float32）
+                    # 保留 Series 的 dtype 信息（如 float32/int8/uint8 等数值子类型）
                     sd = v._dtype_str
-                    if sd in ("float32", "int32", "str"):
+                    if sd in (
+                        "float32",
+                        "int8",
+                        "int16",
+                        "int32",
+                        "uint8",
+                        "uint16",
+                        "uint32",
+                        "uint64",
+                        "str",
+                    ):
                         col_dtype_overrides[str(k)] = sd
+                elif isinstance(v, _Timestamp):
+                    # Timestamp 标量：标记为 datetime64[us]
+                    col_dtype_overrides[str(k)] = "datetime64[us]"
+                elif isinstance(v, str):
+                    # str 标量广播：标记为 str（避免被 Rust 层推断为 object）
+                    col_dtype_overrides[str(k)] = "str"
         for c, vs in zip(str_col_names, col_values):
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
             if norm_dtype == "bool":
@@ -1664,8 +1681,30 @@ class DataFrame:
     def _get_column_as_series(self, name: str) -> Series:
         ser = self._inner.get_column(name)
         if name in self._col_dtypes:
-            s = Series(list(ser.values), name=name, dtype="object", index=self._index)
-            s._dtype_str = self._col_dtypes[name]
+            override = self._col_dtypes[name]
+            vals = list(ser.values)
+            if override == "datetime64[us]":
+                # datetime 列在 Rust 层以字符串存储，这里还原为 datetime 对象
+                from datetime import datetime
+
+                restored = []
+                for v in vals:
+                    if v is None:
+                        restored.append(None)
+                    elif isinstance(v, datetime):
+                        restored.append(v)
+                    else:
+                        try:
+                            restored.append(datetime.fromisoformat(str(v)))
+                        except (ValueError, TypeError):
+                            restored.append(v)
+                s = Series(restored, name=name, dtype="object", index=self._index)
+                s._dtype_str = "datetime64[us]"
+                # 同步 _dt_values 缓存以支持 .dt 访问器
+                s._dt_values = list(restored)
+                return s
+            s = Series(vals, name=name, dtype="object", index=self._index)
+            s._dtype_str = override
             # 恢复 categories
             if name in self._col_categories and self._col_categories[name]:
                 s._categories = list(self._col_categories[name])

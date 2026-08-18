@@ -634,4 +634,29 @@ dft = pd.DataFrame(
     }
 )
 print_series(315, dft)
+print_series(316, dft.dtypes)
+print_series(317, dft["A"].dtype)
+print_series(318, pd.Series([1, 2, 3, 4, 5, 6.0]))
+print_series(319, pd.Series([1, 2, 3, 6.0, "foo"]))
+print_series(320, dft.dtypes.value_counts())
+df1 = pd.DataFrame(np.random.randn(8, 1), columns=["A"], dtype="float64")
+print_series(321, df1)
+print_series(322, df1.dtypes)
+df2 = pd.DataFrame(
+    {
+        "A": pd.Series(np.random.randn(8), dtype="float32"),
+        "B": pd.Series(np.random.randn(8)),
+        "C": pd.Series(np.random.randint(0, 255, size=8), dtype="uint8"),  # [0,255] (range of uint8)
+    }
+)
+print_series(323, df2)
+print_series(324, df2.dtypes)
+print_series(325, pd.DataFrame([1, 2], columns=["a"]).dtypes)
+print_series(326, pd.DataFrame({"a": [1, 2]}).dtypes)
+print_series(327, pd.DataFrame({"a": 1}, index=list(range(2))).dtypes)
+frame = pd.DataFrame(np.array([1, 2]))
+print_series(328, frame)
+df3 = df1.reindex_like(df2).fillna(value=0.0) + df2
+print_series(329, df3)
+print_series(330, df3.dtypes)
 print("end_time - start_time:", end_time - start_time)
