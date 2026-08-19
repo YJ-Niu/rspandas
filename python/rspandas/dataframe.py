@@ -242,6 +242,9 @@ class DataFrame:
                             has_other = True
                         else:
                             has_other = True
+                        if has_numeric and has_other:
+                            # 已确定为混合列，无需继续扫描
+                            break
                     if has_numeric and has_other:
                         self._col_object_values[c] = list(vs)
                         col_dtype = "object"
@@ -1706,12 +1709,12 @@ class DataFrame:
     def _get_column_as_series(self, name: str) -> Series:
         if name in self._col_dtypes:
             override = self._col_dtypes[name]
-            # 混合类型列：跳过 Rust 层 clone + Series 构造函数多次遍历，直接构建
+            # 混合类型列：跳过 Series 构造函数多次遍历，直接构建；
+            # 存储字符串复用 Rust 层 _inner 的列数据，避免逐值 ``str(v)`` 重复转换。
             if override == "object" and name in self._col_object_values:
                 vals = self._col_object_values[name]
-                str_vals = [str(v) if v is not None else None for v in vals]
                 s = Series.__new__(Series)
-                s._inner = _PySeries(str_vals, name, dtype="object")
+                s._inner = self._inner.get_column(name)
                 s._object_values = vals
                 s._dtype_str = "object"
                 s._index = (
@@ -4082,6 +4085,40 @@ class DataFrame:
         df._columns_name = None
         return df
 
+    @classmethod
+    def _from_rust_series(
+        cls,
+        columns: List[str],
+        series_list,
+        object_values: Optional[Dict[str, list]] = None,
+        col_dtypes: Optional[Dict[str, str]] = None,
+    ) -> "DataFrame":
+        """从 Rust 层 typed CSV 读取结果直接构造 DataFrame。
+
+        绕过 Python 层类型推断，避免对大规模列再做逐值二次遍历。
+        仅混合类型（object）列通过 ``object_values`` 还原原始 Python 对象。
+
+        :param columns: 列名列表（str）
+        :param series_list: Rust ``_Series`` 列表（与 columns 对齐）
+        :param object_values: {列名: 混合类型 Python 对象列表}
+        :param col_dtypes: 列 dtype 覆盖字典
+        """
+        df = cls.__new__(cls)
+        df._inner = _PyDataFrame(columns, series_list)
+        df._columns = list(columns)
+        df._raw_columns: List[Any] = list(columns)
+        df._nrows = series_list[0].size if series_list else 0
+        df._index = list(range(df._nrows))
+        df._col_dtypes = dict(col_dtypes or {})
+        df._col_object_values: Dict[str, list] = dict(object_values or {})
+        df._col_categories: Dict[str, list] = {}
+        df._cached_index_ref: Optional[object] = None
+        df._index_name_val: Optional[str] = None
+        df._index_names: Optional[list] = None
+        df._columns_name: Optional[str] = None
+        df._index_freq: Optional[Any] = None
+        return df
+
     # ---------- 索引操作 (v1.0.0) ----------
 
     def drop(
@@ -4408,6 +4445,53 @@ class DataFrame:
         else:
             columns_to_write = selected_columns
             series_to_write = series_list
+
+        # ------------------------------------------------------------------
+        # Rust 快速路径：默认选项下直接用 Rust 序列化，避免 Python 逐行拼接
+        # ------------------------------------------------------------------
+        _rust_ok = (
+            sep == ","
+            and na_rep == ""
+            and float_format is None
+            and date_format is None
+            and decimal == "."
+            and quotechar == '"'
+            and isinstance(header, bool)
+            and (lineterminator is None or lineterminator == "\n")
+            and mode == "w"
+            and (encoding is None or encoding.lower() in ("utf-8", "utf8"))
+            and chunksize is None
+            and compression in (None, "infer")
+            and (index_label is None or isinstance(index_label, str))
+        )
+        # 推断压缩格式（infer 且带压缩扩展名时回退到 Python 路径）
+        if _rust_ok and compression == "infer":
+            _lp = path.lower() if isinstance(path, str) else ""
+            if _lp.endswith((".gz", ".bz2", ".zip", ".xz", ".zst")):
+                _rust_ok = False
+        # 浮点列回退：Rust get_str_at 的 f64 格式化与 Python str() 不一致，
+        # 为避免 dtype 回读偏差，仅当所有列均非浮点时走 Rust
+        if _rust_ok:
+            for _s in series_to_write:
+                if _s.dtype in ("float64", "float32"):
+                    _rust_ok = False
+                    break
+        if _rust_ok:
+            import os
+            from .rspandas import write_csv_path as _wc_path
+            from .rspandas import write_csv_string as _wc_str
+
+            _include_header = bool(header)
+            _cols = [str(c) for c in columns_to_write]
+            if path is None:
+                return _wc_str(_cols, series_to_write, _include_header, sep)
+            if isinstance(path, (str, os.PathLike)):
+                _wc_path(str(path), _cols, series_to_write, _include_header, sep)
+                return None
+            # 文件对象：序列化为字符串后一次写入
+            _content = _wc_str(_cols, series_to_write, _include_header, sep)
+            path.write(_content)
+            return None
 
         # 生成 CSV 内容（带参数处理）
         content_lines = []

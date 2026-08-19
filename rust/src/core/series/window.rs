@@ -200,12 +200,26 @@ impl Series {
     pub fn value_counts(&self, sort: bool, ascending: bool) -> (Vec<String>, Vec<u64>) {
         use std::collections::HashMap;
         let mut map: HashMap<String, u64> = HashMap::new();
+        // 记录首次出现顺序，用于稳定排序（对齐 pandas 的稳定计数顺序，避免 HashMap
+        // 随机遍历导致并列计数时顺序不稳定）。
+        let mut order: Vec<String> = Vec::new();
+
+        macro_rules! count {
+            ($key:expr) => {{
+                let k: String = $key;
+                if !map.contains_key(&k) {
+                    order.push(k.clone());
+                }
+                *map.entry(k).or_insert(0) += 1;
+            }};
+        }
+
         match &self.data {
             ColumnData::Int(v) => {
                 for x in v.iter() {
                     match x {
-                        Some(val) => *map.entry(val.to_string()).or_insert(0) += 1,
-                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                        Some(val) => count!(val.to_string()),
+                        None => count!("None".to_string()),
                     }
                 }
             }
@@ -214,28 +228,28 @@ impl Series {
                     match x {
                         Some(val) => {
                             if val.is_nan() {
-                                *map.entry("NaN".to_string()).or_insert(0) += 1;
+                                count!("NaN".to_string());
                             } else {
-                                *map.entry(val.to_string()).or_insert(0) += 1;
+                                count!(val.to_string());
                             }
                         }
-                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                        None => count!("None".to_string()),
                     }
                 }
             }
             ColumnData::Bool(v) => {
                 for x in v.iter() {
                     match x {
-                        Some(val) => *map.entry(val.to_string()).or_insert(0) += 1,
-                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                        Some(val) => count!(val.to_string()),
+                        None => count!("None".to_string()),
                     }
                 }
             }
             ColumnData::String(v) => {
                 for x in v.iter() {
                     match x {
-                        Some(val) => *map.entry(val.clone()).or_insert(0) += 1,
-                        None => *map.entry("None".to_string()).or_insert(0) += 1,
+                        Some(val) => count!(val.clone()),
+                        None => count!("None".to_string()),
                     }
                 }
             }
@@ -243,17 +257,27 @@ impl Series {
                 for code in cd.codes.iter() {
                     match code {
                         Some(c) if (*c as usize) < cd.categories.len() => {
-                            *map.entry(cd.categories[*c as usize].clone()).or_insert(0) += 1;
+                            count!(cd.categories[*c as usize].clone())
                         }
-                        _ => *map.entry("None".to_string()).or_insert(0) += 1,
+                        _ => count!("None".to_string()),
                     }
                 }
             }
         }
+
         // dropna=True：移除缺失值（None 表示为 "None"；float NaN 表示为 "NaN"）
         map.remove("None");
         map.remove("NaN");
-        let mut pairs: Vec<(String, u64)> = map.into_iter().collect();
+
+        // 按首次出现顺序收集，保证并列时顺序稳定（sort_by_key 为稳定排序）
+        let mut pairs: Vec<(String, u64)> = order
+            .into_iter()
+            .filter(|k| map.contains_key(k))
+            .map(|k| {
+                let c = map[&k];
+                (k, c)
+            })
+            .collect();
         if sort {
             if ascending {
                 pairs.sort_by_key(|a| a.1);

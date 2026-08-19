@@ -30,8 +30,6 @@ _NO_DEFAULT = _NoDefault()
 
 
 # 辅助函数
-
-
 def _parse_date_series(values, date_format, dayfirst):
     """将字符串列表解析为 datetime 对象列表。
 
@@ -106,23 +104,31 @@ def _infer_column_type(values):
     if not values:
         return values
 
-    # 全为 None 的情况
-    non_null = [v for v in values if v is not None]
-    if not non_null:
+    n = len(values)
+    # 快速判断是否全部为 None
+    has_value = False
+    for v in values:
+        if v is not None:
+            has_value = True
+            break
+    if not has_value:
         return values
 
-    # 尝试 int
+    # 尝试 int：单趟边校验边转换，避免 all_int 通过后二次 int() 解析
+    int_result = [None] * n
     all_int = True
-    for v in non_null:
+    for i, v in enumerate(values):
+        if v is None:
+            continue
         if isinstance(v, bool):
             # bool 是 int 的子类，但我们想单独处理 bool
             all_int = False
             break
         if isinstance(v, int):
-            continue
-        if isinstance(v, str):
+            int_result[i] = v
+        elif isinstance(v, str):
             try:
-                int(v)
+                int_result[i] = int(v)
             except (ValueError, TypeError):
                 all_int = False
                 break
@@ -131,16 +137,22 @@ def _infer_column_type(values):
             break
 
     if all_int:
-        return [None if v is None else int(v) for v in values]
+        return int_result
 
-    # 尝试 float
+    # 尝试 float：单趟边校验边转换
+    float_result = [None] * n
     all_float = True
-    for v in non_null:
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+    for i, v in enumerate(values):
+        if v is None:
             continue
-        if isinstance(v, str):
+        if isinstance(v, bool):
+            all_float = False
+            break
+        if isinstance(v, (int, float)):
+            float_result[i] = float(v)
+        elif isinstance(v, str):
             try:
-                float(v)
+                float_result[i] = float(v)
             except (ValueError, TypeError):
                 all_float = False
                 break
@@ -149,12 +161,14 @@ def _infer_column_type(values):
             break
 
     if all_float:
-        return [None if v is None else float(v) for v in values]
+        return float_result
 
     # 尝试 bool
     bool_set = {"True", "TRUE", "true", "False", "FALSE", "false"}
     all_bool = True
-    for v in non_null:
+    for v in values:
+        if v is None:
+            continue
         if isinstance(v, bool):
             continue
         if isinstance(v, str) and v in bool_set:
@@ -169,8 +183,8 @@ def _infer_column_type(values):
         ]
 
     # 默认：逐值类型推断（与 pandas 行为一致：混合类型列保持 object dtype）
-    # 如果列中包含 datetime 对象，不转换（保持 datetime 类型）
-    if all(isinstance(v, (datetime, type(None))) for v in values):
+    # 如果列中全为 datetime 对象，不转换（保持 datetime 类型）
+    if all(v is None or isinstance(v, datetime) for v in values):
         return values
 
     result = []
@@ -387,7 +401,7 @@ class _TextFileReader:
 
         # 取出本 chunk 的行
         end = min(self._pos + size + 1, len(self._lines))
-        chunk_lines = self._lines[self._pos:end]
+        chunk_lines = self._lines[self._pos : end]
         self._pos = end
 
         # 第一行可能是表头
@@ -417,7 +431,7 @@ class _TextFileReader:
         if has_header and hasattr(self, "_cached_header"):
             text = self._cached_header + "\n" + "\n".join(data_lines)
         else:
-            text = "\n".join(chunk_lines) 
+            text = "\n".join(chunk_lines)
 
         return read_csv(
             _io.StringIO(text),

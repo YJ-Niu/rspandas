@@ -16,6 +16,14 @@ fn rspandas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crate::core::io::csv::read_csv_chunks, m)?)?;
     m.add_function(wrap_pyfunction!(crate::core::io::csv::parse_csv_raw, m)?)?;
     m.add_function(wrap_pyfunction!(
+        crate::core::io::csv::read_csv_path_raw,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::core::io::csv::read_csv_path_typed,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         crate::core::io::csv::read_file_to_string,
         m
     )?)?;
