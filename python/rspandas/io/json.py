@@ -1,16 +1,12 @@
 """JSON 读写：read_json / to_json
 
-由 rspandas/io.py 拆分而来，向后兼容通过 :mod:`rspandas.io` 包入口保证。
+基于 Rust serde_json 实现，释放 GIL 进行解析和序列化，无需 Python json 模块。
 """
 
 from __future__ import annotations
 
 from ..dataframe import DataFrame
-from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-import json as _json
-import pickle as _pickle
+from typing import Optional
 
 
 def read_json(
@@ -41,36 +37,25 @@ def read_json(
     -------
     DataFrame
     """
-    with open(path, "r", encoding=encoding) as f:
-        if lines:
-            records = [_json.loads(line) for line in f if line.strip()]
-            return DataFrame(records)
-        raw = _json.load(f)
+    from ..rspandas import _DataFrame
+    from ..rspandas import read_json as _read_json_rust
 
-    if orient == "records":
-        return DataFrame(raw)
-    elif orient == "columns":
-        return DataFrame(raw)
-    elif orient == "index":
-        # 使用列表推导式替代显式 for 循环
-        records = [{"index": idx, **row_dict} for idx, row_dict in raw.items()]
-        return DataFrame(records)
-    elif orient == "split":
-        cols = raw.get("columns", [])
-        data = raw.get("data", [])
-        return DataFrame(data, columns=cols)
-    elif orient == "values":
-        return DataFrame(raw)
-    else:
-        raise ValueError(f"Unknown orient: {orient}")
+    headers, series_list = _read_json_rust(path, orient, lines, encoding)
+    return DataFrame._from_inner(_DataFrame(headers, series_list))
 
 
 def to_json(
     df: DataFrame,
     path: Optional[str] = None,
-    orient: str = "records",
+    orient: Optional[str] = None,
+    date_format: str = "iso",
+    double_precision: int = 10,
+    force_ascii: bool = True,
+    date_unit: str = "ms",
+    default_handler=None,
     lines: bool = False,
-    force_ascii: bool = False,
+    compression: str = "infer",
+    index: bool = True,
     indent: Optional[int] = None,
 ) -> Optional[str]:
     """将 DataFrame 写入 JSON 文件或返回 JSON 字符串。
@@ -83,10 +68,22 @@ def to_json(
         输出文件路径。None 则返回字符串。
     orient : str, default 'records'
         JSON 格式方向。
+    date_format : str, default 'iso'
+        日期格式（当前仅支持 'iso'，与 pandas 兼容）。
+    double_precision : int, default 10
+        浮点数精度（兼容签名，当前忽略）。
+    force_ascii : bool, default True
+        是否强制 ASCII 编码。
+    date_unit : str, default 'ms'
+        日期单位（兼容签名，当前忽略）。
+    default_handler : callable, optional
+        无法序列化对象的处理函数（兼容签名，当前忽略）。
     lines : bool, default False
         是否按行输出 JSON。
-    force_ascii : bool, default False
-        是否强制 ASCII 编码。
+    compression : str, default 'infer'
+        压缩格式（兼容签名，当前忽略）。
+    index : bool, default True
+        是否包含索引（兼容签名，当前忽略）。
     indent : int, optional
         缩进空格数。
 
@@ -94,47 +91,12 @@ def to_json(
     -------
     str or None
     """
-    # df.values 返回 list[dict]
-    records = df.values
+    from ..rspandas import write_json as _write_json_rust
 
-    if orient == "records":
-        data = records
-    elif orient == "columns":
-        data = {col: [row.get(col) for row in records] for col in df.columns}
-    elif orient == "index":
-        # 使用字典推导式替代显式 for 循环
-        data = {str(i): row for i, row in enumerate(records)}
-    elif orient == "split":
-        data = {
-            "columns": list(df.columns),
-            "data": [[row.get(c) for c in df.columns] for row in records],
-        }
-    elif orient == "values":
-        data = [[row.get(c) for c in df.columns] for row in records]
-    else:
-        raise ValueError(f"Unknown orient: {orient}")
+    # 默认 orient
+    if orient is None:
+        orient = "records"
 
-    json_kwargs: Dict[str, Any] = {"ensure_ascii": force_ascii}
-    if indent is not None:
-        json_kwargs["indent"] = indent
-
-    if lines:
-        if orient != "records":
-            raise ValueError("lines=True requires orient='records'")
-        output = "\n".join(_json.dumps(r, **json_kwargs) for r in data)
-    else:
-        output = _json.dumps(data, **json_kwargs)
-
-    if path is not None:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(output)
-        if not output.endswith("\n"):
-            with open(path, "a", encoding="utf-8") as f:
-                f.write("\n")
-        return None
-    return output
-
-
-# ============================================================================
-# Excel (使用 Rust 后端 calamine + rust_xlsxwriter，无需 openpyxl)
-# ============================================================================
+    cols = list(df.columns)
+    series_list = [df._inner.get_column(c) for c in cols]
+    return _write_json_rust(cols, series_list, path, orient, lines, force_ascii, indent)

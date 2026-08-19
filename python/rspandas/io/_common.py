@@ -7,10 +7,9 @@ from __future__ import annotations
 
 from ..dataframe import DataFrame
 from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional
 
-import json as _json
-import pickle as _pickle
+from datetime import datetime
 
 
 class _NoDefault:
@@ -31,11 +30,13 @@ _NO_DEFAULT = _NoDefault()
 
 
 # 辅助函数
-
-
 def _parse_date_series(values, date_format, dayfirst):
-    """将字符串列表解析为 ISO 格式 datetime 字符串列表。"""
-    from .._datetime import _parse_iso
+    """将字符串列表解析为 datetime 对象列表。
+
+    支持 date_format 为 dict（按列名指定格式）或 str（统一格式）。
+    与 pandas 行为对齐：date_format 作为 dict 时，key 为列名，value 为格式字符串。
+    """
+    import datetime as _datetime_module
 
     out = []
     for v in values:
@@ -45,11 +46,22 @@ def _parse_date_series(values, date_format, dayfirst):
         if not isinstance(v, str):
             out.append(v)
             continue
-        try:
-            dt = _parse_iso(v)
-            out.append(dt.isoformat())
-        except (ValueError, TypeError):
-            out.append(v)
+        # 如果 date_format 是字符串，使用指定格式解析
+        if isinstance(date_format, str):
+            try:
+                dt = _datetime_module.datetime.strptime(v, date_format)
+                out.append(dt)
+            except (ValueError, TypeError):
+                out.append(v)
+        else:
+            # 无格式或 dict 格式（由调用方按列分发）
+            from .._datetime import _parse_iso
+
+            try:
+                dt = _parse_iso(v)
+                out.append(dt)
+            except (ValueError, TypeError):
+                out.append(v)
     return out
 
 
@@ -92,23 +104,31 @@ def _infer_column_type(values):
     if not values:
         return values
 
-    # 全为 None 的情况
-    non_null = [v for v in values if v is not None]
-    if not non_null:
+    n = len(values)
+    # 快速判断是否全部为 None
+    has_value = False
+    for v in values:
+        if v is not None:
+            has_value = True
+            break
+    if not has_value:
         return values
 
-    # 尝试 int
+    # 尝试 int：单趟边校验边转换，避免 all_int 通过后二次 int() 解析
+    int_result = [None] * n
     all_int = True
-    for v in non_null:
+    for i, v in enumerate(values):
+        if v is None:
+            continue
         if isinstance(v, bool):
             # bool 是 int 的子类，但我们想单独处理 bool
             all_int = False
             break
         if isinstance(v, int):
-            continue
-        if isinstance(v, str):
+            int_result[i] = v
+        elif isinstance(v, str):
             try:
-                int(v)
+                int_result[i] = int(v)
             except (ValueError, TypeError):
                 all_int = False
                 break
@@ -117,16 +137,22 @@ def _infer_column_type(values):
             break
 
     if all_int:
-        return [None if v is None else int(v) for v in values]
+        return int_result
 
-    # 尝试 float
+    # 尝试 float：单趟边校验边转换
+    float_result = [None] * n
     all_float = True
-    for v in non_null:
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+    for i, v in enumerate(values):
+        if v is None:
             continue
-        if isinstance(v, str):
+        if isinstance(v, bool):
+            all_float = False
+            break
+        if isinstance(v, (int, float)):
+            float_result[i] = float(v)
+        elif isinstance(v, str):
             try:
-                float(v)
+                float_result[i] = float(v)
             except (ValueError, TypeError):
                 all_float = False
                 break
@@ -135,12 +161,14 @@ def _infer_column_type(values):
             break
 
     if all_float:
-        return [None if v is None else float(v) for v in values]
+        return float_result
 
     # 尝试 bool
     bool_set = {"True", "TRUE", "true", "False", "FALSE", "false"}
     all_bool = True
-    for v in non_null:
+    for v in values:
+        if v is None:
+            continue
         if isinstance(v, bool):
             continue
         if isinstance(v, str) and v in bool_set:
@@ -154,10 +182,36 @@ def _infer_column_type(values):
             for v in values
         ]
 
-    # 默认：保持 str/object
-    return [
-        None if v is None else str(v) if not isinstance(v, str) else v for v in values
-    ]
+    # 默认：逐值类型推断（与 pandas 行为一致：混合类型列保持 object dtype）
+    # 如果列中全为 datetime 对象，不转换（保持 datetime 类型）
+    if all(v is None or isinstance(v, datetime) for v in values):
+        return values
+
+    result = []
+    for v in values:
+        if v is None:
+            result.append(None)
+        elif isinstance(v, bool):
+            result.append(v)
+        elif isinstance(v, (int, float)):
+            result.append(v)
+        elif isinstance(v, str):
+            # 尝试 int → float → bool → str
+            try:
+                result.append(int(v))
+            except (ValueError, TypeError):
+                try:
+                    result.append(float(v))
+                except (ValueError, TypeError):
+                    if v in ("True", "TRUE", "true"):
+                        result.append(True)
+                    elif v in ("False", "FALSE", "false"):
+                        result.append(False)
+                    else:
+                        result.append(v)
+        else:
+            result.append(v)
+    return result
 
 
 # ============================================================================
@@ -219,9 +273,10 @@ def _read_content(filepath_or_buffer, compression, encoding, encoding_errors):
             with zf.open(names[0]) as f:
                 content = f.read()
                 return content.decode(enc, errors=encoding_errors)
-    # 无压缩
-    with open(path, "r", encoding=enc, errors=encoding_errors) as f:
-        return f.read()
+    # 无压缩：使用 Rust 层读取文件内容
+    from ..rspandas import read_file_to_string as _read_file_to_string
+
+    return _read_file_to_string(path)
 
 
 class _TextFileReader:
@@ -337,6 +392,7 @@ class _TextFileReader:
         """读取下一个 chunk。"""
         from ..dataframe import DataFrame as _DataFrame
         import io as _io
+        from .. import read_csv
 
         if size is None:
             size = self._chunksize

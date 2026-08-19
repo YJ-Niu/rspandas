@@ -227,13 +227,16 @@ def _to_python_list(data: Any) -> list:
     from .._datetime import DatetimeSeries, _to_iso  # 延迟 import 避免循环引用
 
     def _convert_value(v):
-        """将单个值转换为可存储的 Python 类型。"""
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, timedelta):
-            # timedelta 转换为字符串显示
-            return _format_timedelta(v)
-        if isinstance(v, (datetime, date)):
+        """将单个值转换为可存储的 Python 类型。
+
+        仅 datetime/timedelta 需要转换，其他类型直接返回。
+        先检查 datetime/timedelta，非此类值仅需 1 次 isinstance 即可返回。
+        """
+        if isinstance(v, (datetime, date, timedelta)):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, timedelta):
+                return _format_timedelta(v)
             return _to_iso(v)
         return v
 

@@ -104,4 +104,41 @@ impl Series {
             self.clone()
         }
     }
+
+    /// 返回每个元素对应的类型编码（缺失值为 None）。
+    ///
+    /// 供 Python 层 ``apply(type)`` 使用，避免在 Python 中逐元素调用 ``type()``
+    /// 并做二次 ``str()`` 转换。object 列按存储的字符串内容分类：
+    ///
+    /// - 1 -> int
+    /// - 2 -> float
+    /// - 3 -> bool
+    /// - 4 -> str
+    ///
+    /// 其它基础类型列（int64/float64/bool）返回固定编码；分类列视为 str。
+    pub fn type_codes(&self) -> Vec<Option<u8>> {
+        match &self.data {
+            ColumnData::Int(v) => v.iter().map(|x| x.map(|_| 1u8)).collect(),
+            ColumnData::Float(v) => v.iter().map(|x| x.map(|_| 2u8)).collect(),
+            ColumnData::Bool(v) => v.iter().map(|x| x.map(|_| 3u8)).collect(),
+            ColumnData::Categorical(c) => c.codes.iter().map(|x| x.map(|_| 4u8)).collect(),
+            ColumnData::String(v) => v
+                .par_iter()
+                .map(|x| x.as_ref().map(|s| classify_type_code(s)))
+                .collect(),
+        }
+    }
+}
+
+/// 将字符串分类为 Python 类型编码（与 ``infer_typed_col`` 的分类顺序一致）。
+fn classify_type_code(s: &str) -> u8 {
+    if s.parse::<i64>().is_ok() {
+        1
+    } else if s.parse::<f64>().is_ok() {
+        2
+    } else if matches!(s, "True" | "TRUE" | "true" | "False" | "FALSE" | "false") {
+        3
+    } else {
+        4
+    }
 }

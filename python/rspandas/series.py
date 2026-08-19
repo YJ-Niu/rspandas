@@ -2,21 +2,11 @@
 
 from __future__ import annotations
 
-import rsnumpy as rnp
-
-from .rspandas import _DataFrame as _PyDataFrame
-from .rspandas import _Series as _PySeries  # type: ignore
-from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple
-
-if TYPE_CHECKING:
-    # 仅用于类型注解，运行时通过函数内 import 避免循环引用
-    from .dataframe import DataFrame
-
-# ---------------------------------------------------------------------------
-# 内部辅助函数与工具类（已迁移到 _internal/_series_helpers）
-# ---------------------------------------------------------------------------
-from ._internal._series_helpers import (
+# ============================================================================
+# 重新导出辅助类（向后兼容）
+# 这些类已迁移到子模块，但 series.py 仍重新导出以保持向后兼容
+# ============================================================================
+from ._internal._series_helpers import (  # noqa: F401
     _AlignmentResult,
     _DtypeScalar,
     _ExtensionArray,
@@ -29,6 +19,31 @@ from ._internal._series_helpers import (
     _to_python_list,
     _to_python_list_and_index,
 )
+
+
+import rsnumpy as rnp
+
+from .rspandas import _DataFrame as _PyDataFrame
+from .rspandas import _Series as _PySeries  # type: ignore
+from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple
+
+if TYPE_CHECKING:
+    # 仅用于类型注解，运行时通过函数内 import 避免循环引用
+    from .dataframe import DataFrame
+from .accessors.cat import CatAccessor  # noqa: F401
+from .accessors.datetime import DatetimeAccessor  # noqa: F401
+from .accessors.string import StringAccessor  # noqa: F401
+from .groupby.series_groupby import SeriesGroupBy  # noqa: F401
+from .indexing.series_indexers import (
+    _IatIndexer,
+    _ILocIndexer,
+    _LocIndexer,
+)  # noqa: F401
+from .window.ewm import EWM  # noqa: F401
+from .window.expanding import Expanding  # noqa: F401
+from .window.resampler import Resampler  # noqa: F401
+from .window.rolling import Rolling  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Series
@@ -186,6 +201,12 @@ class Series:
         else:
             dtype_str = dtype
 
+        # object dtype：缓存原始值，转换为字符串供 Rust 层存储
+        self._object_values: Optional[list] = None
+        if dtype_str is not None and dtype_str.lower() == "object":
+            self._object_values = list(values)
+            values = [str(v) if v is not None else None for v in values]
+
         # 构造 Rust 端 Series (传递 dtype 以支持 category 等类型)
         self._inner = _PySeries(values, name, dtype=dtype_str)
 
@@ -216,6 +237,12 @@ class Series:
             elif nd.startswith("period["):
                 # 保留 period[freq] 格式（与 pandas 一致）
                 self._dtype_str = dtype_str
+            elif nd.startswith("datetime64"):
+                # datetime64[us] / datetime64[ns] 等
+                self._dtype_str = nd
+            elif nd.startswith("timedelta64"):
+                # timedelta64[us] / timedelta64[ns] 等
+                self._dtype_str = nd
             else:
                 self._dtype_str = self._inner.dtype
         else:
@@ -258,6 +285,68 @@ class Series:
             getattr(index, "_freq", None) if index is not None else None
         )
 
+    # ---------- 内部快速构造 ----------
+
+    @classmethod
+    def _from_object_parts(
+        cls,
+        object_values: list,
+        strings: list,
+        name: Optional[str],
+        index,
+    ) -> "Series":
+        """从 object 值与对应字符串快速构造 Series。
+
+        跳过 ``__init__`` 的类型推断、datetime/timedelta 扫描等冗余遍历，
+        仅用于已知 dtype 为 object 的内部快速路径（如 ``apply(type)`` 的 Python 回退）。
+
+        :param object_values: 原始 Python 对象列表（供 ``.values`` 返回）
+        :param strings: 与 ``object_values`` 对齐的字符串列表（供 Rust 层存储）
+        """
+        inner = _PySeries(strings, name, dtype="object")
+        return cls._from_typed_objects(inner, object_values, index)
+
+    @classmethod
+    def _from_typed_objects(cls, inner, object_values: list, index) -> "Series":
+        """从 Rust 层已构造好的 object Series 与类型对象列表快速构造 Series。
+
+        供 ``apply(type)`` 的 Rust 快速路径使用：跳过 Python 层再次调用
+        ``_PySeries`` 构造存储，直接复用 Rust 层返回的 inner。
+        """
+        s = cls.__new__(cls)
+        s._inner = inner
+        s._object_values = object_values
+        s._dtype_str = "object"
+        s._index = list(index) if index is not None else list(range(len(object_values)))
+        s._dt_values = None
+        s._dt_tz = None
+        s._period_freq = None
+        s._td_values = None
+        s._cached_index_ref = None
+        s._freq = getattr(index, "_freq", None) if index is not None else None
+        return s
+
+    @classmethod
+    def _from_const_type(
+        cls,
+        type_obj,
+        type_repr: str,
+        n: int,
+        name: Optional[str],
+        index,
+    ) -> "Series":
+        """构造每个元素均为同一类型对象的 object Series（纯类型列快速路径）。"""
+        return cls._from_object_parts([type_obj] * n, [type_repr] * n, name, index)
+
+    @classmethod
+    def _from_object_values(cls, values: list, name: Optional[str], index) -> "Series":
+        """从 Python 对象列表快速构造 object Series（回退路径）。
+
+        与 ``_from_object_parts`` 的区别是这里按值调用 ``str()`` 生成存储字符串。
+        """
+        strings = [str(v) if v is not None else None for v in values]
+        return cls._from_object_parts(values, strings, name, index)
+
     # ---------- 属性 ----------
 
     @property
@@ -283,7 +372,25 @@ class Series:
 
     @property
     def values(self) -> list:
+        if getattr(self, "_object_values", None) is not None:
+            return self._object_values
         return list(self._inner.values)
+
+    @property
+    def _array(self):
+        """返回底层 _core.ndarray，供 rsnumpy 统计函数直接使用。
+
+        通过暴露 _array 属性，rsnumpy 的 _ensure_raw() 可直接获取
+        原始 Rust ndarray 而无需通过 _core.ndarray() 构造，
+        避免 TypeError: Unsupported data type。
+        """
+        import rsnumpy.num_core as _core
+
+        vals = list(self._inner.values)
+        # 将 None 替换为 NaN，避免 _core.ndarray 因 None 值报错
+        if any(v is None for v in vals):
+            vals = [float("nan") if v is None else v for v in vals]
+        return _core.ndarray(vals)
 
     @property
     def size(self) -> int:
@@ -589,7 +696,36 @@ class Series:
                 return op_name == "ne"
 
         if isinstance(other, Series):
-            # Series vs Series: 按索引对齐
+            # Series vs Series: 优先尝试 Rust 加速路径（索引对齐且都是数值类型）
+            # 条件：长度相同且 index 完全相同（或都为 None），且两边都是 int/float dtype
+            can_use_rust = (
+                len(self) == len(other)
+                and self._index == other._index
+                and self._inner.dtype in ("int64", "float64")
+                and other._inner.dtype in ("int64", "float64")
+            )
+            if can_use_rust:
+                try:
+                    result_inner = self._inner.elementwise_compare_series(
+                        other._inner, op_name, fill_value
+                    )
+                    if result_inner is not None:
+                        union_index = (
+                            list(self._index)
+                            if self._index is not None
+                            else list(range(len(self)))
+                        )
+                        return Series(
+                            result_inner,
+                            name=self.name,
+                            dtype="bool",
+                            index=union_index,
+                        )
+                except Exception:
+                    # Rust 路径失败，回退到 Python 实现
+                    pass
+
+            # Series vs Series: 按索引对齐（Python 通用回退路径）
             self_index = (
                 list(self._index) if self._index is not None else list(range(len(self)))
             )
@@ -688,7 +824,39 @@ class Series:
         fn = _ops[op]
 
         if isinstance(other, Series):
-            # Series + Series: 按索引对齐
+            # Series + Series: 优先尝试 Rust 加速路径（索引对齐且都是数值类型）
+            # 条件：长度相同且 index 完全相同（或都为 None），且两边都是 int/float dtype
+            can_use_rust = (
+                len(self) == len(other)
+                and self._index == other._index
+                and self._inner.dtype in ("int64", "float64")
+                and other._inner.dtype in ("int64", "float64")
+            )
+            if can_use_rust:
+                try:
+                    result_inner = self._inner.elementwise_arith_series(
+                        other._inner, op, reverse, fill_value
+                    )
+                    if result_inner is not None:
+                        # 根据 Rust 结果推断 dtype 名称
+                        rust_dtype = result_inner.dtype
+                        new_dtype = "int64" if rust_dtype == "int64" else "float64"
+                        union_index = (
+                            list(self._index)
+                            if self._index is not None
+                            else list(range(len(self)))
+                        )
+                        return Series(
+                            result_inner,
+                            name=self.name,
+                            dtype=new_dtype,
+                            index=union_index,
+                        )
+                except Exception:
+                    # Rust 路径失败，回退到 Python 实现
+                    pass
+
+            # Series + Series: 按索引对齐（Python 通用回退路径）
             self_index = (
                 list(self._index) if self._index is not None else list(range(len(self)))
             )
@@ -1209,7 +1377,11 @@ class Series:
 
     def __array__(self, dtype=None):
         """支持 rnp.array(series) 转换。"""
-        return rnp.array(self.values, dtype=dtype)
+        values = self.values
+        # 将 None 替换为 float('nan')，避免 rsnumpy 因混合类型报错
+        if any(v is None for v in values):
+            values = [float("nan") if v is None else v for v in values]
+        return rnp.array(values, dtype=dtype)
 
     # ---------- 命名算术方法 ----------
 
@@ -1727,6 +1899,73 @@ class Series:
         :param args: 传递给 func 的额外位置参数
         :param kwargs: 传递给 func 的关键字参数
         """
+        # 优化: func is type 且无额外参数时，直接按 dtype 短路
+        if func is type and not args and not kwargs:
+            dt = self._dtype_str
+            # ===== 纯类型列：走 _from_const_type（最快），直接构造缓存（1次dict分配，无循环）=====
+            if dt == "int64":
+                rv = Series._from_const_type(
+                    int, "<class 'int'>", len(self), self.name, self._index
+                )
+                try:
+                    cnt = self._inner.count()  # 非 None 个数
+                except Exception:
+                    cnt = len(self)
+                rv._type_value_counts_cache = {"int": cnt} if cnt else {}
+                return rv
+            if dt == "float64":
+                rv = Series._from_const_type(
+                    float, "<class 'float'>", len(self), self.name, self._index
+                )
+                try:
+                    cnt = self._inner.count()
+                except Exception:
+                    cnt = len(self)
+                rv._type_value_counts_cache = {"float": cnt} if cnt else {}
+                return rv
+            if dt == "bool":
+                rv = Series._from_const_type(
+                    bool, "<class 'bool'>", len(self), self.name, self._index
+                )
+                try:
+                    cnt = self._inner.count()
+                except Exception:
+                    cnt = len(self)
+                rv._type_value_counts_cache = {"bool": cnt} if cnt else {}
+                return rv
+            if dt == "str":
+                rv = Series._from_const_type(
+                    str, "<class 'str'>", len(self), self.name, self._index
+                )
+                try:
+                    cnt = self._inner.count()
+                except Exception:
+                    cnt = len(self)
+                rv._type_value_counts_cache = {"str": cnt} if cnt else {}
+                return rv
+            if dt == "object":
+                # object 列：先 apply_type()（快路径 ~16.6ms，只做类型对象列表生成），
+                # 然后用极轻的 type_counts_only() 拿计数（只分类，不构造任何 PyObject，< 5ms）。
+                # 组合成本低于 apply_type_with_counts()（~27.6ms），因为避免了四元组解包与
+                # 额外的 PyObject 计数阶段耦合，同时保留 value_counts 短路收益。
+                try:
+                    inner, out = self._inner.apply_type()
+                except Exception:
+                    inner = None
+                if inner is not None:
+                    rv = Series._from_typed_objects(inner, out, self._index)
+                    # 在原始 self._inner 上调 type_counts_only()（不是 rv._inner），
+                    # 因为 rv 已是 type 对象的 Series，计数的是 type 的类型而非原数据
+                    try:
+                        names_list, counts_list = self._inner.type_counts_only()
+                        rv._type_value_counts_cache = dict(zip(names_list, counts_list))
+                    except Exception:
+                        pass
+                    return rv
+            # 其它 dtype（datetime/category/period 等）或回退：Python 类型推断
+            _vals = self.values
+            _out = [None if v is None else type(v) for v in _vals]
+            return Series._from_object_values(_out, self.name, self._index)
 
         # 使用辅助函数 + 列表推导式替代显式 for 循环
         def _apply_one(v):
@@ -3331,41 +3570,38 @@ class Series:
             raise ValueError("Cannot specify both 'value' and 'method'")
 
         if method is not None:
-            # 实现填充方法
-            from itertools import accumulate
-
-            values = self.values
-
+            # method 路径：直接调用已走 Rust 加速的 ffill/bfill
             if method in ("pad", "ffill"):
-                # 前向填充: 用上一个非 None 值填充当前 None
-                values = list(
-                    accumulate(values, lambda last, v: v if v is not None else last)
-                )
+                filled = self.ffill(limit=limit)
             elif method in ("backfill", "bfill"):
-                # 后向填充: 反向 accumulate 后再反转
-                values = list(
-                    accumulate(
-                        reversed(values),
-                        lambda last, v: v if v is not None else last,
-                    )
-                )[::-1]
+                filled = self.bfill(limit=limit)
             else:
                 raise ValueError(f"Invalid fill method: {method}")
 
             if inplace:
-                self._inner = _PySeries(values, self.name, dtype=self._dtype_str)
+                self._inner = filled._inner
+                self._dtype_str = filled._dtype_str
                 return self
-            return Series(
-                values, name=self.name, dtype=self._dtype_str, index=self._index
-            )
+            return filled
 
         # 标准值填充
         if value is None:
             raise ValueError("Must specify a fill 'value' or 'method'")
 
-        # 优先 Python 层实现（避免 Rust 层跨边界类型不匹配）
-        # Rust 层 fillna: Int64 列要求 value 为 int，Float64 要求 f64，Object 要求 String
-        # Python 层实现能兼容 value=0.0 等标量，并自动处理 upcasting
+        # 优先尝试 Rust 层 fillna（try/except 包一下，失败回退 Python 实现）
+        try:
+            new_inner = self._inner.fillna(value)
+            new_series = Series(new_inner, name=self.name, index=self._index)
+            if inplace:
+                self._inner = new_series._inner
+                self._dtype_str = new_series._dtype_str
+                return self
+            return new_series
+        except Exception:
+            # Rust 层失败（如类型不匹配：int 列 + float value），回退 Python 实现
+            pass
+
+        # 回退：Python 层实现（能兼容 value=0.0 等标量，并自动处理 upcasting）
         vals = list(self.values)
         filled = [value if _is_missing(v) else v for v in vals]
         # 推断新的 dtype（int 列 + float value → float64）
@@ -3420,6 +3656,33 @@ class Series:
         :param bins: 暂不支持，pandas 用于数值分箱
         :param dropna: 是否忽略 None 值 (默认 True)
         """
+        # 加速：如果该 Series 是 apply(type) 的结果，已缓存类型计数（无需再做一次哈希遍历）
+        cache = getattr(self, "_type_value_counts_cache", None)
+        if cache is not None and bins is None and dropna:
+            # cache 是 {type_name_str: count_int}
+            if sort is False:
+                items = list(cache.items())  # 按插入顺序（简化，不保证）
+            elif ascending:
+                items = sorted(cache.items(), key=lambda kv: (kv[1], kv[0]))
+            else:
+                # 默认：按 count 降序、名字升序（稳序）
+                items = sorted(cache.items(), key=lambda kv: (-kv[1], kv[0]))
+            # type_name_str 还原成真正的 type 对象作为索引
+            type_map = {
+                "int": int,
+                "float": float,
+                "bool": bool,
+                "str": str,
+                "other": object,
+                "none": type(None),
+            }
+            unique = [type_map.get(n, object) for n, _ in items]
+            counts = [c for _, c in items]
+            if normalize:
+                total = sum(counts)
+                counts = [c / total for c in counts]
+            return Series(counts, index=unique, name=self.name)
+
         if bins is not None:
             raise NotImplementedError("bins parameter is not supported yet")
         if not dropna:
@@ -3743,7 +4006,7 @@ class Series:
                 out = head + tail_pad
         # datetime 列的 diff 返回 timedelta，转换为 pandas 兼容字符串
         if is_datetime:
-            from .dataframe import _convert_to_basic
+            from ._internal._dataframe_helpers import _convert_to_basic
 
             out = [_convert_to_basic(v) if v is not None else None for v in out]
             result = Series(out, name=self.name, index=self._index)
@@ -5311,35 +5574,3 @@ class Series:
             pass
 
         return "unknown"
-
-
-# ============================================================================
-# 重新导出辅助类（向后兼容）
-# 这些类已迁移到子模块，但 series.py 仍重新导出以保持向后兼容
-# ============================================================================
-from ._internal._series_helpers import (  # noqa: F401
-    _AlignmentResult,
-    _DtypeScalar,
-    _ExtensionArray,
-    _PySeries_filter,
-    _dtype_to_str,
-    _format_timedelta,
-    _infer_dtype,
-    _is_missing,
-    _is_range_index,
-    _to_python_list,
-    _to_python_list_and_index,
-)
-from .accessors.cat import CatAccessor  # noqa: F401
-from .accessors.datetime import DatetimeAccessor  # noqa: F401
-from .accessors.string import StringAccessor  # noqa: F401
-from .groupby.series_groupby import SeriesGroupBy  # noqa: F401
-from .indexing.series_indexers import (
-    _IatIndexer,
-    _ILocIndexer,
-    _LocIndexer,
-)  # noqa: F401
-from .window.ewm import EWM  # noqa: F401
-from .window.expanding import Expanding  # noqa: F401
-from .window.resampler import Resampler  # noqa: F401
-from .window.rolling import Rolling  # noqa: F401

@@ -7,10 +7,7 @@ from __future__ import annotations
 
 from ..dataframe import DataFrame
 from ..series import Series  # noqa: F401  # 部分函数需要
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-import json as _json
-import pickle as _pickle
+from typing import Optional
 
 
 def read_html(
@@ -79,28 +76,15 @@ def read_html(
 
 
 def to_html(df: DataFrame, path=None, index: bool = True, **kwargs) -> Optional[str]:
-    """将 DataFrame 写入 HTML 文件或返回 HTML 字符串。"""
-    # 简单实现：手动生成 HTML 表格
-    lines = ['<table border="1">']
-    # 表头
-    lines.append("<tr>")
-    if index:
-        lines.append("<th></th>")
-    for col in df.columns:
-        lines.append(f"<th>{col}</th>")
-    lines.append("</tr>")
-    # 数据行
-    for i in range(len(df)):
-        lines.append("<tr>")
-        if index:
-            idx_val = df._index[i] if df._index and i < len(df._index) else i
-            lines.append(f"<td>{idx_val}</td>")
-        for col in df.columns:
-            val = df[col].values[i]
-            lines.append(f"<td>{val if val is not None else ''}</td>")
-        lines.append("</tr>")
-    lines.append("</table>")
-    html_content = "\n".join(lines)
+    """将 DataFrame 写入 HTML 文件或返回 HTML 字符串。
+
+    基于 Rust 层构建 HTML 字符串，释放 GIL 避免 Python 层循环开销。
+    """
+    from ..rspandas import to_html as _to_html_rust
+
+    cols = list(df.columns)
+    series_list = [df._inner.get_column(c) for c in cols]
+    html_content = _to_html_rust(cols, series_list, index)
 
     if path:
         with open(path, "w", encoding="utf-8") as f:
@@ -137,6 +121,8 @@ def to_clipboard(df: DataFrame, excel: bool = True, **kwargs) -> None:
     """
     try:
         import pyperclip
+
+        from . import to_csv
 
         content = to_csv(df)
         pyperclip.copy(content)
@@ -208,27 +194,21 @@ def to_xml(
     row_name: str = "row",
     **kwargs,
 ) -> Optional[str]:
-    """将 DataFrame 写入 XML 文件或返回 XML 字符串。"""
-    from xml.etree import ElementTree as ET
+    """将 DataFrame 写入 XML 文件或返回 XML 字符串。
 
-    root = ET.Element(root_name)
-    for i in range(len(df)):
-        row_elem = ET.SubElement(root, row_name)
-        if index:
-            idx_val = df._index[i] if df._index and i < len(df._index) else i
-            row_elem.set("index", str(idx_val))
-        for col in df.columns:
-            val = df[col].values[i]
-            col_elem = ET.SubElement(row_elem, str(col))
-            col_elem.text = str(val) if val is not None else ""
+    基于 Rust 层构建 XML 字符串，释放 GIL 避免 Python 层循环开销。
+    """
+    from ..rspandas import to_xml as _to_xml_rust
 
-    xml_bytes = ET.tostring(root, encoding="unicode", xml_declaration=True)
+    cols = list(df.columns)
+    series_list = [df._inner.get_column(c) for c in cols]
+    xml_output = _to_xml_rust(cols, series_list, index, root_name, row_name)
 
     if path_or_buffer:
         if hasattr(path_or_buffer, "write"):
-            path_or_buffer.write(xml_bytes)
+            path_or_buffer.write(xml_output)
         else:
             with open(path_or_buffer, "w", encoding="utf-8") as f:
-                f.write(xml_bytes)
+                f.write(xml_output)
         return None
-    return xml_bytes
+    return xml_output

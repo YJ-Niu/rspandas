@@ -3,6 +3,19 @@
 A drop-in pandas-like API where the heavy lifting is done in Rust.
 """
 
+# ============================================================================
+# 类型常量
+# ============================================================================
+from ._scalars import (
+    Categorical,
+    DateOffset,
+    Interval,
+    NA,
+    NaT,
+    Period,
+    Timestamp,
+    Timedelta,
+)
 from . import offsets
 from ._datetime import (
     bdate_range,
@@ -429,7 +442,7 @@ def value_counts(
     raise TypeError("value_counts requires Series or list")
 
 
-__version__ = "2.1.2"
+__version__ = "2.1.3"
 __all__ = [
     "Series",
     "DataFrame",
@@ -529,9 +542,6 @@ __all__ = [
 # ============================================================================
 
 
-from ._rsnumpy_wrappers import _wrap_rsnumpy_functions
-
-
 def read_csv(
     filepath_or_buffer,
     sep=",",
@@ -558,6 +568,7 @@ def read_csv(
     infer_datetime_format: bool = False,
     keep_date_col: bool = False,
     date_parser=None,
+    date_format=None,
     dayfirst: bool = False,
     cache_dates: bool = True,
     iterator: bool = False,
@@ -601,7 +612,7 @@ def read_csv(
         na_filter=na_filter,
         skip_blank_lines=skip_blank_lines,
         parse_dates=parse_dates,
-        date_format=None,
+        date_format=date_format,
         dayfirst=dayfirst,
         cache_dates=cache_dates,
         iterator=iterator,
@@ -834,22 +845,6 @@ def lreshape(
 
     return DataFrame(result_rows)
 
-
-# ============================================================================
-# 类型常量
-# ============================================================================
-
-
-from ._scalars import (
-    Categorical,
-    DateOffset,
-    Interval,
-    NA,
-    NaT,
-    Period,
-    Timestamp,
-    Timedelta,
-)
 
 # ============================================================================
 # 数组创建函数

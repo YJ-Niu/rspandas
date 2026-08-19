@@ -5,6 +5,7 @@
 //! - :mod:`.compare`：比较运算（返回布尔掩码）
 //! - :mod:`.stats`：聚合统计（count/sum/mean/min/max/std/var/median/any/all）
 //! - :mod:`.missing`：缺失值、ffill/bfill、插值/采样/重采样
+//! - :mod:`.ops`：Series vs Series 逐元素算术/比较运算（Rust 加速路径）
 //! - :mod:`.accessors`：Categorical 操作与日期时间访问器
 //! - :mod:`.window`：分位数 / 排名 / 值计数 / 滚动 / 扩展 / 指数加权窗口
 //! - :mod:`.sort`：排序、searchsorted、arg_top_n
@@ -19,10 +20,12 @@ pub mod basic;
 pub mod compare;
 pub mod groupby;
 pub mod missing;
+pub mod ops;
 pub mod pymethods;
 pub mod sort;
 pub mod stats;
 pub mod string_ops;
+pub mod type_counts; // 单次遍历 apply(type)+计数
 pub mod window;
 
 use pyo3::prelude::*;

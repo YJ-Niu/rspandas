@@ -4,11 +4,22 @@ from datetime import datetime, timedelta
 
 import rsnumpy as rnp
 
+# ============================================================================
+# 重新导出辅助类（向后兼容）
+# 这些类已迁移到子模块，但 dataframe.py 仍重新导出以保持向后兼容
+# ============================================================================
+from .groupby.dataframe_groupby import DataFrameGroupBy  # noqa: F401
+from .indexing.dataframe_indexers import (  # noqa: F401
+    _AtIndexer,
+    _IatIndexer,
+    _ILocIndexer,
+    _IndexerBase,
+    _LocIndexer,
+)
+
 from .series import Series, _AlignmentResult, _is_missing
 from ._internal._dataframe_helpers import (
-    _DTYPE_MAP,
     _convert_list_to_basic,
-    _convert_to_basic,
     _is_ndarray,
     _normalize_dtype,
     _to_pylist_columns,
@@ -202,16 +213,62 @@ class DataFrame:
                         "timedelta64"
                     ):
                         col_dtype_overrides[str(k)] = "timedelta64[us]"
+        self._col_object_values: Dict[str, list] = {}  # 混合类型列的原始值缓存
         for c, vs in zip(str_col_names, col_values):
+            # 检测 datetime 列（在 _convert_to_basic 转换前）
+            col_dtype = norm_dtype
+            if col_dtype is None:
+                # 自动检测 datetime 列
+                non_null = [v for v in vs if v is not None]
+                if non_null and all(
+                    isinstance(v, datetime) and not isinstance(v, bool)
+                    for v in non_null
+                ):
+                    col_dtype = "datetime64[us]"
+                    col_dtype_overrides[c] = "datetime64[us]"
+                elif non_null and all(isinstance(v, timedelta) for v in non_null):
+                    col_dtype = "timedelta64[us]"
+                    col_dtype_overrides[c] = "timedelta64[us]"
+                elif non_null:
+                    # 检测混合类型列（int/float + str），缓存原始值以便后续还原
+                    has_numeric = False
+                    has_other = False
+                    for v in non_null:
+                        if isinstance(v, bool):
+                            has_other = True
+                        elif isinstance(v, (int, float)):
+                            has_numeric = True
+                        elif isinstance(v, str):
+                            has_other = True
+                        else:
+                            has_other = True
+                        if has_numeric and has_other:
+                            # 已确定为混合列，无需继续扫描
+                            break
+                    if has_numeric and has_other:
+                        self._col_object_values[c] = list(vs)
+                        col_dtype = "object"
+                        col_dtype_overrides[c] = "object"
             # 根据 dtype 预转换值，避免 Rust 端类型不匹配
-            if norm_dtype == "bool":
+            if col_dtype == "bool":
                 vs = [bool(v) if v is not None else None for v in vs]
-            elif norm_dtype in ("int64", "int32", "int"):
+            elif col_dtype in ("int64", "int32", "int"):
                 vs = [int(v) if v is not None else None for v in vs]
-            elif norm_dtype in ("float64", "float32", "float"):
+            elif col_dtype in ("float64", "float32", "float"):
                 vs = [float(v) if v is not None else None for v in vs]
-            converted_vs = _convert_list_to_basic(vs)
-            rust_series_list.append(_PySeries(converted_vs, c, dtype=norm_dtype))
+            elif col_dtype == "object":
+                # 混合类型列：转换为字符串供 Rust 层存储，原始值保留在 _col_object_values
+                vs = [str(v) if v is not None else None for v in vs]
+            elif col_dtype and col_dtype.startswith("datetime64"):
+                # datetime 列：转换为 ISO 字符串供 Rust 层存储，
+                # 同时保留 datetime 对象供 Series 构造函数检测 dtype
+                vs = _convert_list_to_basic(vs)
+            elif col_dtype and col_dtype.startswith("timedelta64"):
+                vs = _convert_list_to_basic(vs)
+            else:
+                vs = _convert_list_to_basic(vs)
+            converted_vs = vs
+            rust_series_list.append(_PySeries(converted_vs, c, dtype=col_dtype))
 
         # 构造 Rust 端 DataFrame
         self._inner = _PyDataFrame(str_col_names, rust_series_list)
@@ -1650,6 +1707,28 @@ class DataFrame:
         self._inner = _PyDataFrame(cols, rust_series_list)
 
     def _get_column_as_series(self, name: str) -> Series:
+        if name in self._col_dtypes:
+            override = self._col_dtypes[name]
+            # 混合类型列：跳过 Series 构造函数多次遍历，直接构建；
+            # 存储字符串复用 Rust 层 _inner 的列数据，避免逐值 ``str(v)`` 重复转换。
+            if override == "object" and name in self._col_object_values:
+                vals = self._col_object_values[name]
+                s = Series.__new__(Series)
+                s._inner = self._inner.get_column(name)
+                s._object_values = vals
+                s._dtype_str = "object"
+                s._index = (
+                    list(self._index)
+                    if self._index is not None
+                    else list(range(len(vals)))
+                )
+                s._dt_values = None
+                s._dt_tz = None
+                s._period_freq = None
+                s._td_values = None
+                s._cached_index_ref = None
+                s._freq = None
+                return s
         ser = self._inner.get_column(name)
         if name in self._col_dtypes:
             override = self._col_dtypes[name]
@@ -3589,6 +3668,8 @@ class DataFrame:
                         col_key = (c, fname)
                         if isinstance(result, Series):
                             new_data[col_key] = list(result.values)
+                        elif isinstance(result, rnp.ndarray):
+                            new_data[col_key] = list(result)
                         else:
                             new_data[col_key] = [result] * self._nrows
         elif isinstance(func, list):
@@ -3618,6 +3699,8 @@ class DataFrame:
                     col_key = (c, fname)
                     if isinstance(result, Series):
                         new_data[col_key] = list(result.values)
+                    elif isinstance(result, rnp.ndarray):
+                        new_data[col_key] = list(result)
                     else:
                         new_data[col_key] = [result] * self._nrows
         else:
@@ -3634,6 +3717,8 @@ class DataFrame:
 
                 if isinstance(result, Series):
                     new_data[c] = list(result.values)
+                elif isinstance(result, rnp.ndarray):
+                    new_data[c] = list(result)
                 else:
                     new_data[c] = [result] * self._nrows
 
@@ -4000,6 +4085,40 @@ class DataFrame:
         df._columns_name = None
         return df
 
+    @classmethod
+    def _from_rust_series(
+        cls,
+        columns: List[str],
+        series_list,
+        object_values: Optional[Dict[str, list]] = None,
+        col_dtypes: Optional[Dict[str, str]] = None,
+    ) -> "DataFrame":
+        """从 Rust 层 typed CSV 读取结果直接构造 DataFrame。
+
+        绕过 Python 层类型推断，避免对大规模列再做逐值二次遍历。
+        仅混合类型（object）列通过 ``object_values`` 还原原始 Python 对象。
+
+        :param columns: 列名列表（str）
+        :param series_list: Rust ``_Series`` 列表（与 columns 对齐）
+        :param object_values: {列名: 混合类型 Python 对象列表}
+        :param col_dtypes: 列 dtype 覆盖字典
+        """
+        df = cls.__new__(cls)
+        df._inner = _PyDataFrame(columns, series_list)
+        df._columns = list(columns)
+        df._raw_columns: List[Any] = list(columns)
+        df._nrows = series_list[0].size if series_list else 0
+        df._index = list(range(df._nrows))
+        df._col_dtypes = dict(col_dtypes or {})
+        df._col_object_values: Dict[str, list] = dict(object_values or {})
+        df._col_categories: Dict[str, list] = {}
+        df._cached_index_ref: Optional[object] = None
+        df._index_name_val: Optional[str] = None
+        df._index_names: Optional[list] = None
+        df._columns_name: Optional[str] = None
+        df._index_freq: Optional[Any] = None
+        return df
+
     # ---------- 索引操作 (v1.0.0) ----------
 
     def drop(
@@ -4327,6 +4446,53 @@ class DataFrame:
             columns_to_write = selected_columns
             series_to_write = series_list
 
+        # ------------------------------------------------------------------
+        # Rust 快速路径：默认选项下直接用 Rust 序列化，避免 Python 逐行拼接
+        # ------------------------------------------------------------------
+        _rust_ok = (
+            sep == ","
+            and na_rep == ""
+            and float_format is None
+            and date_format is None
+            and decimal == "."
+            and quotechar == '"'
+            and isinstance(header, bool)
+            and (lineterminator is None or lineterminator == "\n")
+            and mode == "w"
+            and (encoding is None or encoding.lower() in ("utf-8", "utf8"))
+            and chunksize is None
+            and compression in (None, "infer")
+            and (index_label is None or isinstance(index_label, str))
+        )
+        # 推断压缩格式（infer 且带压缩扩展名时回退到 Python 路径）
+        if _rust_ok and compression == "infer":
+            _lp = path.lower() if isinstance(path, str) else ""
+            if _lp.endswith((".gz", ".bz2", ".zip", ".xz", ".zst")):
+                _rust_ok = False
+        # 浮点列回退：Rust get_str_at 的 f64 格式化与 Python str() 不一致，
+        # 为避免 dtype 回读偏差，仅当所有列均非浮点时走 Rust
+        if _rust_ok:
+            for _s in series_to_write:
+                if _s.dtype in ("float64", "float32"):
+                    _rust_ok = False
+                    break
+        if _rust_ok:
+            import os
+            from .rspandas import write_csv_path as _wc_path
+            from .rspandas import write_csv_string as _wc_str
+
+            _include_header = bool(header)
+            _cols = [str(c) for c in columns_to_write]
+            if path is None:
+                return _wc_str(_cols, series_to_write, _include_header, sep)
+            if isinstance(path, (str, os.PathLike)):
+                _wc_path(str(path), _cols, series_to_write, _include_header, sep)
+                return None
+            # 文件对象：序列化为字符串后一次写入
+            _content = _wc_str(_cols, series_to_write, _include_header, sep)
+            path.write(_content)
+            return None
+
         # 生成 CSV 内容（带参数处理）
         content_lines = []
 
@@ -4415,8 +4581,9 @@ class DataFrame:
                 with bz2.open(path, mode + "t", encoding=encoding, errors=errors) as f:
                     f.write(content)
             else:
-                with open(path, mode, encoding=encoding, errors=errors) as f:
-                    f.write(content)
+                from .rspandas import write_string_to_file as _write_string_to_file
+
+                _write_string_to_file(path, content)
         else:
             # path_or_buf 是文件对象
             path.write(content)
@@ -9875,17 +10042,3 @@ class DataFrame:
             return ax
         except ImportError:
             raise NotImplementedError("plot requires rsplotlib")
-
-
-# ============================================================================
-# 重新导出辅助类（向后兼容）
-# 这些类已迁移到子模块，但 dataframe.py 仍重新导出以保持向后兼容
-# ============================================================================
-from .groupby.dataframe_groupby import DataFrameGroupBy  # noqa: F401
-from .indexing.dataframe_indexers import (  # noqa: F401
-    _AtIndexer,
-    _IatIndexer,
-    _ILocIndexer,
-    _IndexerBase,
-    _LocIndexer,
-)

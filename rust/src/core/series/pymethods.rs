@@ -7,12 +7,14 @@
 //! 所有计算密集型方法均通过 `py.detach` 释放 GIL 后再委托给 Rust 端 :struct:`Series`。
 
 use pyo3::IntoPyObject;
+use pyo3::Py;
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use pyo3::types::PyAnyMethods;
 use pyo3::types::{PyBool, PyBoolMethods, PyFloat, PyInt, PyList, PyString};
 
 use crate::core::dtype::{CategoricalData, ColumnData, DType};
-use crate::core::series::{AggResult, PySeries};
+use crate::core::series::{AggResult, PySeries, Series};
 
 #[pymethods]
 impl PySeries {
@@ -776,6 +778,43 @@ impl PySeries {
         PySeries { inner }
     }
 
+    // ---------- Series vs Series 逐元素运算（Rust 加速路径） ----------
+
+    /// 逐元素算术运算：Series vs Series。
+    /// 仅支持 Int64/Float64 且长度相同；不满足时返回 None，Python 层回退。
+    fn elementwise_arith_series<'py>(
+        &self,
+        py: Python<'py>,
+        other: &Self,
+        op: &str,
+        reverse: bool,
+        fill_value: Option<f64>,
+    ) -> Option<Self> {
+        let op_owned = op.to_string();
+        let result = py.detach(|| {
+            self.inner
+                .elementwise_arith_series(&other.inner, &op_owned, reverse, fill_value)
+        });
+        result.map(|inner| PySeries { inner })
+    }
+
+    /// 逐元素比较运算：Series vs Series。
+    /// 仅支持 Int64/Float64 且长度相同；不满足时返回 None，Python 层回退。
+    fn elementwise_compare_series<'py>(
+        &self,
+        py: Python<'py>,
+        other: &Self,
+        op_name: &str,
+        fill_value: Option<f64>,
+    ) -> Option<Self> {
+        let op_owned = op_name.to_string();
+        let result = py.detach(|| {
+            self.inner
+                .elementwise_compare_series(&other.inner, &op_owned, fill_value)
+        });
+        result.map(|inner| PySeries { inner })
+    }
+
     // ---------- 字符串方法 ----------
 
     fn str_upper(&self, py: Python<'_>) -> Self {
@@ -947,6 +986,140 @@ impl PySeries {
         let v_list = PyList::new(py, vals.iter().map(|s| s.as_str()))?;
         let c_list = PyList::new(py, counts.iter().copied())?;
         Ok((v_list, c_list))
+    }
+
+    /// 返回 ``apply(type)`` 的完整结果：类型对象列表与作为存储的类型 repr 字符串列。
+    ///
+    /// 在 Rust 层对 object 列的存储字符串做类型分类（并行、脱离 GIL），然后持有 GIL
+    /// 一次性构造：
+    ///
+    /// - :class:`PySeries`：存储为类型 repr 字符串（``<class 'int'>`` 等），
+    ///   供 ``value_counts`` 等后续操作直接使用，避免 Python 层二次构造。
+    /// - :class:`PyList`：元素为对应的 Python 类型对象（int/float/bool/str），
+    ///   供 ``.values`` 返回。
+    fn apply_type<'py>(&self, py: Python<'py>) -> PyResult<(PySeries, Bound<'py, PyList>)> {
+        const INT: &str = "<class 'int'>";
+        const FLOAT: &str = "<class 'float'>";
+        const BOOL: &str = "<class 'bool'>";
+        const STR: &str = "<class 'str'>";
+
+        // 1. 脱离 GIL 并行分类，得到类型编码（0=缺失/1=int/2=float/3=bool/4=str）
+        let codes = py.detach(|| self.inner.type_codes());
+
+        // 2. 持有 GIL 构造类型对象列表与 repr 字符串存储
+        let int_t = py.get_type::<PyInt>();
+        let float_t = py.get_type::<PyFloat>();
+        let bool_t = py.get_type::<PyBool>();
+        let str_t = py.get_type::<PyString>();
+
+        let objs = PyList::empty(py);
+        let mut reprs: Vec<Option<String>> = Vec::with_capacity(codes.len());
+        for c in codes {
+            match c {
+                Some(1) => {
+                    reprs.push(Some(INT.to_owned()));
+                    objs.append(int_t.to_owned())?;
+                }
+                Some(2) => {
+                    reprs.push(Some(FLOAT.to_owned()));
+                    objs.append(float_t.to_owned())?;
+                }
+                Some(3) => {
+                    reprs.push(Some(BOOL.to_owned()));
+                    objs.append(bool_t.to_owned())?;
+                }
+                Some(4) => {
+                    reprs.push(Some(STR.to_owned()));
+                    objs.append(str_t.to_owned())?;
+                }
+                _ => {
+                    reprs.push(None);
+                    objs.append(py.None())?;
+                }
+            }
+        }
+
+        let inner = PySeries {
+            inner: Series::new_string(self.inner.name.clone(), reprs),
+        };
+        Ok((inner, objs))
+    }
+
+    /// 单次遍历同时完成 ``apply(type)`` + ``type`` 名计数。
+    ///
+    /// 返回 ``(inner, out_list, names_list, counts_list)``：
+    /// - ``inner``：``_Series``（Rust PySeries），与 :meth:`apply_type` 返回的 inner 一致，
+    ///   存储为类型 repr 字符串（``"<class 'int'>"`` 等），供 Python 层快速构造返回 Series
+    ///   而无需二次推断 dtype；
+    /// - ``out_list``：list，每个元素是对应的 Python type 对象（None 处为 ``None``），
+    ///   与 :meth:`apply_type` 返回的 out 一致；
+    /// - ``names_list``：``list[str]``，按 count 降序、名字升序排好（仅非 None 的类型）；
+    /// - ``counts_list``：``list[int]``，与 ``names_list`` 等长，对应计数。
+    #[allow(clippy::type_complexity)] // Python 暴露层需要四元组，不适合再拆分
+    fn apply_type_with_counts<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>, Py<PyAny>, Py<PyAny>)> {
+        let (inner_any, out_any, type_names, counts) = self.inner.apply_type_with_counts(py)?;
+        let names_list = pyo3::types::PyList::new(py, type_names.iter().map(|s| s.as_str()))?;
+        let counts_list = pyo3::types::PyList::new(py, counts.iter().copied())?;
+        // Bound<'_, T> → Py<PyAny>：into_any().unbind()
+        Ok((
+            inner_any,
+            out_any,
+            names_list.into_any().unbind(),
+            counts_list.into_any().unbind(),
+        ))
+    }
+
+    /// 仅统计各元素的 Python type 名称计数（不生成任何 PyObject），
+    /// 用于 ``apply(type).value_counts`` 短路。
+    ///
+    /// 返回 ``(names_list, counts_list)``：按 count 降序 + 名字升序排好，
+    /// None 位置不计入（dropna=True 语义）。
+    fn type_counts_only<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyList>)> {
+        let (names, counts) = py.detach(|| self.inner.type_counts_only());
+        let names_list = PyList::new(py, names.iter().map(|s| s.as_str()))?;
+        let counts_list = PyList::new(py, counts.iter().copied())?;
+        Ok((names_list, counts_list))
+    }
+
+    /// 根据类型标签将 object 列（字符串存储）还原为混合类型 Python 对象列表。
+    ///
+    /// 供 ``read_csv`` typed 快速路径使用：避免 Python 层逐元素 ``int()/float()``
+    /// 解析。tag 编码：0=缺失 / 1=int / 2=float / 3=bool / 4=str。
+    fn rebuild_object<'py>(&self, py: Python<'py>, tags: Vec<u8>) -> PyResult<Bound<'py, PyList>> {
+        let out = PyList::empty(py);
+        if let ColumnData::String(v) = &self.inner.data {
+            for (s, t) in v.iter().zip(tags.iter()) {
+                match t {
+                    1 => match s.as_ref().and_then(|x| x.parse::<i64>().ok()) {
+                        Some(i) => out.append(i)?,
+                        None => out.append(py.None())?,
+                    },
+                    2 => match s.as_ref().and_then(|x| x.parse::<f64>().ok()) {
+                        Some(f) => out.append(f)?,
+                        None => out.append(py.None())?,
+                    },
+                    3 => match s
+                        .as_ref()
+                        .map(|x| matches!(x.as_str(), "True" | "TRUE" | "true"))
+                    {
+                        Some(b) => out.append(b)?,
+                        None => out.append(py.None())?,
+                    },
+                    4 => match s {
+                        Some(x) => out.append(x.as_str())?,
+                        None => out.append(py.None())?,
+                    },
+                    _ => out.append(py.None())?,
+                }
+            }
+        }
+        Ok(out)
     }
 
     // ---------- 滚动窗口 ----------

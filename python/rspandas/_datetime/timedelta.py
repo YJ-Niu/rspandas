@@ -22,7 +22,7 @@ def to_timedelta(arg, unit=None, errors: str = "raise"):
     """
     # Series 输入：逐列转换并返回 Series
     if isinstance(arg, Series):
-        from ..dataframe import _convert_to_basic
+        from .._internal._dataframe_helpers import _convert_to_basic
 
         out = []
         for v in arg.values:
